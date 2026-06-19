@@ -82,7 +82,11 @@ struct BookUpdateBody<'a> {
 }
 
 impl ApiClient {
-    pub async fn list_books(&self, status: Option<BookStatus>, q: Option<&str>) -> Result<List<Book>, ApiError> {
+    pub async fn list_books(
+        &self,
+        status: Option<BookStatus>,
+        q: Option<&str>,
+    ) -> Result<List<Book>, ApiError> {
         let mut query = vec![];
         if let Some(s) = status {
             query.push(("status", s.label().replace(' ', "_")));
@@ -100,11 +104,16 @@ impl ApiClient {
     }
 
     pub async fn list_chapters(&self, book_id: i64) -> Result<List<BookChapter>, ApiError> {
-        self.get(&format!("/api/v1/books/{book_id}/chapters"), &[]).await
+        self.get(&format!("/api/v1/books/{book_id}/chapters"), &[])
+            .await
     }
 
     pub async fn update_book(&self, id: i64, body: &BookUpdate) -> Result<Book, ApiError> {
-        self.patch(&format!("/api/v1/books/{id}"), &BookUpdateBody { book: body }).await
+        self.patch(
+            &format!("/api/v1/books/{id}"),
+            &BookUpdateBody { book: body },
+        )
+        .await
     }
 }
 
@@ -133,7 +142,10 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        client(&server).list_books(Some(BookStatus::Reading), None).await.unwrap();
+        client(&server)
+            .list_books(Some(BookStatus::Reading), None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -146,7 +158,10 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        client(&server).list_books(Some(BookStatus::Completed), None).await.unwrap();
+        client(&server)
+            .list_books(Some(BookStatus::Completed), None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -173,6 +188,9 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        client(&server).list_books(Some(BookStatus::Reading), Some("rust")).await.unwrap();
+        client(&server)
+            .list_books(Some(BookStatus::Reading), Some("rust"))
+            .await
+            .unwrap();
     }
 }

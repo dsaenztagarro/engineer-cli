@@ -45,22 +45,35 @@ enum Auth {
 
 impl ApiClient {
     pub fn new(base: Url, provider: TokenProvider) -> Self {
-        Self { base, http: Client::new(), auth: Auth::Provider(provider) }
+        Self {
+            base,
+            http: Client::new(),
+            auth: Auth::Provider(provider),
+        }
     }
 
     pub fn with_token(base: Url, token: String) -> Self {
-        Self { base, http: Client::new(), auth: Auth::Static(token) }
+        Self {
+            base,
+            http: Client::new(),
+            auth: Auth::Static(token),
+        }
     }
 
     async fn token(&self) -> Result<String, ApiError> {
         match &self.auth {
             Auth::Static(t) => Ok(t.clone()),
-            Auth::Provider(p) => p.access_token().await.map_err(|e| ApiError::Transport(e.to_string())),
+            Auth::Provider(p) => p
+                .access_token()
+                .await
+                .map_err(|e| ApiError::Transport(e.to_string())),
         }
     }
 
     fn url(&self, path: &str) -> Result<Url, ApiError> {
-        self.base.join(path).map_err(|e| ApiError::Transport(e.to_string()))
+        self.base
+            .join(path)
+            .map_err(|e| ApiError::Transport(e.to_string()))
     }
 
     async fn request(&self, method: Method, path: &str) -> Result<RequestBuilder, ApiError> {
@@ -72,17 +85,29 @@ impl ApiClient {
             .header(header::ACCEPT, "application/json"))
     }
 
-    async fn get<T: DeserializeOwned>(&self, path: &str, query: &[(&str, String)]) -> Result<T, ApiError> {
+    async fn get<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> Result<T, ApiError> {
         let req = self.request(Method::GET, path).await?.query(query);
         send(req).await
     }
 
-    async fn post<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T, ApiError> {
+    async fn post<B: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
         let req = self.request(Method::POST, path).await?.json(body);
         send(req).await
     }
 
-    async fn patch<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T, ApiError> {
+    async fn patch<B: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
         let req = self.request(Method::PATCH, path).await?.json(body);
         send(req).await
     }
@@ -112,7 +137,10 @@ async fn send<T: DeserializeOwned>(req: RequestBuilder) -> Result<T, ApiError> {
     };
     let status = resp.status();
     let latency_ms = started.elapsed().as_millis();
-    let bytes = resp.bytes().await.map_err(|e| ApiError::Transport(e.to_string()))?;
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| ApiError::Transport(e.to_string()))?;
 
     if status.is_success() {
         tracing::info!(target: "engineer_tui::api", %method, %url, status = status.as_u16(), latency_ms, "api call");

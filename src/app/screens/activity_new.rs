@@ -48,7 +48,12 @@ impl ActivityNew {
         self.mode
     }
 
-    pub async fn handle(&mut self, action: Action, api: &ApiClient, tx: &UnboundedSender<Action>) -> Option<(Level, String)> {
+    pub async fn handle(
+        &mut self,
+        action: Action,
+        api: &ApiClient,
+        tx: &UnboundedSender<Action>,
+    ) -> Option<(Level, String)> {
         match action {
             Action::ActivityFieldNext => {
                 self.focus = (self.focus + 1) % FIELDS.len();
@@ -116,7 +121,10 @@ impl ActivityNew {
                         }
                         Err(e) => {
                             let errors = e.field_errors().to_vec();
-                            let _ = tx.send(Action::ActivityFailed { errors, detail: e.to_string() });
+                            let _ = tx.send(Action::ActivityFailed {
+                                errors,
+                                detail: e.to_string(),
+                            });
                         }
                     }
                 });
@@ -168,16 +176,27 @@ impl ActivityNew {
             let title = format!(" {} {} ", name, if err.is_some() { "✗" } else { "" });
             let block = Block::default()
                 .borders(Borders::ALL)
-                .border_style(if is_focus { theme::focused() } else { ratatui::style::Style::default().fg(theme::BORDER) })
+                .border_style(if is_focus {
+                    theme::focused()
+                } else {
+                    ratatui::style::Style::default().fg(theme::BORDER)
+                })
                 .title(Span::styled(
                     title,
-                    if err.is_some() { ratatui::style::Style::default().fg(theme::DANGER) } else { theme::muted() },
+                    if err.is_some() {
+                        ratatui::style::Style::default().fg(theme::DANGER)
+                    } else {
+                        theme::muted()
+                    },
                 ));
             let body = if let Some(e) = err {
                 Line::from(vec![
                     Span::raw(value.to_string()),
                     Span::raw("    "),
-                    Span::styled(format!("⚠ {}", e.detail), ratatui::style::Style::default().fg(theme::DANGER)),
+                    Span::styled(
+                        format!("⚠ {}", e.detail),
+                        ratatui::style::Style::default().fg(theme::DANGER),
+                    ),
                 ])
             } else {
                 Line::from(value.to_string())
@@ -197,7 +216,10 @@ impl ActivityNew {
 
     pub fn hints(&self) -> Line<'static> {
         if matches!(self.mode, ScreenMode::Insert) {
-            return Line::from(Span::styled("INSERT · type · Esc to leave", theme::focused()));
+            return Line::from(Span::styled(
+                "INSERT · type · Esc to leave",
+                theme::focused(),
+            ));
         }
         widgets::footer_hints(&[
             ("j/k", "field"),
@@ -210,5 +232,9 @@ impl ActivityNew {
 
 fn opt_str(s: &str) -> Option<String> {
     let s = s.trim();
-    if s.is_empty() { None } else { Some(s.to_string()) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
 }

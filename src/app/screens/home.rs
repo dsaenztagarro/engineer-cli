@@ -24,7 +24,12 @@ impl Home {
         spawn_load(api.clone(), tx.clone());
     }
 
-    pub async fn handle(&mut self, action: Action, api: &ApiClient, tx: &UnboundedSender<Action>) -> Option<(Level, String)> {
+    pub async fn handle(
+        &mut self,
+        action: Action,
+        api: &ApiClient,
+        tx: &UnboundedSender<Action>,
+    ) -> Option<(Level, String)> {
         match action {
             Action::HomeLoaded { today, reading } => {
                 self.today = today;
@@ -63,8 +68,14 @@ impl Home {
                 .today
                 .iter()
                 .map(|a| {
-                    let time = a.started_at.map(|t| t.strftime("%H:%M").to_string()).unwrap_or_default();
-                    let dur = a.duration_minutes.map(|d| format!("{d}m")).unwrap_or_default();
+                    let time = a
+                        .started_at
+                        .map(|t| t.strftime("%H:%M").to_string())
+                        .unwrap_or_default();
+                    let dur = a
+                        .duration_minutes
+                        .map(|d| format!("{d}m"))
+                        .unwrap_or_default();
                     let kind = a.kind.clone().unwrap_or_default();
                     Row::new(vec![
                         Cell::from(time).style(theme::muted()),
@@ -76,11 +87,14 @@ impl Home {
                 .collect();
             let table = Table::new(
                 rows,
-                [Constraint::Length(6), Constraint::Length(14), Constraint::Length(6), Constraint::Min(10)],
+                [
+                    Constraint::Length(6),
+                    Constraint::Length(14),
+                    Constraint::Length(6),
+                    Constraint::Min(10),
+                ],
             )
-            .header(
-                Row::new(vec!["TIME", "KIND", "DUR", "TITLE"]).style(theme::header()),
-            )
+            .header(Row::new(vec!["TIME", "KIND", "DUR", "TITLE"]).style(theme::header()))
             .block(block);
             frame.render_widget(table, chunks[0]);
         }
@@ -88,7 +102,10 @@ impl Home {
         // ---- currently reading ----
         let block2 = bordered(format!("Currently reading  ·  {}", self.reading.len()));
         if self.reading.is_empty() && !self.loading {
-            frame.render_widget(Paragraph::new("No books in `reading` status.").block(block2), chunks[1]);
+            frame.render_widget(
+                Paragraph::new("No books in `reading` status.").block(block2),
+                chunks[1],
+            );
         } else {
             let items: Vec<ListItem> = self
                 .reading
@@ -99,7 +116,10 @@ impl Home {
                         Line::from(vec![
                             widgets::status_pill(BookStatus::Reading),
                             Span::raw("  "),
-                            Span::styled(b.title.clone(), Style::default().add_modifier(ratatui::style::Modifier::BOLD)),
+                            Span::styled(
+                                b.title.clone(),
+                                Style::default().add_modifier(ratatui::style::Modifier::BOLD),
+                            ),
                             Span::styled(
                                 format!("  · {}", b.author.clone().unwrap_or_default()),
                                 theme::muted(),
@@ -119,10 +139,17 @@ fn spawn_load(api: ApiClient, tx: UnboundedSender<Action>) {
     tokio::spawn(async move {
         let now = Zoned::now();
         let date: Date = now.date();
-        let start = date.to_zoned(now.time_zone().clone()).ok().map(|z| z.timestamp());
+        let start = date
+            .to_zoned(now.time_zone().clone())
+            .ok()
+            .map(|z| z.timestamp());
         let end = start.and_then(|s| s.checked_add(1.day()).ok());
 
-        let filters = ActivityFilters { started_after: start, started_before: end, book_id: None };
+        let filters = ActivityFilters {
+            started_after: start,
+            started_before: end,
+            book_id: None,
+        };
         let today = match api.list_activities(&filters).await {
             Ok(list) => list.data,
             Err(e) => {

@@ -120,8 +120,8 @@ impl Config {
 
     fn apply_env_overrides(&mut self) -> Result<()> {
         if let Ok(v) = std::env::var("ENGINEER_IDENTITY_URL") {
-            self.identity_url =
-                Url::parse(&v).with_context(|| format!("ENGINEER_IDENTITY_URL: invalid URL {v:?}"))?;
+            self.identity_url = Url::parse(&v)
+                .with_context(|| format!("ENGINEER_IDENTITY_URL: invalid URL {v:?}"))?;
         }
         if let Ok(v) = std::env::var("ENGINEER_API_URL") {
             self.api_url =
@@ -165,7 +165,11 @@ impl Config {
             }
         }
         let base = BaseDirs::new().ok_or_else(|| eyre!("could not resolve home directory"))?;
-        Ok(base.home_dir().join(".local").join("state").join("engineer-tui"))
+        Ok(base
+            .home_dir()
+            .join(".local")
+            .join("state")
+            .join("engineer-tui"))
     }
 
     /// The OAuth `client_id`. Returns the explicit value if configured, else the
@@ -210,9 +214,18 @@ mod tests {
 
     #[test]
     fn environment_parses_aliases() {
-        assert_eq!("prod".parse::<Environment>().unwrap(), Environment::Production);
-        assert_eq!("dev".parse::<Environment>().unwrap(), Environment::Development);
-        assert_eq!("local".parse::<Environment>().unwrap(), Environment::Development);
+        assert_eq!(
+            "prod".parse::<Environment>().unwrap(),
+            Environment::Production
+        );
+        assert_eq!(
+            "dev".parse::<Environment>().unwrap(),
+            Environment::Development
+        );
+        assert_eq!(
+            "local".parse::<Environment>().unwrap(),
+            Environment::Development
+        );
         assert!("staging".parse::<Environment>().is_err());
     }
 

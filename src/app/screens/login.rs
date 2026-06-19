@@ -60,11 +60,8 @@ impl Login {
         let body = if self.pending {
             vec![
                 Line::from(""),
-                Line::from(Span::styled(
-                    "Waiting for the browser…",
-                    theme::focused(),
-                ))
-                .alignment(Alignment::Center),
+                Line::from(Span::styled("Waiting for the browser…", theme::focused()))
+                    .alignment(Alignment::Center),
                 Line::from(Span::styled(
                     "Complete the login in your browser, then return here.",
                     theme::muted(),

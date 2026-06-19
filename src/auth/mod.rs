@@ -30,7 +30,10 @@ impl TokenProvider {
     pub async fn new(config: Config) -> Result<Self> {
         let discovery = discover(&config).await?;
         Ok(Self {
-            inner: Arc::new(Mutex::new(State { access: None, expires_at: None })),
+            inner: Arc::new(Mutex::new(State {
+                access: None,
+                expires_at: None,
+            })),
             config,
             discovery,
         })
@@ -99,7 +102,14 @@ pub async fn logout_cli(cfg: &Config) -> Result<()> {
 pub async fn whoami_cli(cfg: &Config) -> Result<()> {
     let provider = TokenProvider::new(cfg.clone()).await?;
     let token = provider.access_token().await?;
-    let me = crate::api::ApiClient::with_token(cfg.api_url.clone(), token).me().await?;
-    println!("{} <{}> (id: {})", me.name.unwrap_or_default(), me.email, me.id);
+    let me = crate::api::ApiClient::with_token(cfg.api_url.clone(), token)
+        .me()
+        .await?;
+    println!(
+        "{} <{}> (id: {})",
+        me.name.unwrap_or_default(),
+        me.email,
+        me.id
+    );
     Ok(())
 }

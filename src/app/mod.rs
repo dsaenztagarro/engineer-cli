@@ -65,7 +65,11 @@ async fn run_loop(
     // Land on the Login screen when there is no stored refresh token; otherwise
     // boot straight into the authenticated UI.
     let logged_in = crate::auth::is_logged_in(&config);
-    let start = if logged_in { ScreenKind::Home } else { ScreenKind::Login };
+    let start = if logged_in {
+        ScreenKind::Home
+    } else {
+        ScreenKind::Login
+    };
 
     let mut app = App {
         config,
@@ -199,7 +203,8 @@ impl App {
                 self.current.on_enter(&self.api, &self.tx);
             }
             Action::CommandBegin => { /* buffer already initialised by event layer */ }
-            Action::CommandInput(_) | Action::CommandBackspace => { /* buffer mutated in event layer */ }
+            Action::CommandInput(_) | Action::CommandBackspace => { /* buffer mutated in event layer */
+            }
             Action::CommandCancel => {
                 self.command_buffer = None;
             }
@@ -237,7 +242,9 @@ impl App {
             identity_host: host,
             screen_title: self.current.title(),
             notification: self.notification.as_ref(),
-            hints: self.current.hints(self.leader_pending, self.command_buffer.as_deref()),
+            hints: self
+                .current
+                .hints(self.leader_pending, self.command_buffer.as_deref()),
         };
         let body = render_chrome(frame, frame.area(), chrome);
         self.current.render(frame, body);
@@ -272,7 +279,13 @@ mod tests {
     fn rendered_text(app: &mut App) -> String {
         let mut terminal = Terminal::new(TestBackend::new(120, 12)).unwrap();
         terminal.draw(|f| app.render(f)).unwrap();
-        terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect()
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
     }
 
     #[tokio::test]
@@ -303,14 +316,20 @@ mod tests {
         while let Ok(a) = rx.try_recv() {
             actions.push(a);
         }
-        assert!(actions.iter().any(|a| matches!(a, Action::Goto(ScreenKind::Home))));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, Action::Goto(ScreenKind::Home))));
         assert!(actions.iter().any(|a| matches!(a, Action::FetchMe)));
     }
 
     #[tokio::test]
     async fn books_load_failure_notifies_error() {
         let (mut app, _rx) = test_app(None);
-        app.handle(Action::Notify { level: Level::Error, text: "books load failed".into() }).await;
+        app.handle(Action::Notify {
+            level: Level::Error,
+            text: "books load failed".into(),
+        })
+        .await;
         let n = app.notification.expect("notification set");
         assert_eq!(n.level, Level::Error);
         assert_eq!(n.text, "books load failed");
