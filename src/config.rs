@@ -50,7 +50,12 @@ pub struct Config {
 
 /// Partial, file-shaped config: every field optional so `config.toml` overrides
 /// only the keys it sets, leaving the rest of the chosen environment's preset.
+///
+/// `deny_unknown_fields` makes a typo (e.g. the `ENGINEER_API_URL` env-var name
+/// used as a key instead of `api_url`) a hard error at load, rather than being
+/// silently ignored and falling back to the production preset.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FileConfig {
     identity_url: Option<Url>,
     api_url: Option<Url>,
@@ -149,6 +154,20 @@ impl Config {
             .join("config.toml"))
     }
 
+    /// Directory for application logs (including the API-communication log).
+    /// Honors `XDG_STATE_HOME`, otherwise `~/.local/state/engineer-tui/` on every
+    /// platform — mirroring `path()`'s XDG-everywhere policy so the log location
+    /// is predictable for `tail -f` even on macOS.
+    pub fn log_dir() -> Result<PathBuf> {
+        if let Some(xdg) = std::env::var_os("XDG_STATE_HOME") {
+            if !xdg.is_empty() {
+                return Ok(PathBuf::from(xdg).join("engineer-tui"));
+            }
+        }
+        let base = BaseDirs::new().ok_or_else(|| eyre!("could not resolve home directory"))?;
+        Ok(base.home_dir().join(".local").join("state").join("engineer-tui"))
+    }
+
     /// The OAuth `client_id`. Returns the explicit value if configured, else the
     /// CIMD document URL derived from `api_url` — Identity fetches that URL to
     /// resolve the client, so it doubles as the client identity. Keeping it
@@ -231,5 +250,23 @@ mod tests {
             cfg.client_id(),
             "https://engineer.dsaenz.dev/.well-known/oauth-client/engineer-tui.json"
         );
+    }
+
+    #[test]
+    fn file_config_rejects_unknown_keys() {
+        // The env-var name used as a key (a common mistake) must error, not be
+        // silently ignored.
+        let err = toml::from_str::<FileConfig>(r#"ENGINEER_API_URL = "http://localhost:4001""#);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn file_config_accepts_known_keys() {
+        let fc: FileConfig = toml::from_str(
+            "identity_url = \"http://localhost:4000\"\napi_url = \"http://localhost:4001\"",
+        )
+        .expect("known keys parse");
+        assert_eq!(fc.api_url.unwrap().as_str(), "http://localhost:4001/");
+        assert_eq!(fc.identity_url.unwrap().as_str(), "http://localhost:4000/");
     }
 }

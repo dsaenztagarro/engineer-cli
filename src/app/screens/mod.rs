@@ -8,6 +8,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::ApiClient;
 use crate::app::action::Action;
+use crate::ui::notify::Level;
 
 pub mod activity_new;
 pub mod book_detail;
@@ -100,7 +101,7 @@ impl Screen {
         action: Action,
         api: &ApiClient,
         tx: &UnboundedSender<Action>,
-    ) -> Option<String> {
+    ) -> Option<(Level, String)> {
         match self {
             Self::Login(s) => s.handle(action, api, tx).await,
             Self::Home(s) => s.handle(action, api, tx).await,

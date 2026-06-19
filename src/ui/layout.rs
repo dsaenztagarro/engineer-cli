@@ -1,16 +1,17 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
+use crate::ui::notify::{render_notification, Notification};
 use crate::ui::theme;
 
 pub struct Chrome<'a> {
     pub user: Option<&'a str>,
     pub identity_host: &'a str,
     pub screen_title: &'a str,
-    pub toast: Option<&'a str>,
+    pub notification: Option<&'a Notification>,
     pub hints: Line<'a>,
 }
 
@@ -30,15 +31,13 @@ pub fn render_chrome(frame: &mut Frame, area: Rect, chrome: Chrome<'_>) -> Rect 
     ]);
     frame.render_widget(Paragraph::new(header), chunks[0]);
 
-    let footer = if let Some(toast) = chrome.toast {
-        Line::from(vec![Span::styled(
-            format!(" ⚠ {toast} "),
-            Style::default().fg(Color::Black).bg(theme::DANGER),
-        )])
+    // Footer shows an active notification as a level-styled tile; otherwise the
+    // screen's keybinding hints.
+    if let Some(n) = chrome.notification {
+        render_notification(frame, chunks[2], n);
     } else {
-        chrome.hints.clone()
-    };
-    frame.render_widget(Paragraph::new(footer), chunks[2]);
+        frame.render_widget(Paragraph::new(chrome.hints.clone()), chunks[2]);
+    }
 
     chunks[1]
 }

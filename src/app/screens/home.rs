@@ -8,6 +8,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::{Activity, ActivityFilters, ApiClient, Book, BookStatus};
 use crate::app::action::Action;
+use crate::ui::notify::Level;
 use crate::ui::{layout::bordered, theme, widgets};
 
 #[derive(Default)]
@@ -23,7 +24,7 @@ impl Home {
         spawn_load(api.clone(), tx.clone());
     }
 
-    pub async fn handle(&mut self, action: Action, api: &ApiClient, tx: &UnboundedSender<Action>) -> Option<String> {
+    pub async fn handle(&mut self, action: Action, api: &ApiClient, tx: &UnboundedSender<Action>) -> Option<(Level, String)> {
         match action {
             Action::HomeLoaded { today, reading } => {
                 self.today = today;
@@ -122,8 +123,26 @@ fn spawn_load(api: ApiClient, tx: UnboundedSender<Action>) {
         let end = start.and_then(|s| s.checked_add(1.day()).ok());
 
         let filters = ActivityFilters { started_after: start, started_before: end, book_id: None };
-        let today = api.list_activities(&filters).await.map(|l| l.data).unwrap_or_default();
-        let reading = api.list_books(Some(BookStatus::Reading), None).await.map(|l| l.data).unwrap_or_default();
+        let today = match api.list_activities(&filters).await {
+            Ok(list) => list.data,
+            Err(e) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Error,
+                    text: format!("today's activities failed: {e}"),
+                });
+                vec![]
+            }
+        };
+        let reading = match api.list_books(Some(BookStatus::Reading), None).await {
+            Ok(list) => list.data,
+            Err(e) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Error,
+                    text: format!("reading list failed: {e}"),
+                });
+                vec![]
+            }
+        };
         let _ = tx.send(Action::HomeLoaded { today, reading });
     });
 }

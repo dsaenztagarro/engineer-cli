@@ -6,6 +6,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::ApiClient;
 use crate::app::action::Action;
+use crate::ui::notify::Level;
 use crate::ui::{layout::bordered, theme, widgets};
 
 /// Shown when there is no stored refresh token. Pressing Enter dispatches
@@ -33,7 +34,7 @@ impl Login {
         _action: Action,
         _api: &ApiClient,
         _tx: &UnboundedSender<Action>,
-    ) -> Option<String> {
+    ) -> Option<(Level, String)> {
         None
     }
 

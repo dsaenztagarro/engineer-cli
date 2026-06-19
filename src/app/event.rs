@@ -32,6 +32,12 @@ pub fn translate(app: &mut App, ev: Event) -> Option<Action> {
         return Some(action);
     }
 
+    // Esc dismisses an active notification (command/insert/inline-edit modes
+    // above already consumed Esc in their own contexts).
+    if app.notification.is_some() && matches!(key.code, KeyCode::Esc) {
+        return Some(Action::DismissNotification);
+    }
+
     // Leader (Space) pending — second key picks the action.
     if app.leader_pending {
         app.leader_pending = false;
@@ -48,7 +54,10 @@ pub fn translate(app: &mut App, ev: Event) -> Option<Action> {
             Some(Action::CommandBegin)
         }
         (KeyCode::Char('q'), KeyModifiers::NONE) => Some(Action::Quit),
-        (KeyCode::Char('?'), _) => Some(Action::Toast("help: j/k move · / search · : command · <Space> leader · q quit".into())),
+        (KeyCode::Char('?'), _) => Some(Action::Notify {
+            level: crate::ui::notify::Level::Info,
+            text: "help: j/k move · / search · : command · <Space> leader · q quit".into(),
+        }),
         (KeyCode::Char('r'), KeyModifiers::NONE) => Some(refresh_for(app.current.kind())),
         _ => screen_key(app, key),
     }
