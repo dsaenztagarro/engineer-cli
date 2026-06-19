@@ -50,7 +50,12 @@ pub struct Config {
 
 /// Partial, file-shaped config: every field optional so `config.toml` overrides
 /// only the keys it sets, leaving the rest of the chosen environment's preset.
+///
+/// `deny_unknown_fields` makes a typo (e.g. the `ENGINEER_API_URL` env-var name
+/// used as a key instead of `api_url`) a hard error at load, rather than being
+/// silently ignored and falling back to the production preset.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FileConfig {
     identity_url: Option<Url>,
     api_url: Option<Url>,
