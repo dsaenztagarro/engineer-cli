@@ -24,5 +24,8 @@ pub fn header() -> Style {
 }
 
 pub fn selection() -> Style {
-    Style::default().bg(ACCENT_DIM).fg(Color::Black).add_modifier(Modifier::BOLD)
+    Style::default()
+        .bg(ACCENT_DIM)
+        .fg(Color::Black)
+        .add_modifier(Modifier::BOLD)
 }

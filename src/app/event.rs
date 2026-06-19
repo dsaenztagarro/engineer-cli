@@ -155,7 +155,7 @@ fn command_mode(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action
             if let Some(b) = app.command_buffer.as_mut() {
                 b.push(c);
             }
-            Some(Action::CommandInput(c))
+            Some(Action::CommandInput)
         }
         _ => None,
     }

@@ -49,7 +49,11 @@ impl Books {
             BooksFilter::Reading => Some(BookStatus::Reading),
             BooksFilter::Completed => Some(BookStatus::Completed),
         };
-        let q = if self.query.is_empty() { None } else { Some(self.query.clone()) };
+        let q = if self.query.is_empty() {
+            None
+        } else {
+            Some(self.query.clone())
+        };
         tokio::spawn(async move {
             let q_ref = q.as_deref();
             match api.list_books(status, q_ref).await {
@@ -89,13 +93,19 @@ impl Books {
         }
     }
 
-    pub async fn handle(&mut self, action: Action, api: &ApiClient, tx: &UnboundedSender<Action>) -> Option<(Level, String)> {
+    pub async fn handle(
+        &mut self,
+        action: Action,
+        api: &ApiClient,
+        tx: &UnboundedSender<Action>,
+    ) -> Option<(Level, String)> {
         match action {
             Action::BooksLoaded(books) => {
                 self.items = books;
                 self.loading = false;
                 if self.state.selected().unwrap_or(0) >= self.items.len() {
-                    self.state.select(if self.items.is_empty() { None } else { Some(0) });
+                    self.state
+                        .select(if self.items.is_empty() { None } else { Some(0) });
                 }
             }
             Action::BooksFilter(f) => {
@@ -104,7 +114,10 @@ impl Books {
                 self.fetch(api, tx);
             }
             Action::BooksMove(d) => self.move_cursor(d),
-            Action::BooksJumpStart => self.state.select(if self.items.is_empty() { None } else { Some(0) }),
+            Action::BooksJumpStart => {
+                self.state
+                    .select(if self.items.is_empty() { None } else { Some(0) })
+            }
             Action::BooksJumpEnd => {
                 if !self.items.is_empty() {
                     self.state.select(Some(self.items.len() - 1));
@@ -126,7 +139,10 @@ impl Books {
                                 vec![]
                             }
                         };
-                        let _ = tx.send(Action::BookDetailLoaded { book: Box::new(book), chapters });
+                        let _ = tx.send(Action::BookDetailLoaded {
+                            book: Box::new(book),
+                            chapters,
+                        });
                     });
                 }
             }
@@ -201,13 +217,19 @@ impl Books {
             })
             .collect();
 
-        let list = List::new(items).block(block).highlight_style(theme::selection()).highlight_symbol("▌ ");
+        let list = List::new(items)
+            .block(block)
+            .highlight_style(theme::selection())
+            .highlight_symbol("▌ ");
         frame.render_stateful_widget(list, area, &mut self.state);
     }
 
     pub fn hints(&self) -> Line<'static> {
         if self.searching {
-            return Line::from(Span::styled("type to search · Enter to apply · Esc to cancel", theme::muted()));
+            return Line::from(Span::styled(
+                "type to search · Enter to apply · Esc to cancel",
+                theme::muted(),
+            ));
         }
         widgets::footer_hints(&[
             ("j/k", "move"),

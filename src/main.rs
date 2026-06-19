@@ -12,7 +12,12 @@ mod ui;
 struct Cli {
     /// Target environment: `production` (default, *.dsaenz.dev) or `development`
     /// (localhost). Also settable via the ENGINEER_ENV env var.
-    #[arg(long = "env", env = "ENGINEER_ENV", global = true, default_value = "production")]
+    #[arg(
+        long = "env",
+        env = "ENGINEER_ENV",
+        global = true,
+        default_value = "production"
+    )]
     environment: String,
 
     /// Print the directory holding the rolling logs (incl. the API-communication
@@ -68,7 +73,8 @@ fn init_tracing() -> Result<()> {
     use tracing_appender::rolling::{RollingFileAppender, Rotation};
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-    let filter = EnvFilter::try_from_env("ENGINEER_TUI_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter =
+        EnvFilter::try_from_env("ENGINEER_TUI_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
 
     if let Ok(dir) = config::Config::log_dir() {
         std::fs::create_dir_all(&dir).ok();
@@ -84,7 +90,10 @@ fn init_tracing() -> Result<()> {
             .with(fmt::layer().with_writer(appender).with_ansi(false))
             .init();
     } else {
-        tracing_subscriber::registry().with(filter).with(fmt::layer()).init();
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt::layer())
+            .init();
     }
     Ok(())
 }

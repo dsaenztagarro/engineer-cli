@@ -40,7 +40,9 @@ impl Level {
     pub fn style(self) -> Style {
         match self {
             Level::Info => Style::default().fg(theme::ACCENT),
-            Level::Success => Style::default().fg(theme::SUCCESS).add_modifier(Modifier::BOLD),
+            Level::Success => Style::default()
+                .fg(theme::SUCCESS)
+                .add_modifier(Modifier::BOLD),
             Level::Warning => Style::default().fg(Color::Black).bg(theme::WARN),
             Level::Error => Style::default().fg(Color::Black).bg(theme::DANGER),
         }
@@ -66,7 +68,11 @@ pub struct Notification {
 
 impl Notification {
     pub fn new(level: Level, text: impl Into<String>) -> Self {
-        Self { level, text: text.into(), created: Instant::now() }
+        Self {
+            level,
+            text: text.into(),
+            created: Instant::now(),
+        }
     }
 
     /// True once the notification has outlived its level's TTL.
@@ -102,9 +108,16 @@ mod tests {
     async fn renders_error_tile_with_icon_and_text() {
         let n = Notification::new(Level::Error, "boom");
         let mut terminal = Terminal::new(TestBackend::new(20, 1)).unwrap();
-        terminal.draw(|f| render_notification(f, f.area(), &n)).unwrap();
-        let text: String =
-            terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        terminal
+            .draw(|f| render_notification(f, f.area(), &n))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
         assert!(text.contains("boom"));
         assert!(text.contains(Level::Error.icon()));
     }

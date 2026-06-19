@@ -45,7 +45,9 @@ pub struct IssuedTokens {
 }
 
 pub async fn discover(cfg: &Config) -> Result<Discovery> {
-    let url = cfg.identity_url.join("/.well-known/oauth-authorization-server")?;
+    let url = cfg
+        .identity_url
+        .join("/.well-known/oauth-authorization-server")?;
     let doc: DiscoveryDoc = reqwest::Client::new()
         .get(url)
         .send()
@@ -65,7 +67,9 @@ pub async fn discover(cfg: &Config) -> Result<Discovery> {
 /// the TUI (false) must not write to stdout — it owns the alternate screen — so
 /// the URL goes to the log instead.
 pub async fn login(cfg: &Config, discovery: &Discovery, cli: bool) -> Result<IssuedTokens> {
-    let listener = TcpListener::bind("127.0.0.1:0").await.context("bind loopback")?;
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .context("bind loopback")?;
     let port = listener.local_addr()?.port();
     let redirect = format!("http://127.0.0.1:{port}/callback");
 
@@ -126,7 +130,11 @@ pub async fn login(cfg: &Config, discovery: &Discovery, cli: bool) -> Result<Iss
     })
 }
 
-pub async fn refresh(cfg: &Config, discovery: &Discovery, refresh_token: &str) -> Result<IssuedTokens> {
+pub async fn refresh(
+    cfg: &Config,
+    discovery: &Discovery,
+    refresh_token: &str,
+) -> Result<IssuedTokens> {
     let client_id = cfg.client_id();
     let resp: TokenResponse = reqwest::Client::new()
         .post(discovery.token_endpoint.clone())

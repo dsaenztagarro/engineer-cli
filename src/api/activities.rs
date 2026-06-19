@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{ApiClient, ApiError, List};
 
+// API model: fields mirror the wire format; the UI reads only a subset today.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct Activity {
     pub id: i64,
@@ -58,7 +60,10 @@ struct ActivityCreateBody<'a> {
 }
 
 impl ApiClient {
-    pub async fn list_activities(&self, filters: &ActivityFilters) -> Result<List<Activity>, ApiError> {
+    pub async fn list_activities(
+        &self,
+        filters: &ActivityFilters,
+    ) -> Result<List<Activity>, ApiError> {
         let mut query: Vec<(&str, String)> = vec![];
         if let Some(t) = filters.started_after {
             query.push(("started_after", t.to_string()));
@@ -73,6 +78,7 @@ impl ApiClient {
     }
 
     pub async fn create_activity(&self, body: &ActivityCreate) -> Result<Activity, ApiError> {
-        self.post("/api/v1/activities", &ActivityCreateBody { activity: body }).await
+        self.post("/api/v1/activities", &ActivityCreateBody { activity: body })
+            .await
     }
 }

@@ -46,7 +46,9 @@ impl ApiError {
         match serde_json::from_slice::<Problem>(body) {
             Ok(p) => Self::Problem {
                 status: p.status.unwrap_or(status.as_u16()),
-                title: p.title.unwrap_or_else(|| status.canonical_reason().unwrap_or("error").into()),
+                title: p
+                    .title
+                    .unwrap_or_else(|| status.canonical_reason().unwrap_or("error").into()),
                 detail: p.detail.unwrap_or_default(),
                 type_uri: p.type_uri,
                 errors: p.errors,

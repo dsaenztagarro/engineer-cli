@@ -21,7 +21,12 @@ impl Default for BookDetail {
     fn default() -> Self {
         let mut state = ListState::default();
         state.select(Some(0));
-        Self { book: None, chapters: vec![], state, edit_page: None }
+        Self {
+            book: None,
+            chapters: vec![],
+            state,
+            edit_page: None,
+        }
     }
 }
 
@@ -31,9 +36,7 @@ impl BookDetail {
     }
 
     pub fn intercept_key(&mut self, key: KeyEvent) -> Option<Action> {
-        if self.edit_page.is_none() {
-            return None;
-        }
+        self.edit_page.as_ref()?;
         match key.code {
             KeyCode::Esc => Some(Action::CancelEdit),
             KeyCode::Enter => Some(Action::SubmitPage),
@@ -43,7 +46,12 @@ impl BookDetail {
         }
     }
 
-    pub async fn handle(&mut self, action: Action, api: &ApiClient, tx: &UnboundedSender<Action>) -> Option<(Level, String)> {
+    pub async fn handle(
+        &mut self,
+        action: Action,
+        api: &ApiClient,
+        tx: &UnboundedSender<Action>,
+    ) -> Option<(Level, String)> {
         match action {
             Action::BookDetailLoaded { book, chapters } => {
                 self.book = Some(*book);
@@ -69,7 +77,10 @@ impl BookDetail {
                         let id = book.id;
                         let api = api.clone();
                         let tx = tx.clone();
-                        let body = BookUpdate { current_page: Some(page), ..Default::default() };
+                        let body = BookUpdate {
+                            current_page: Some(page),
+                            ..Default::default()
+                        };
                         tokio::spawn(async move {
                             match api.update_book(id, &body).await {
                                 Ok(b) => {
@@ -99,7 +110,10 @@ impl BookDetail {
                         let api = api.clone();
                         let tx = tx.clone();
                         // Mark this chapter as current and advance cursor.
-                        let body = BookUpdate { current_chapter_id: Some(chapter_id), ..Default::default() };
+                        let body = BookUpdate {
+                            current_chapter_id: Some(chapter_id),
+                            ..Default::default()
+                        };
                         tokio::spawn(async move {
                             match api.update_book(id, &body).await {
                                 Ok(b) => {
@@ -125,7 +139,10 @@ impl BookDetail {
                     let id = book.id;
                     let api = api.clone();
                     let tx = tx.clone();
-                    let body = BookUpdate { status: Some(s), ..Default::default() };
+                    let body = BookUpdate {
+                        status: Some(s),
+                        ..Default::default()
+                    };
                     tokio::spawn(async move {
                         if let Ok(b) = api.update_book(id, &body).await {
                             let _ = tx.send(Action::BookUpdated(Box::new(b)));
@@ -177,7 +194,10 @@ impl BookDetail {
                 widgets::status_pill(book.status),
                 Span::raw("  "),
                 Span::styled(book.title.clone(), theme::header()),
-                Span::styled(format!("  · {}", book.author.clone().unwrap_or_default()), theme::muted()),
+                Span::styled(
+                    format!("  · {}", book.author.clone().unwrap_or_default()),
+                    theme::muted(),
+                ),
             ]),
             widgets::progress_bar(pct, 40),
         ];
@@ -186,7 +206,9 @@ impl BookDetail {
                 format!(
                     "page {}{}",
                     p,
-                    book.page_count.map(|t| format!(" / {t}")).unwrap_or_default()
+                    book.page_count
+                        .map(|t| format!(" / {t}"))
+                        .unwrap_or_default()
                 ),
                 theme::muted(),
             )));
@@ -206,11 +228,28 @@ impl BookDetail {
             .chapters
             .iter()
             .map(|c| {
-                let mark = if c.done { "✓" } else if c.skipped { "·" } else { " " };
+                let mark = if c.done {
+                    "✓"
+                } else if c.skipped {
+                    "·"
+                } else {
+                    " "
+                };
                 let is_current = Some(c.id) == cur_id;
-                let style = if is_current { theme::focused() } else { ratatui::style::Style::default() };
+                let style = if is_current {
+                    theme::focused()
+                } else {
+                    ratatui::style::Style::default()
+                };
                 ListItem::new(Line::from(vec![
-                    Span::styled(format!(" [{}] ", mark), if c.done { theme::focused() } else { theme::muted() }),
+                    Span::styled(
+                        format!(" [{}] ", mark),
+                        if c.done {
+                            theme::focused()
+                        } else {
+                            theme::muted()
+                        },
+                    ),
                     Span::styled(format!("{:>3}.  ", c.number), theme::muted()),
                     Span::styled(c.title.clone(), style),
                 ]))
@@ -225,7 +264,10 @@ impl BookDetail {
 
     pub fn hints(&self) -> Line<'static> {
         if self.edit_page.is_some() {
-            return Line::from(Span::styled("page · digits + Enter · Esc cancel", theme::muted()));
+            return Line::from(Span::styled(
+                "page · digits + Enter · Esc cancel",
+                theme::muted(),
+            ));
         }
         widgets::footer_hints(&[
             ("j/k", "chapter"),
