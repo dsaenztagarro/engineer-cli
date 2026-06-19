@@ -7,6 +7,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::{ApiClient, Book, BookChapter, BookStatus, BookUpdate};
 use crate::app::action::Action;
+use crate::ui::notify::Level;
 use crate::ui::{layout::bordered, theme, widgets};
 
 pub struct BookDetail {
@@ -42,7 +43,7 @@ impl BookDetail {
         }
     }
 
-    pub async fn handle(&mut self, action: Action, api: &ApiClient, tx: &UnboundedSender<Action>) -> Option<String> {
+    pub async fn handle(&mut self, action: Action, api: &ApiClient, tx: &UnboundedSender<Action>) -> Option<(Level, String)> {
         match action {
             Action::BookDetailLoaded { book, chapters } => {
                 self.book = Some(*book);
@@ -73,10 +74,16 @@ impl BookDetail {
                             match api.update_book(id, &body).await {
                                 Ok(b) => {
                                     let _ = tx.send(Action::BookUpdated(Box::new(b)));
-                                    let _ = tx.send(Action::Toast("page updated".into()));
+                                    let _ = tx.send(Action::Notify {
+                                        level: Level::Success,
+                                        text: "page updated".into(),
+                                    });
                                 }
                                 Err(e) => {
-                                    let _ = tx.send(Action::Toast(format!("update failed: {e}")));
+                                    let _ = tx.send(Action::Notify {
+                                        level: Level::Error,
+                                        text: format!("update failed: {e}"),
+                                    });
                                 }
                             }
                         });
@@ -99,7 +106,10 @@ impl BookDetail {
                                     let _ = tx.send(Action::BookUpdated(Box::new(b)));
                                 }
                                 Err(e) => {
-                                    let _ = tx.send(Action::Toast(format!("update failed: {e}")));
+                                    let _ = tx.send(Action::Notify {
+                                        level: Level::Error,
+                                        text: format!("update failed: {e}"),
+                                    });
                                 }
                             }
                         });
@@ -107,7 +117,9 @@ impl BookDetail {
                     }
                 }
             }
-            Action::BookStatusPicker => return Some("status picker: r/c/u/h/a (TODO modal)".into()),
+            Action::BookStatusPicker => {
+                return Some((Level::Info, "status picker: r/c/u/h/a (TODO modal)".into()))
+            }
             Action::PickStatus(s) => {
                 if let Some(book) = &self.book {
                     let id = book.id;

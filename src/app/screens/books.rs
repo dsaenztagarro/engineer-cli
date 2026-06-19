@@ -8,6 +8,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::api::{ApiClient, Book, BookStatus};
 use crate::app::action::{Action, BooksFilter};
 use crate::app::screens::ScreenKind;
+use crate::ui::notify::Level;
 use crate::ui::{layout::bordered, theme, widgets};
 
 pub struct Books {
@@ -51,8 +52,19 @@ impl Books {
         let q = if self.query.is_empty() { None } else { Some(self.query.clone()) };
         tokio::spawn(async move {
             let q_ref = q.as_deref();
-            let books = api.list_books(status, q_ref).await.map(|l| l.data).unwrap_or_default();
-            let _ = tx.send(Action::BooksLoaded(books));
+            match api.list_books(status, q_ref).await {
+                Ok(list) => {
+                    let _ = tx.send(Action::BooksLoaded(list.data));
+                }
+                Err(e) => {
+                    let _ = tx.send(Action::Notify {
+                        level: Level::Error,
+                        text: format!("books load failed: {e}"),
+                    });
+                    // Clear the loading state with an empty result.
+                    let _ = tx.send(Action::BooksLoaded(vec![]));
+                }
+            }
         });
     }
 
@@ -61,7 +73,10 @@ impl Books {
             if matches!(key.code, KeyCode::Char('/')) {
                 self.searching = true;
                 self.query.clear();
-                return Some(Action::Toast("search: type then Enter".into()));
+                return Some(Action::Notify {
+                    level: Level::Info,
+                    text: "search: type then Enter".into(),
+                });
             }
             return None;
         }
@@ -74,7 +89,7 @@ impl Books {
         }
     }
 
-    pub async fn handle(&mut self, action: Action, api: &ApiClient, tx: &UnboundedSender<Action>) -> Option<String> {
+    pub async fn handle(&mut self, action: Action, api: &ApiClient, tx: &UnboundedSender<Action>) -> Option<(Level, String)> {
         match action {
             Action::BooksLoaded(books) => {
                 self.items = books;
@@ -101,7 +116,16 @@ impl Books {
                     let tx = tx.clone();
                     let _ = tx.send(Action::Goto(ScreenKind::BookDetail));
                     tokio::spawn(async move {
-                        let chapters = api.list_chapters(book.id).await.map(|l| l.data).unwrap_or_default();
+                        let chapters = match api.list_chapters(book.id).await {
+                            Ok(list) => list.data,
+                            Err(e) => {
+                                let _ = tx.send(Action::Notify {
+                                    level: Level::Error,
+                                    text: format!("chapters load failed: {e}"),
+                                });
+                                vec![]
+                            }
+                        };
                         let _ = tx.send(Action::BookDetailLoaded { book: Box::new(book), chapters });
                     });
                 }

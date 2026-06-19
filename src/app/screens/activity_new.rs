@@ -10,6 +10,7 @@ use tui_input::Input;
 use crate::api::{ActivityCreate, ApiClient, FieldError};
 use crate::app::action::Action;
 use crate::app::screens::{ScreenKind, ScreenMode};
+use crate::ui::notify::Level;
 use crate::ui::{layout::bordered, theme, widgets};
 
 const FIELDS: &[&str] = &["title", "kind", "duration", "notes"];
@@ -47,7 +48,7 @@ impl ActivityNew {
         self.mode
     }
 
-    pub async fn handle(&mut self, action: Action, api: &ApiClient, tx: &UnboundedSender<Action>) -> Option<String> {
+    pub async fn handle(&mut self, action: Action, api: &ApiClient, tx: &UnboundedSender<Action>) -> Option<(Level, String)> {
         match action {
             Action::ActivityFieldNext => {
                 self.focus = (self.focus + 1) % FIELDS.len();
@@ -83,7 +84,7 @@ impl ActivityNew {
             }
             Action::ActivitySubmit => {
                 if self.pending {
-                    return Some("already submitting…".into());
+                    return Some((Level::Warning, "already submitting…".into()));
                 }
                 let body = ActivityCreate {
                     title: self.title.value().to_string(),
@@ -98,7 +99,7 @@ impl ActivityNew {
                         field: "title".into(),
                         detail: "can't be blank".into(),
                     }];
-                    return Some("title required".into());
+                    return Some((Level::Warning, "title required".into()));
                 }
                 self.pending = true;
                 let api = api.clone();
@@ -107,7 +108,10 @@ impl ActivityNew {
                     match api.create_activity(&body).await {
                         Ok(_) => {
                             let _ = tx.send(Action::ActivityCreated);
-                            let _ = tx.send(Action::Toast("activity logged".into()));
+                            let _ = tx.send(Action::Notify {
+                                level: Level::Success,
+                                text: "activity logged".into(),
+                            });
                             let _ = tx.send(Action::Goto(ScreenKind::Home));
                         }
                         Err(e) => {
@@ -123,7 +127,7 @@ impl ActivityNew {
             Action::ActivityFailed { errors, detail } => {
                 self.pending = false;
                 self.errors = errors;
-                return Some(detail);
+                return Some((Level::Error, detail));
             }
             _ => {}
         }

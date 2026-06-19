@@ -1,5 +1,6 @@
 use crate::api::{Activity, Book, BookChapter};
 use crate::app::screens::ScreenKind;
+use crate::ui::notify::Level;
 
 /// Reducer-style messages dispatched by event handlers and async tasks.
 #[derive(Debug)]
@@ -8,7 +9,8 @@ pub enum Action {
     Goto(ScreenKind),
     SetUser(String),
     FetchMe,
-    Toast(String),
+    Notify { level: Level, text: String },
+    DismissNotification,
 
     // Auth
     Login,

@@ -17,11 +17,11 @@ use ratatui::Terminal;
 use std::io::{stdout, Stdout};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::time::Instant;
 
 use crate::api::ApiClient;
 use crate::auth::TokenProvider;
 use crate::config::Config;
+use crate::ui::notify::{Level, Notification};
 
 mod action;
 mod event;
@@ -32,14 +32,13 @@ pub use action::Action;
 use screens::{Screen, ScreenKind};
 
 const TICK: Duration = Duration::from_millis(250);
-const TOAST_TTL: Duration = Duration::from_secs(4);
 
 pub struct App {
     pub config: Config,
     pub api: ApiClient,
     pub user: Option<String>,
     pub current: Screen,
-    pub toast: Option<(String, Instant)>,
+    pub notification: Option<Notification>,
     pub leader_pending: bool,
     pub command_buffer: Option<String>,
     pub should_quit: bool,
@@ -73,7 +72,7 @@ async fn run_loop(
         api: api.clone(),
         user: None,
         current: Screen::new(start),
-        toast: None,
+        notification: None,
         leader_pending: false,
         command_buffer: None,
         should_quit: false,
@@ -105,8 +104,8 @@ async fn run_loop(
                 }
             }
             _ = ticker.tick() => {
-                if let Some((_, when)) = app.toast {
-                    if when.elapsed() > TOAST_TTL { app.toast = None; }
+                if app.notification.as_ref().is_some_and(Notification::is_expired) {
+                    app.notification = None;
                 }
             }
         }
@@ -134,15 +133,16 @@ impl App {
         let _ = self.tx.send(action);
     }
 
-    pub fn show_toast(&mut self, message: impl Into<String>) {
-        self.toast = Some((message.into(), Instant::now()));
+    pub fn notify(&mut self, level: Level, text: impl Into<String>) {
+        self.notification = Some(Notification::new(level, text));
     }
 
     pub async fn handle(&mut self, action: Action) {
         // Top-level actions handled here; everything else delegates to the screen.
         match action {
             Action::Quit => self.should_quit = true,
-            Action::Toast(msg) => self.show_toast(msg),
+            Action::Notify { level, text } => self.notify(level, text),
+            Action::DismissNotification => self.notification = None,
             Action::FetchMe => {
                 let api = self.api.clone();
                 let tx = self.tx.clone();
@@ -152,7 +152,10 @@ impl App {
                             let _ = tx.send(Action::SetUser(me.email));
                         }
                         Err(e) => {
-                            let _ = tx.send(Action::Toast(format!("login required: {e}")));
+                            let _ = tx.send(Action::Notify {
+                                level: Level::Error,
+                                text: format!("login required: {e}"),
+                            });
                         }
                     }
                 });
@@ -181,7 +184,7 @@ impl App {
                 });
             }
             Action::LoginSucceeded => {
-                self.show_toast("signed in");
+                self.notify(Level::Success, "signed in");
                 self.dispatch(Action::Goto(ScreenKind::Home));
                 self.dispatch(Action::FetchMe);
             }
@@ -189,7 +192,7 @@ impl App {
                 if let Screen::Login(s) = &mut self.current {
                     s.set_idle();
                 }
-                self.show_toast(format!("login failed: {e}"));
+                self.notify(Level::Error, format!("login failed: {e}"));
             }
             Action::Goto(kind) => {
                 self.current = Screen::new(kind);
@@ -207,15 +210,15 @@ impl App {
                     "home" => self.dispatch(Action::Goto(ScreenKind::Home)),
                     "books" => self.dispatch(Action::Goto(ScreenKind::Books)),
                     "activity" | "a" => self.dispatch(Action::Goto(ScreenKind::ActivityNew)),
-                    "logout" => self.show_toast("run `engineer logout` from the shell"),
+                    "logout" => self.notify(Level::Info, "run `engineer logout` from the shell"),
                     "w" => self.dispatch(Action::ActivitySubmit),
-                    other => self.show_toast(format!("unknown command: :{other}")),
+                    other => self.notify(Level::Warning, format!("unknown command: :{other}")),
                 }
             }
             other => {
                 let next = self.current.handle(other, &self.api, &self.tx).await;
-                if let Some(toast) = next {
-                    self.show_toast(toast);
+                if let Some((level, text)) = next {
+                    self.notify(level, text);
                 }
             }
         }
@@ -229,7 +232,7 @@ impl App {
             user: self.user.as_deref(),
             identity_host: host,
             screen_title: self.current.title(),
-            toast: self.toast.as_ref().map(|(m, _)| m.as_str()),
+            notification: self.notification.as_ref(),
             hints: self.current.hints(self.leader_pending, self.command_buffer.as_deref()),
         };
         let body = render_chrome(frame, frame.area(), chrome);
