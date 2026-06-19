@@ -149,6 +149,20 @@ impl Config {
             .join("config.toml"))
     }
 
+    /// Directory for application logs (including the API-communication log).
+    /// Honors `XDG_STATE_HOME`, otherwise `~/.local/state/engineer-tui/` on every
+    /// platform — mirroring `path()`'s XDG-everywhere policy so the log location
+    /// is predictable for `tail -f` even on macOS.
+    pub fn log_dir() -> Result<PathBuf> {
+        if let Some(xdg) = std::env::var_os("XDG_STATE_HOME") {
+            if !xdg.is_empty() {
+                return Ok(PathBuf::from(xdg).join("engineer-tui"));
+            }
+        }
+        let base = BaseDirs::new().ok_or_else(|| eyre!("could not resolve home directory"))?;
+        Ok(base.home_dir().join(".local").join("state").join("engineer-tui"))
+    }
+
     /// The OAuth `client_id`. Returns the explicit value if configured, else the
     /// CIMD document URL derived from `api_url` — Identity fetches that URL to
     /// resolve the client, so it doubles as the client identity. Keeping it

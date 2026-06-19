@@ -211,6 +211,10 @@ impl App {
                     "books" => self.dispatch(Action::Goto(ScreenKind::Books)),
                     "activity" | "a" => self.dispatch(Action::Goto(ScreenKind::ActivityNew)),
                     "logout" => self.notify(Level::Info, "run `engineer logout` from the shell"),
+                    "logs" => match Config::log_dir() {
+                        Ok(dir) => self.notify(Level::Info, format!("logs: {}", dir.display())),
+                        Err(e) => self.notify(Level::Error, format!("log dir error: {e}")),
+                    },
                     "w" => self.dispatch(Action::ActivitySubmit),
                     other => self.notify(Level::Warning, format!("unknown command: :{other}")),
                 }
