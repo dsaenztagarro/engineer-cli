@@ -36,9 +36,7 @@ impl BookDetail {
     }
 
     pub fn intercept_key(&mut self, key: KeyEvent) -> Option<Action> {
-        if self.edit_page.is_none() {
-            return None;
-        }
+        self.edit_page.as_ref()?;
         match key.code {
             KeyCode::Esc => Some(Action::CancelEdit),
             KeyCode::Enter => Some(Action::SubmitPage),

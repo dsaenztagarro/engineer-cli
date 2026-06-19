@@ -250,15 +250,19 @@ mod tests {
 
     #[test]
     fn explicit_client_id_overrides_derivation() {
-        let mut cfg = Config::default();
-        cfg.client_id = Some("https://example.test/cid.json".into());
+        let cfg = Config {
+            client_id: Some("https://example.test/cid.json".into()),
+            ..Config::default()
+        };
         assert_eq!(cfg.client_id(), "https://example.test/cid.json");
     }
 
     #[test]
     fn empty_explicit_client_id_falls_back_to_derivation() {
-        let mut cfg = Config::default();
-        cfg.client_id = Some(String::new());
+        let cfg = Config {
+            client_id: Some(String::new()),
+            ..Config::default()
+        };
         assert_eq!(
             cfg.client_id(),
             "https://engineer.dsaenz.dev/.well-known/oauth-client/engineer-tui.json"

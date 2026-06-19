@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{ApiClient, ApiError, List};
 
+// API model: fields mirror the wire format; the UI reads only a subset today.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct Activity {
     pub id: i64,

@@ -3,7 +3,7 @@
 //! All endpoints are protected by RFC 6750 Bearer tokens validated server-side
 //! via RFC 7662 token introspection. Errors come back as RFC 7807 problem+json.
 
-use reqwest::{header, Client, Method, RequestBuilder, StatusCode};
+use reqwest::{header, Client, Method, RequestBuilder};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
@@ -17,11 +17,13 @@ mod error;
 
 pub use activities::{Activity, ActivityCreate, ActivityFilters};
 pub use books::{Book, BookChapter, BookStatus, BookUpdate};
-pub use envelope::{List, Meta};
+pub use envelope::List;
 pub use error::{ApiError, FieldError};
 
-/// Public for the `me` call during login (no token provider yet).
+/// Current user from `GET /api/v1/me`. Fields mirror the API contract; not all
+/// are consumed by the UI yet.
 #[derive(serde::Deserialize, Debug, Clone)]
+#[allow(dead_code)]
 pub struct Me {
     pub id: i64,
     pub email: String,
@@ -37,6 +39,9 @@ pub struct ApiClient {
     auth: Auth,
 }
 
+// `Provider` is the runtime path; `Static` is only the CLI/test path. The size
+// gap is irrelevant for a two-variant enum constructed once per client.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
 enum Auth {
     Provider(TokenProvider),
@@ -155,9 +160,6 @@ async fn send<T: DeserializeOwned>(req: RequestBuilder) -> Result<T, ApiError> {
     tracing::warn!(target: "engineer_tui::api", %method, %url, status = status.as_u16(), latency_ms, %detail, "api call error");
     Err(ApiError::from_response(status, &bytes))
 }
-
-#[allow(dead_code)]
-pub(crate) const _: StatusCode = StatusCode::OK; // keep import if unused elsewhere
 
 #[cfg(test)]
 mod tests {

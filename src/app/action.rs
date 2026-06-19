@@ -52,6 +52,8 @@ pub enum Action {
     SubmitPage,
     CancelEdit,
     BookStatusPicker,
+    // Handled by BookDetail but not yet emitted (status picker is a TODO).
+    #[allow(dead_code)]
     PickStatus(crate::api::BookStatus),
     BookUpdated(Box<Book>),
 
@@ -68,9 +70,9 @@ pub enum Action {
         detail: String,
     },
 
-    // Command mode
+    // Command mode. The buffer is mutated in the event layer; these are signals.
     CommandBegin,
-    CommandInput(char),
+    CommandInput,
     CommandBackspace,
     CommandSubmit,
     CommandCancel,

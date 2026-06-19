@@ -22,18 +22,10 @@ impl BookStatus {
             Self::Abandoned => "abandoned",
         }
     }
-
-    pub fn cycle(self) -> Self {
-        match self {
-            Self::Unread => Self::Reading,
-            Self::Reading => Self::Completed,
-            Self::Completed => Self::OnHold,
-            Self::OnHold => Self::Abandoned,
-            Self::Abandoned => Self::Unread,
-        }
-    }
 }
 
+// API model: fields mirror the wire format; the UI reads only a subset today.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct Book {
     pub id: i64,
@@ -97,10 +89,6 @@ impl ApiClient {
             }
         }
         self.get("/api/v1/books", &query).await
-    }
-
-    pub async fn get_book(&self, id: i64) -> Result<Book, ApiError> {
-        self.get(&format!("/api/v1/books/{id}"), &[]).await
     }
 
     pub async fn list_chapters(&self, book_id: i64) -> Result<List<BookChapter>, ApiError> {

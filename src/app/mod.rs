@@ -203,7 +203,7 @@ impl App {
                 self.current.on_enter(&self.api, &self.tx);
             }
             Action::CommandBegin => { /* buffer already initialised by event layer */ }
-            Action::CommandInput(_) | Action::CommandBackspace => { /* buffer mutated in event layer */
+            Action::CommandInput | Action::CommandBackspace => { /* buffer mutated in event layer */
             }
             Action::CommandCancel => {
                 self.command_buffer = None;
