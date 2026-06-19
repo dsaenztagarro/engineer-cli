@@ -107,3 +107,72 @@ impl ApiClient {
         self.patch(&format!("/api/v1/books/{id}"), &BookUpdateBody { book: body }).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use url::Url;
+    use wiremock::matchers::{method, path, query_param, query_param_is_missing};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn client(server: &MockServer) -> ApiClient {
+        ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into())
+    }
+
+    fn empty_list() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({ "data": [] }))
+    }
+
+    #[tokio::test]
+    async fn reading_filter_sends_status_reading() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/books"))
+            .and(query_param("status", "reading"))
+            .respond_with(empty_list())
+            .expect(1)
+            .mount(&server)
+            .await;
+        client(&server).list_books(Some(BookStatus::Reading), None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn completed_filter_sends_status_completed() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/books"))
+            .and(query_param("status", "completed"))
+            .respond_with(empty_list())
+            .expect(1)
+            .mount(&server)
+            .await;
+        client(&server).list_books(Some(BookStatus::Completed), None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn all_filter_omits_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/books"))
+            .and(query_param_is_missing("status"))
+            .respond_with(empty_list())
+            .expect(1)
+            .mount(&server)
+            .await;
+        client(&server).list_books(None, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn search_term_sends_q() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/books"))
+            .and(query_param("status", "reading"))
+            .and(query_param("q", "rust"))
+            .respond_with(empty_list())
+            .expect(1)
+            .mount(&server)
+            .await;
+        client(&server).list_books(Some(BookStatus::Reading), Some("rust")).await.unwrap();
+    }
+}

@@ -243,3 +243,76 @@ impl App {
         self.current.render(frame, body);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, Environment};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn test_app(user: Option<String>) -> (App, mpsc::UnboundedReceiver<Action>) {
+        let config = Config::for_environment(Environment::Development);
+        let api = ApiClient::with_token(config.api_url.clone(), "tok".into());
+        let (tx, rx) = mpsc::unbounded_channel();
+        let app = App {
+            config,
+            api,
+            user,
+            current: Screen::new(ScreenKind::Home),
+            notification: None,
+            leader_pending: false,
+            command_buffer: None,
+            should_quit: false,
+            tx,
+        };
+        (app, rx)
+    }
+
+    fn rendered_text(app: &mut App) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(120, 12)).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect()
+    }
+
+    #[tokio::test]
+    async fn header_shows_signed_in_user() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        assert!(rendered_text(&mut app).contains("alice@example.com"));
+    }
+
+    #[tokio::test]
+    async fn header_shows_not_signed_in_when_anonymous() {
+        let (mut app, _rx) = test_app(None);
+        assert!(rendered_text(&mut app).contains("not signed in"));
+    }
+
+    #[tokio::test]
+    async fn set_user_updates_state() {
+        let (mut app, _rx) = test_app(None);
+        app.handle(Action::SetUser("bob@example.com".into())).await;
+        assert_eq!(app.user.as_deref(), Some("bob@example.com"));
+    }
+
+    #[tokio::test]
+    async fn login_succeeded_enqueues_goto_home_and_fetch_me() {
+        let (mut app, mut rx) = test_app(None);
+        app.handle(Action::LoginSucceeded).await;
+
+        let mut actions = Vec::new();
+        while let Ok(a) = rx.try_recv() {
+            actions.push(a);
+        }
+        assert!(actions.iter().any(|a| matches!(a, Action::Goto(ScreenKind::Home))));
+        assert!(actions.iter().any(|a| matches!(a, Action::FetchMe)));
+    }
+
+    #[tokio::test]
+    async fn books_load_failure_notifies_error() {
+        let (mut app, _rx) = test_app(None);
+        app.handle(Action::Notify { level: Level::Error, text: "books load failed".into() }).await;
+        let n = app.notification.expect("notification set");
+        assert_eq!(n.level, Level::Error);
+        assert_eq!(n.text, "books load failed");
+    }
+}

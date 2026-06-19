@@ -44,3 +44,4 @@ tui-textarea = "0.7"
 
 [dev-dependencies]
 tokio        = { version = "1", features = ["test-util"] }
+wiremock     = "0.6"

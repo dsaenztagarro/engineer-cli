@@ -251,4 +251,22 @@ mod tests {
             "https://engineer.dsaenz.dev/.well-known/oauth-client/engineer-tui.json"
         );
     }
+
+    #[test]
+    fn file_config_rejects_unknown_keys() {
+        // The env-var name used as a key (a common mistake) must error, not be
+        // silently ignored.
+        let err = toml::from_str::<FileConfig>(r#"ENGINEER_API_URL = "http://localhost:4001""#);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn file_config_accepts_known_keys() {
+        let fc: FileConfig = toml::from_str(
+            "identity_url = \"http://localhost:4000\"\napi_url = \"http://localhost:4001\"",
+        )
+        .expect("known keys parse");
+        assert_eq!(fc.api_url.unwrap().as_str(), "http://localhost:4001/");
+        assert_eq!(fc.identity_url.unwrap().as_str(), "http://localhost:4000/");
+    }
 }

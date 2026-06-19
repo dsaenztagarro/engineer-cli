@@ -83,3 +83,29 @@ pub fn render_notification(frame: &mut Frame, area: Rect, n: &Notification) {
     ));
     frame.render_widget(Paragraph::new(line), area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    #[test]
+    fn levels_are_distinct() {
+        assert_ne!(Level::Info.icon(), Level::Error.icon());
+        assert_ne!(Level::Success.icon(), Level::Warning.icon());
+        // Errors linger longest so the user has time to react.
+        assert!(Level::Error.ttl() > Level::Info.ttl());
+    }
+
+    #[tokio::test]
+    async fn renders_error_tile_with_icon_and_text() {
+        let n = Notification::new(Level::Error, "boom");
+        let mut terminal = Terminal::new(TestBackend::new(20, 1)).unwrap();
+        terminal.draw(|f| render_notification(f, f.area(), &n)).unwrap();
+        let text: String =
+            terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(text.contains("boom"));
+        assert!(text.contains(Level::Error.icon()));
+    }
+}

@@ -130,3 +130,32 @@ async fn send<T: DeserializeOwned>(req: RequestBuilder) -> Result<T, ApiError> {
 
 #[allow(dead_code)]
 pub(crate) const _: StatusCode = StatusCode::OK; // keep import if unused elsewhere
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn me_requests_api_v1_me() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 7,
+                "email": "alice@example.com",
+                "name": "Alice",
+                "admin": false
+            })))
+            .expect(1) // verified on drop: exactly one hit on /api/v1/me
+            .mount(&server)
+            .await;
+
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let me = api.me().await.expect("me() should succeed");
+
+        assert_eq!(me.id, 7);
+        assert_eq!(me.email, "alice@example.com");
+    }
+}
