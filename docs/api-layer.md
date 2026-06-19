@@ -60,11 +60,26 @@ pub struct Meta { pub page: u32, pub per_page: u32, pub total: u32 }
 Per-resource operations are added as `impl ApiClient` blocks in their own
 modules, keeping transport generic and the domain calls local:
 
-- `src/api/books.rs` — `list_books(status, q)`, `get_book`, `list_chapters`,
-  `update_book`. Filters map to query params (`status=reading`, `q=…`).
+- `src/api/books.rs` — `list_books(status, q)`, `list_chapters`, `update_book`.
+  Filters map to query params (`status=reading`, `q=…`).
 - `src/api/activities.rs` — `list_activities`, `create_activity`.
 - `me()` (`src/api/mod.rs`) — `GET /api/v1/me`, the canonical current-user
   endpoint shared with the identity server and the MCP tools.
+
+## Current-user endpoint convention
+
+`me()` targets a **top-level singleton**, `GET /api/v1/me`, representing the
+authenticated principal — resolved from the Bearer token, not from a path id.
+This is the idiomatic REST shape for "the current user" (cf. GitHub `GET /user`,
+Spotify `GET /me`).
+
+It is deliberately **not** placed under the `users` collection
+(`/api/v1/users/:id`): there, a router could match `me` as an `:id`, and the URL
+would imply "me is a user id". Keeping `me` at the top level removes that
+ambiguity and lets a future `/api/v1/users/:id` admin endpoint coexist cleanly.
+Both the engineer API and the identity server serve the same `/api/v1/me` path;
+on the engineer side it is backed by a dedicated `Api::V1::MeController#show`,
+fully separate from any `/users/:id` resource.
 
 ## Error model
 
