@@ -209,7 +209,7 @@ async fn accept_callback(listener: TcpListener) -> Result<(String, String)> {
             "<html><body style='font-family:system-ui;padding:3rem;'><h2>Authorization failed</h2><p>{err}</p></body></html>"
         )
     } else {
-        "<html><body style='font-family:system-ui;padding:3rem;'><h2>Engineer TUI</h2><p>You can return to your terminal.</p></body></html>".to_string()
+        "<html><body style='font-family:system-ui;padding:3rem;'><h2>Engineer CLI</h2><p>You can return to your terminal.</p></body></html>".to_string()
     };
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",

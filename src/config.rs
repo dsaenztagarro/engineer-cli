@@ -12,9 +12,9 @@ const PROD_API_URL: &str = "https://engineer.dsaenz.dev";
 const DEV_IDENTITY_URL: &str = "http://localhost:4000";
 const DEV_API_URL: &str = "http://localhost:4001";
 
-/// Path, relative to the api host, where the Engineer app serves engineer-tui's
+/// Path, relative to the api host, where the Engineer app serves engineer-cli's
 /// OAuth Client ID Metadata Document. The full URL is this client's `client_id`.
-const CIMD_PATH: &str = ".well-known/oauth-client/engineer-tui.json";
+const CIMD_PATH: &str = ".well-known/oauth-client/engineer-cli.json";
 
 /// Which set of servers to talk to. Selected explicitly via `--env` /
 /// `ENGINEER_ENV`; defaults to production.
@@ -137,31 +137,31 @@ impl Config {
     }
 
     /// Resolve the config file path. Honors `XDG_CONFIG_HOME`, otherwise
-    /// `~/.config/engineer-tui/config.toml` on every platform — notably also on
+    /// `~/.config/engineer-cli/config.toml` on every platform — notably also on
     /// macOS, where the platform-native dir would be buried under
     /// `~/Library/Application Support`.
     pub fn path() -> Result<PathBuf> {
         if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
             if !xdg.is_empty() {
-                return Ok(PathBuf::from(xdg).join("engineer-tui").join("config.toml"));
+                return Ok(PathBuf::from(xdg).join("engineer-cli").join("config.toml"));
             }
         }
         let base = BaseDirs::new().ok_or_else(|| eyre!("could not resolve home directory"))?;
         Ok(base
             .home_dir()
             .join(".config")
-            .join("engineer-tui")
+            .join("engineer-cli")
             .join("config.toml"))
     }
 
     /// Directory for application logs (including the API-communication log).
-    /// Honors `XDG_STATE_HOME`, otherwise `~/.local/state/engineer-tui/` on every
+    /// Honors `XDG_STATE_HOME`, otherwise `~/.local/state/engineer-cli/` on every
     /// platform — mirroring `path()`'s XDG-everywhere policy so the log location
     /// is predictable for `tail -f` even on macOS.
     pub fn log_dir() -> Result<PathBuf> {
         if let Some(xdg) = std::env::var_os("XDG_STATE_HOME") {
             if !xdg.is_empty() {
-                return Ok(PathBuf::from(xdg).join("engineer-tui"));
+                return Ok(PathBuf::from(xdg).join("engineer-cli"));
             }
         }
         let base = BaseDirs::new().ok_or_else(|| eyre!("could not resolve home directory"))?;
@@ -169,7 +169,7 @@ impl Config {
             .home_dir()
             .join(".local")
             .join("state")
-            .join("engineer-tui"))
+            .join("engineer-cli"))
     }
 
     /// The OAuth `client_id`. Returns the explicit value if configured, else the
@@ -235,7 +235,7 @@ mod tests {
         // Must equal the URL the Engineer app serves and Identity fetches.
         assert_eq!(
             cfg.client_id(),
-            "https://engineer.dsaenz.dev/.well-known/oauth-client/engineer-tui.json"
+            "https://engineer.dsaenz.dev/.well-known/oauth-client/engineer-cli.json"
         );
     }
 
@@ -244,7 +244,7 @@ mod tests {
         let cfg = Config::for_environment(Environment::Development);
         assert_eq!(
             cfg.client_id(),
-            "http://localhost:4001/.well-known/oauth-client/engineer-tui.json"
+            "http://localhost:4001/.well-known/oauth-client/engineer-cli.json"
         );
     }
 
@@ -265,7 +265,7 @@ mod tests {
         };
         assert_eq!(
             cfg.client_id(),
-            "https://engineer.dsaenz.dev/.well-known/oauth-client/engineer-tui.json"
+            "https://engineer.dsaenz.dev/.well-known/oauth-client/engineer-cli.json"
         );
     }
 

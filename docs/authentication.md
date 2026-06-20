@@ -1,6 +1,6 @@
 # Authentication
 
-`engineer-tui` authenticates against the Engineer **Identity** server using
+`engineer-cli` authenticates against the Engineer **Identity** server using
 OAuth2 Authorization Code with PKCE, over a loopback redirect. Refresh tokens
 live in the OS keyring; access tokens stay in memory and are refreshed
 transparently. The relevant code is in `src/auth/`.
@@ -17,7 +17,7 @@ transparently. The relevant code is in `src/auth/`.
 
 The client id is the **Client ID Metadata Document (CIMD)** URL derived from the
 API host (`Config::client_id`, e.g.
-`https://engineer.dsaenz.dev/.well-known/oauth-client/engineer-tui.json`), so dev
+`https://engineer.dsaenz.dev/.well-known/oauth-client/engineer-cli.json`), so dev
 and prod stay in sync with `api_url`. Scopes default to `read write`
 (`Config::scopes`).
 
@@ -43,7 +43,7 @@ written back to the keyring.
 
 `src/auth/storage.rs` wraps the [`keyring`] crate:
 
-- service name `"engineer-tui"`, account = the identity host
+- service name `"engineer-cli"`, account = the identity host
   (`Config::keyring_account`, stable across ports);
 - the **refresh token** is the only persisted secret;
 - the **access token never touches disk** — it lives only in `TokenProvider`'s
