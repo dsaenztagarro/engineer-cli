@@ -1,7 +1,7 @@
 use color_eyre::eyre::{Context, Result};
 use keyring::Entry;
 
-const SERVICE: &str = "engineer-tui";
+const SERVICE: &str = "engineer-cli";
 
 pub fn load(account: &str) -> Result<Option<String>> {
     let entry = Entry::new(SERVICE, account).context("open keyring entry")?;

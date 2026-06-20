@@ -1,6 +1,6 @@
-# engineer-tui architecture
+# engineer-cli architecture
 
-`engineer-tui` is a terminal client for Engineer, built on [ratatui] + [crossterm]
+`engineer-cli` is a terminal client for Engineer, built on [ratatui] + [crossterm]
 for rendering, [tokio] for async, and [reqwest] for HTTP. It follows **The Elm
 Architecture (TEA)**: a single owned state, a message enum, a reducer that
 mutates state (and spawns async work), and a pure render pass over the current

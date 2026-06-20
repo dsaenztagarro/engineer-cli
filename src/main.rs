@@ -74,14 +74,14 @@ fn init_tracing() -> Result<()> {
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
     let filter =
-        EnvFilter::try_from_env("ENGINEER_TUI_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+        EnvFilter::try_from_env("ENGINEER_CLI_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
 
     if let Ok(dir) = config::Config::log_dir() {
         std::fs::create_dir_all(&dir).ok();
         // Daily rotation with a capped history so logs never grow unbounded.
         let appender = RollingFileAppender::builder()
             .rotation(Rotation::DAILY)
-            .filename_prefix("engineer-tui")
+            .filename_prefix("engineer-cli")
             .filename_suffix("log")
             .max_log_files(7)
             .build(&dir)?;

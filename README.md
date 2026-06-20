@@ -1,4 +1,4 @@
-# engineer-tui
+# engineer-cli
 
 Terminal client for [Engineer](../engineer), the study-tracking app. Authenticates against [Identity](../identity) over OAuth2 (Authorization Code + PKCE, RFC 8252) and lets you log activities and update reading progress without leaving the terminal.
 
@@ -24,7 +24,7 @@ refresh token is stored in your OS keyring; subsequent launches go straight in.
 
 No config file, no client registration. The client identity is an OAuth **Client
 ID Metadata Document** (CIMD): the Engineer app serves a small JSON document at
-`/.well-known/oauth-client/engineer-tui.json`, and Identity fetches it to resolve
+`/.well-known/oauth-client/engineer-cli.json`, and Identity fetches it to resolve
 the client. The TUI's `client_id` is that document's URL, derived from the API
 host.
 
@@ -39,7 +39,7 @@ engineer whoami     # print the authenticated user
 
 ## How authentication works
 
-engineer-tui is a **native loopback client** (RFC 8252). The `redirect_uris` in
+engineer-cli is a **native loopback client** (RFC 8252). The `redirect_uris` in
 the metadata document describe where the OAuth callback lands, and that's always
 the **user's own machine** — never the server. This is why the document always
 returns loopback URLs (`http://127.0.0.1/callback`, `http://localhost/callback`)
@@ -96,7 +96,7 @@ rather than to Cargo. The installed binary takes it directly: `engineer --env de
 
 For anything other than the two presets, override individual values via
 `config.toml` or `ENGINEER_*` env vars. The config file lives at
-`~/.config/engineer-tui/config.toml` (honoring `XDG_CONFIG_HOME`) on **all**
+`~/.config/engineer-cli/config.toml` (honoring `XDG_CONFIG_HOME`) on **all**
 platforms, including macOS:
 
 ```toml

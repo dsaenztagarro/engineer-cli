@@ -38,7 +38,7 @@ send(req)               → execute, log, decode
 call on a dedicated tracing target before executing:
 
 ```rust
-tracing::info!(target: "engineer_tui::api", %method, %url,
+tracing::info!(target: "engineer_cli::api", %method, %url,
                status = status.as_u16(), latency_ms, "api call");
 ```
 
@@ -114,11 +114,11 @@ Domain code matches on `ApiError`; the binary boundary (`main.rs`) uses
 ## Observability
 
 Every call is recorded to the rolling log under the XDG state dir
-(`~/.local/state/engineer-tui/`). Discover and tail it:
+(`~/.local/state/engineer-cli/`). Discover and tail it:
 
 ```bash
 engineer --log-path                                   # prints the log directory
-ENGINEER_TUI_LOG=engineer_tui::api=debug engineer tui # verbose API tracing
+ENGINEER_CLI_LOG=engineer_cli::api=debug engineer tui # verbose API tracing
 ```
 
 Inside the TUI, the `:logs` command surfaces the same path as a notification.

@@ -136,7 +136,7 @@ async fn send<T: DeserializeOwned>(req: RequestBuilder) -> Result<T, ApiError> {
     let resp = match client.execute(request).await {
         Ok(resp) => resp,
         Err(e) => {
-            tracing::warn!(target: "engineer_tui::api", %method, %url, error = %e, "api call failed");
+            tracing::warn!(target: "engineer_cli::api", %method, %url, error = %e, "api call failed");
             return Err(ApiError::Transport(e.to_string()));
         }
     };
@@ -148,7 +148,7 @@ async fn send<T: DeserializeOwned>(req: RequestBuilder) -> Result<T, ApiError> {
         .map_err(|e| ApiError::Transport(e.to_string()))?;
 
     if status.is_success() {
-        tracing::info!(target: "engineer_tui::api", %method, %url, status = status.as_u16(), latency_ms, "api call");
+        tracing::info!(target: "engineer_cli::api", %method, %url, status = status.as_u16(), latency_ms, "api call");
         if bytes.is_empty() && std::any::type_name::<T>().contains("()") {
             // Caller expects unit; serde_json can't deserialize empty into ().
             return serde_json::from_str("null").map_err(|e| ApiError::Decode(e.to_string()));
@@ -157,7 +157,7 @@ async fn send<T: DeserializeOwned>(req: RequestBuilder) -> Result<T, ApiError> {
     }
 
     let detail = String::from_utf8_lossy(&bytes);
-    tracing::warn!(target: "engineer_tui::api", %method, %url, status = status.as_u16(), latency_ms, %detail, "api call error");
+    tracing::warn!(target: "engineer_cli::api", %method, %url, status = status.as_u16(), latency_ms, %detail, "api call error");
     Err(ApiError::from_response(status, &bytes))
 }
 

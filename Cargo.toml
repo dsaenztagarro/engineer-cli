@@ -1,10 +1,18 @@
 [package]
-name = "engineer-tui"
-version = "0.1.0"
+name = "engineer-cli"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.80"
 description = "Terminal client for the Engineer study-tracking app"
 license = "MIT"
+repository = "https://github.com/dsaenztagarro/engineer-cli"
+homepage = "https://engineer.dsaenz.dev/developers/cli"
+
+# Name the Homebrew formula after the binary (`engineer`) rather than the crate
+# (`engineer-cli`), so the documented `brew install dsaenztagarro/tap/engineer`
+# matches the command users run.
+[package.metadata.dist]
+formula = "engineer"
 
 [[bin]]
 name = "engineer"
@@ -45,3 +53,29 @@ tui-textarea = "0.7"
 [dev-dependencies]
 tokio        = { version = "1", features = ["test-util"] }
 wiremock     = "0.6"
+
+# Config for 'dist'
+[workspace.metadata.dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "homebrew"]
+# A GitHub repo to push Homebrew formulas to
+tap = "dsaenztagarro/homebrew-tap"
+# Publish jobs to run in CI
+publish-jobs = ["homebrew"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
+# Which actions to run on pull requests
+pr-run-mode = "plan"
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Whether to install an updater program
+install-updater = false
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
