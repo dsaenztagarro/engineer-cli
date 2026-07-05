@@ -10,6 +10,7 @@ use crate::api::ApiClient;
 use crate::app::action::Action;
 use crate::ui::notify::Level;
 
+pub mod activities;
 pub mod activity_new;
 pub mod book_detail;
 pub mod books;
@@ -26,6 +27,7 @@ pub enum ScreenKind {
     Books,
     BookDetail,
     ActivityNew,
+    Activities,
     Progress,
     Timer,
     Notes,
@@ -43,6 +45,7 @@ pub enum Screen {
     Books(books::Books),
     BookDetail(book_detail::BookDetail),
     ActivityNew(activity_new::ActivityNew),
+    Activities(activities::Activities),
     Progress(progress::Progress),
     Timer(timer::Timer),
     Notes(notes::Notes),
@@ -56,6 +59,7 @@ impl Screen {
             ScreenKind::Books => Self::Books(books::Books::default()),
             ScreenKind::BookDetail => Self::BookDetail(book_detail::BookDetail::default()),
             ScreenKind::ActivityNew => Self::ActivityNew(activity_new::ActivityNew::default()),
+            ScreenKind::Activities => Self::Activities(activities::Activities::default()),
             ScreenKind::Progress => Self::Progress(progress::Progress::default()),
             ScreenKind::Timer => Self::Timer(timer::Timer::default()),
             ScreenKind::Notes => Self::Notes(notes::Notes::default()),
@@ -69,6 +73,7 @@ impl Screen {
             Self::Books(_) => ScreenKind::Books,
             Self::BookDetail(_) => ScreenKind::BookDetail,
             Self::ActivityNew(_) => ScreenKind::ActivityNew,
+            Self::Activities(_) => ScreenKind::Activities,
             Self::Progress(_) => ScreenKind::Progress,
             Self::Timer(_) => ScreenKind::Timer,
             Self::Notes(_) => ScreenKind::Notes,
@@ -82,6 +87,7 @@ impl Screen {
             Self::Books(_) => "Books",
             Self::BookDetail(_) => "Book",
             Self::ActivityNew(_) => "New activity",
+            Self::Activities(_) => "Activities",
             Self::Progress(_) => "Progress",
             Self::Timer(_) => "Timer",
             Self::Notes(_) => "Notes",
@@ -102,6 +108,7 @@ impl Screen {
             Self::Books(s) => s.on_enter(api, tx),
             Self::BookDetail(s) => s.on_enter(api, tx),
             Self::ActivityNew(s) => s.on_enter(api, tx),
+            Self::Activities(s) => s.on_enter(api, tx),
             Self::Progress(s) => s.on_enter(api, tx),
             Self::Timer(s) => s.on_enter(api, tx),
             Self::Notes(s) => s.on_enter(api, tx),
@@ -113,6 +120,7 @@ impl Screen {
         match self {
             Self::Books(s) => s.intercept_key(key),
             Self::BookDetail(s) => s.intercept_key(key),
+            Self::Activities(s) => s.intercept_key(key),
             Self::Timer(s) => s.intercept_key(key),
             Self::Notes(s) => s.intercept_key(key),
             _ => None,
@@ -131,6 +139,7 @@ impl Screen {
             Self::Books(s) => s.handle(action, api, tx).await,
             Self::BookDetail(s) => s.handle(action, api, tx).await,
             Self::ActivityNew(s) => s.handle(action, api, tx).await,
+            Self::Activities(s) => s.handle(action, api, tx).await,
             Self::Progress(s) => s.handle(action, api, tx).await,
             Self::Timer(s) => s.handle(action, api, tx).await,
             Self::Notes(s) => s.handle(action, api, tx).await,
@@ -144,6 +153,7 @@ impl Screen {
             Self::Books(s) => s.render(frame, area),
             Self::BookDetail(s) => s.render(frame, area),
             Self::ActivityNew(s) => s.render(frame, area),
+            Self::Activities(s) => s.render(frame, area),
             Self::Progress(s) => s.render(frame, area),
             Self::Timer(s) => s.render(frame, area),
             Self::Notes(s) => s.render(frame, area),
@@ -165,6 +175,7 @@ impl Screen {
                 ("3", "progress"),
                 ("t", "timer"),
                 ("a", "+activity"),
+                ("A", "activities"),
                 ("n", "notes"),
                 ("c", "+note"),
                 ("s", "save"),
@@ -175,6 +186,7 @@ impl Screen {
             Self::Home(_) => crate::ui::widgets::footer_hints(&[
                 ("t", "timer"),
                 ("a", "+activity"),
+                ("A", "activities"),
                 ("b", "books"),
                 ("n", "notes"),
                 ("c", "+note"),
@@ -185,6 +197,7 @@ impl Screen {
             Self::Books(s) => s.hints(),
             Self::BookDetail(s) => s.hints(),
             Self::ActivityNew(s) => s.hints(),
+            Self::Activities(s) => s.hints(),
             Self::Progress(s) => s.hints(),
             Self::Timer(s) => s.hints(),
             Self::Notes(s) => s.hints(),

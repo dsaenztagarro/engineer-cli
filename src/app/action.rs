@@ -102,6 +102,36 @@ pub enum Action {
     TimerBindSubmit,
     TimerCandidatesLoaded(Vec<TimerCandidate>),
 
+    // Activities table (`src/app/screens/activities.rs`). The first surface to
+    // expose `meta.page`: `ActivitiesLoaded` carries the page's rows plus the
+    // pagination meta; mutations (complete/archive/duplicate) refetch the page
+    // via `RefreshActivities` rather than patching a row in place.
+    ActivitiesLoaded {
+        items: Vec<Activity>,
+        page: u32,
+        per_page: u32,
+        total: u32,
+    },
+    ActivitiesLoadFailed(String),
+    ActivitiesMove(i32),
+    ActivitiesJumpStart,
+    ActivitiesJumpEnd,
+    ActivitiesPageNext,
+    ActivitiesPagePrev,
+    ActivitiesCycleFilter,
+    ActivitiesSearchInput(char),
+    ActivitiesSearchBackspace,
+    ActivitiesSearchSubmit,
+    ActivitiesSearchCancel,
+    ActivitiesOpenDetail,
+    ActivitiesDetailLoaded(Box<Activity>),
+    ActivitiesCloseDetail,
+    ActivitiesComplete,
+    ActivitiesArchive,
+    ActivitiesDuplicate,
+    ActivitiesStartTimer,
+    RefreshActivities,
+
     // Notes browser (`src/app/screens/notes.rs`).
     NotesLoaded(Vec<Note>),
     NotesMove(i32),

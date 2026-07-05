@@ -148,7 +148,7 @@ fn spawn_load(api: ApiClient, tx: UnboundedSender<Action>) {
         let filters = ActivityFilters {
             started_after: start,
             started_before: end,
-            book_id: None,
+            ..Default::default()
         };
         let today = match api.list_activities(&filters).await {
             Ok(list) => list.data,
