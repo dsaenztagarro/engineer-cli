@@ -14,6 +14,7 @@ mod activities;
 mod books;
 mod envelope;
 mod error;
+mod notes;
 mod progress;
 mod timer;
 
@@ -21,6 +22,7 @@ pub use activities::{Activity, ActivityCreate, ActivityFilters};
 pub use books::{Book, BookChapter, BookStatus, BookUpdate};
 pub use envelope::List;
 pub use error::{ApiError, FieldError};
+pub use notes::{Anchor, Note, NoteFilters, NoteInput};
 pub use progress::{PaceState, Progress, ProgressReading};
 pub use timer::{Timer, TimerCandidate, TimerStopped};
 
@@ -130,6 +132,13 @@ impl ApiClient {
     // but return the updated resource.
     async fn post_empty<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
         let req = self.request(Method::POST, path).await?;
+        send(req).await
+    }
+
+    // PATCH for member actions that take no request body (unlink, archive,
+    // unarchive) but return the updated resource.
+    async fn patch_empty<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
+        let req = self.request(Method::PATCH, path).await?;
         send(req).await
     }
 

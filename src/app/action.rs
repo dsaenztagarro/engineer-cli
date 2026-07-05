@@ -1,4 +1,6 @@
-use crate::api::{Activity, Book, BookChapter, Progress, Timer, TimerCandidate, TimerStopped};
+use crate::api::{
+    Activity, Book, BookChapter, Note, Progress, Timer, TimerCandidate, TimerStopped,
+};
 use crate::app::screens::ScreenKind;
 use crate::ui::notify::Level;
 
@@ -99,6 +101,45 @@ pub enum Action {
     TimerBindMove(i32),
     TimerBindSubmit,
     TimerCandidatesLoaded(Vec<TimerCandidate>),
+
+    // Notes browser (`src/app/screens/notes.rs`).
+    NotesLoaded(Vec<Note>),
+    NotesMove(i32),
+    NotesJumpStart,
+    NotesJumpEnd,
+    NotesSearchInput(char),
+    NotesSearchBackspace,
+    NotesSearchSubmit,
+    NotesSearchCancel,
+    NotesOpenDetail,
+    NotesDetailLoaded(Box<Note>),
+    NotesCloseDetail,
+    NotesToggleArchived,
+    NotesArchiveSelected,
+    NotesEditSelected,
+    RefreshNotes,
+
+    // Quick-capture overlay (`src/app/capture.rs`). Reachable from any screen
+    // via the `<Space>` leader; also opened pre-filled to edit an existing note
+    // from the browser. `CaptureOpen*`/`CaptureClose`/`CaptureSaved` are handled
+    // by `App` (they create or drop `App::capture`); the rest are routed to the
+    // live overlay reducer.
+    CaptureOpen,
+    CaptureOpenEdit(Box<Note>),
+    CaptureClose,
+    CaptureSaved,
+    CaptureKey(crossterm::event::KeyEvent),
+    CaptureSave,
+    CaptureSaveFailed,
+    CaptureCancel,
+    CaptureFieldNext,
+    CaptureFieldPrev,
+    CaptureBookInput(char),
+    CaptureBookBackspace,
+    CaptureBookMove(i32),
+    CaptureBookPickerSubmit,
+    CaptureBookPickerClose,
+    CaptureBookResults(Vec<Book>),
 
     // Command mode. The buffer is mutated in the event layer; these are signals.
     CommandBegin,

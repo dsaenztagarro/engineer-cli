@@ -19,6 +19,12 @@ pub fn translate(app: &mut App, ev: Event) -> Option<Action> {
         return command_mode(app, key);
     }
 
+    // The quick-capture overlay is modal: while open it owns every key (from
+    // any screen), so its draft is never disturbed by the global keymap.
+    if let Some(cap) = app.capture.as_ref() {
+        return cap.translate(key);
+    }
+
     // Insert mode in forms: pass through to the screen.
     if matches!(app.current.mode(), ScreenMode::Insert) {
         return match key.code {
@@ -75,7 +81,9 @@ fn leader(key: crossterm::event::KeyEvent) -> Option<Action> {
         KeyCode::Char('h') | KeyCode::Char('H') => Some(Action::Goto(ScreenKind::Home)),
         KeyCode::Char('s') => Some(Action::ActivitySubmit),
         KeyCode::Char('r') => Some(refresh_for_default()),
-        KeyCode::Char('n') => Some(Action::Goto(ScreenKind::ActivityNew)),
+        // `n` browses notes; `c` captures one from anywhere (the sacred path).
+        KeyCode::Char('n') => Some(Action::Goto(ScreenKind::Notes)),
+        KeyCode::Char('c') => Some(Action::CaptureOpen),
         _ => None,
     }
 }
@@ -89,6 +97,8 @@ fn screen_key(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action> 
             KeyCode::Char('a') => Some(Action::Goto(ActivityNew)),
             KeyCode::Char('b') => Some(Action::Goto(Books)),
             KeyCode::Char('p') => Some(Action::Goto(Progress)),
+            KeyCode::Char('n') => Some(Action::Goto(Notes)),
+            KeyCode::Char('c') => Some(Action::CaptureOpen),
             _ => None,
         },
         Books => books_key(key),
@@ -96,6 +106,25 @@ fn screen_key(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action> 
         ActivityNew => activity_normal_key(key),
         Progress => progress_key(key),
         Timer => timer_key(key),
+        Notes => notes_key(key),
+    }
+}
+
+/// Notes-browser keys (search and the detail read own their keys via the
+/// screen's `intercept_key`, which runs before this).
+fn notes_key(key: crossterm::event::KeyEvent) -> Option<Action> {
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('j'), _) | (KeyCode::Down, _) => Some(Action::NotesMove(1)),
+        (KeyCode::Char('k'), _) | (KeyCode::Up, _) => Some(Action::NotesMove(-1)),
+        (KeyCode::Char('g'), _) => Some(Action::NotesJumpStart),
+        (KeyCode::Char('G'), _) => Some(Action::NotesJumpEnd),
+        (KeyCode::Enter, _) | (KeyCode::Char('l'), _) => Some(Action::NotesOpenDetail),
+        (KeyCode::Char('a'), _) => Some(Action::NotesArchiveSelected),
+        (KeyCode::Char('e'), _) => Some(Action::NotesEditSelected),
+        (KeyCode::Char('t'), _) => Some(Action::NotesToggleArchived),
+        (KeyCode::Char('c'), _) => Some(Action::CaptureOpen),
+        (KeyCode::Char('h'), _) => Some(Action::Goto(ScreenKind::Home)),
+        _ => None,
     }
 }
 
@@ -200,6 +229,7 @@ fn refresh_for(kind: ScreenKind) -> Action {
     match kind {
         ScreenKind::Progress => Action::RefreshProgress,
         ScreenKind::Timer => Action::TimerReload,
+        ScreenKind::Notes => Action::RefreshNotes,
         _ => Action::RefreshHome,
     }
 }

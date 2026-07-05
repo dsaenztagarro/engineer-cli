@@ -24,11 +24,13 @@ use crate::config::Config;
 use crate::ui::notify::{Level, Notification};
 
 mod action;
+mod capture;
 mod event;
 pub mod screens;
 
 pub use action::Action;
 
+use capture::QuickCapture;
 use screens::{Screen, ScreenKind};
 
 const TICK: Duration = Duration::from_millis(250);
@@ -46,6 +48,9 @@ pub struct App {
     pub notification: Option<Notification>,
     pub leader_pending: bool,
     pub command_buffer: Option<String>,
+    /// The quick-capture overlay, when open — modal over the current screen and
+    /// reachable from anywhere (`<Space>c`). `None` when closed.
+    pub capture: Option<QuickCapture>,
     pub should_quit: bool,
     pub tx: mpsc::UnboundedSender<Action>,
     /// Latest timer snapshot shared by every screen's header cell (`None` until
@@ -92,6 +97,7 @@ async fn run_loop(
         notification: None,
         leader_pending: false,
         command_buffer: None,
+        capture: None,
         should_quit: false,
         tx: tx.clone(),
         timer: None,
@@ -254,6 +260,40 @@ impl App {
                 self.current = Screen::new(kind);
                 self.current.on_enter(&self.api, &self.tx);
             }
+            // Quick-capture overlay lifecycle. Open/close/saved are app-owned
+            // (they create or drop `self.capture`); the live-edit actions below
+            // route to the overlay's own reducer.
+            Action::CaptureOpen => self.capture = Some(QuickCapture::new()),
+            Action::CaptureOpenEdit(note) => self.capture = Some(QuickCapture::for_edit(*note)),
+            Action::CaptureClose => self.capture = None,
+            Action::CaptureSaved => {
+                self.capture = None;
+                self.notify(Level::Success, "note saved");
+                // If the browser is showing, reflect the new/edited note.
+                if self.current.kind() == ScreenKind::Notes {
+                    self.dispatch(Action::RefreshNotes);
+                }
+            }
+            capture_action @ (Action::CaptureKey(_)
+            | Action::CaptureSave
+            | Action::CaptureSaveFailed
+            | Action::CaptureCancel
+            | Action::CaptureFieldNext
+            | Action::CaptureFieldPrev
+            | Action::CaptureBookInput(_)
+            | Action::CaptureBookBackspace
+            | Action::CaptureBookMove(_)
+            | Action::CaptureBookPickerSubmit
+            | Action::CaptureBookPickerClose
+            | Action::CaptureBookResults(_)) => {
+                if let Some(cap) = self.capture.as_mut() {
+                    if let Some((level, text)) =
+                        cap.handle(capture_action, &self.api, &self.tx).await
+                    {
+                        self.notify(level, text);
+                    }
+                }
+            }
             Action::CommandBegin => { /* buffer already initialised by event layer */ }
             Action::CommandInput | Action::CommandBackspace => { /* buffer mutated in event layer */
             }
@@ -267,6 +307,10 @@ impl App {
                     "home" => self.dispatch(Action::Goto(ScreenKind::Home)),
                     "books" => self.dispatch(Action::Goto(ScreenKind::Books)),
                     "timer" => self.dispatch(Action::Goto(ScreenKind::Timer)),
+                    // Bare nav verb, matching the `:timer` precedent (#9). The
+                    // `:note <text>` capture action is deferred to the #14
+                    // command grammar, which designs argument shapes.
+                    "notes" => self.dispatch(Action::Goto(ScreenKind::Notes)),
                     "activity" | "a" => self.dispatch(Action::Goto(ScreenKind::ActivityNew)),
                     "logout" => self.notify(Level::Info, "run `engineer logout` from the shell"),
                     "logs" => match Config::log_dir() {
@@ -290,18 +334,27 @@ impl App {
         use crate::ui::layout::{render_chrome, Chrome};
 
         let host = self.config.identity_url.host_str().unwrap_or("identity");
+        // The open overlay owns the footer hints so its keymap is legible.
+        let hints = match self.capture.as_ref() {
+            Some(cap) => cap.hints(),
+            None => self
+                .current
+                .hints(self.leader_pending, self.command_buffer.as_deref()),
+        };
         let chrome = Chrome {
             user: self.user.as_deref(),
             identity_host: host,
             screen_title: self.current.title(),
             timer: self.timer_cell_spans(),
             notification: self.notification.as_ref(),
-            hints: self
-                .current
-                .hints(self.leader_pending, self.command_buffer.as_deref()),
+            hints,
         };
         let body = render_chrome(frame, frame.area(), chrome);
         self.current.render(frame, body);
+        // The quick-capture overlay renders last, as a modal over the body.
+        if let Some(cap) = self.capture.as_mut() {
+            cap.render(frame, body);
+        }
     }
 
     /// Re-poll the header timer snapshot when a poll is due and we're signed in.
@@ -340,6 +393,7 @@ mod tests {
             notification: None,
             leader_pending: false,
             command_buffer: None,
+            capture: None,
             should_quit: false,
             tx,
             timer: None,
@@ -449,5 +503,45 @@ mod tests {
         let n = app.notification.expect("notification set");
         assert_eq!(n.level, Level::Error);
         assert_eq!(n.text, "books load failed");
+    }
+
+    #[tokio::test]
+    async fn goto_notes_titles_the_screen() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.handle(Action::Goto(ScreenKind::Notes)).await;
+        assert_eq!(app.current.kind(), ScreenKind::Notes);
+        assert!(rendered_text(&mut app).contains("Notes"));
+    }
+
+    #[tokio::test]
+    async fn capture_overlay_opens_and_renders_over_any_screen() {
+        // Home is showing; opening capture must draw the modal on top of it.
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.handle(Action::CaptureOpen).await;
+        assert!(app.capture.is_some());
+        let text = rendered_text(&mut app);
+        assert!(text.contains("Quick capture"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn capture_saved_closes_the_overlay_and_confirms() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.handle(Action::CaptureOpen).await;
+        app.handle(Action::CaptureSaved).await;
+        assert!(app.capture.is_none());
+        let n = app.notification.expect("a confirmation is shown");
+        assert_eq!(n.level, Level::Success);
+    }
+
+    #[tokio::test]
+    async fn capture_edit_prefills_the_overlay_from_a_note() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        let note = serde_json::from_value(serde_json::json!({
+            "id": 9, "title": "closures", "content": "closures are objects"
+        }))
+        .unwrap();
+        app.handle(Action::CaptureOpenEdit(Box::new(note))).await;
+        assert!(app.capture.is_some());
+        assert!(rendered_text(&mut app).contains("Edit note"));
     }
 }
