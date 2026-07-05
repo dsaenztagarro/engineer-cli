@@ -311,6 +311,7 @@ impl App {
                     // `:note <text>` capture action is deferred to the #14
                     // command grammar, which designs argument shapes.
                     "notes" => self.dispatch(Action::Goto(ScreenKind::Notes)),
+                    "review" => self.dispatch(Action::Goto(ScreenKind::Review)),
                     "activities" => self.dispatch(Action::Goto(ScreenKind::Activities)),
                     "activity" | "a" => self.dispatch(Action::Goto(ScreenKind::ActivityNew)),
                     "logout" => self.notify(Level::Info, "run `engineer logout` from the shell"),

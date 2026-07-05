@@ -1,6 +1,8 @@
 use crate::api::{
-    Activity, Book, BookChapter, Note, Progress, Timer, TimerCandidate, TimerStopped,
+    Activity, Book, BookChapter, Dashboard, Note, Progress, RateResult, Timer, TimerCandidate,
+    TimerStopped, Topic,
 };
+use crate::app::screens::review::Rating;
 use crate::app::screens::ScreenKind;
 use crate::ui::notify::Level;
 
@@ -148,6 +150,41 @@ pub enum Action {
     NotesArchiveSelected,
     NotesEditSelected,
     RefreshNotes,
+
+    // Review (`src/app/screens/review.rs`) — one screen, three stages: the
+    // dashboard read, the rating sitting (queue head → rate → next until the
+    // queue drains), and a secondary browse-all state. `ReviewRate` carries one
+    // of the four ratings as a single keystroke; `ReviewRated` is the async
+    // server result (advances the sitting, or refetches the browse page).
+    ReviewDashboardLoaded(Box<Dashboard>),
+    ReviewLoadFailed(String),
+    RefreshReview,
+    ReviewOpenDashboard,
+    ReviewOpenBrowse,
+    ReviewStartSitting,
+    ReviewExitSitting,
+    ReviewRate(Rating),
+    ReviewRated(Box<RateResult>),
+    ReviewRateFailed,
+    ReviewBrowseLoaded {
+        items: Vec<Topic>,
+        page: u32,
+        per_page: u32,
+        total: u32,
+    },
+    ReviewBrowseMove(i32),
+    ReviewBrowseJumpStart,
+    ReviewBrowseJumpEnd,
+    ReviewBrowsePageNext,
+    ReviewBrowsePagePrev,
+    ReviewBrowseCycleSort,
+    ReviewBrowseSearchInput(char),
+    ReviewBrowseSearchBackspace,
+    ReviewBrowseSearchSubmit,
+    ReviewBrowseSearchCancel,
+    ReviewBrowseOpenDetail,
+    ReviewBrowseDetailLoaded(Box<Topic>),
+    ReviewBrowseCloseDetail,
 
     // Quick-capture overlay (`src/app/capture.rs`). Reachable from any screen
     // via the `<Space>` leader; also opened pre-filled to edit an existing note

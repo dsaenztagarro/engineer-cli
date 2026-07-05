@@ -18,6 +18,7 @@ pub mod home;
 pub mod login;
 pub mod notes;
 pub mod progress;
+pub mod review;
 pub mod timer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +32,7 @@ pub enum ScreenKind {
     Progress,
     Timer,
     Notes,
+    Review,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +51,9 @@ pub enum Screen {
     Progress(progress::Progress),
     Timer(timer::Timer),
     Notes(notes::Notes),
+    // Boxed: the review screen holds three stages' worth of state (dashboard,
+    // sitting, browse), making it much larger than the other variants.
+    Review(Box<review::Review>),
 }
 
 impl Screen {
@@ -63,6 +68,7 @@ impl Screen {
             ScreenKind::Progress => Self::Progress(progress::Progress::default()),
             ScreenKind::Timer => Self::Timer(timer::Timer::default()),
             ScreenKind::Notes => Self::Notes(notes::Notes::default()),
+            ScreenKind::Review => Self::Review(Box::default()),
         }
     }
 
@@ -77,6 +83,7 @@ impl Screen {
             Self::Progress(_) => ScreenKind::Progress,
             Self::Timer(_) => ScreenKind::Timer,
             Self::Notes(_) => ScreenKind::Notes,
+            Self::Review(_) => ScreenKind::Review,
         }
     }
 
@@ -91,6 +98,7 @@ impl Screen {
             Self::Progress(_) => "Progress",
             Self::Timer(_) => "Timer",
             Self::Notes(_) => "Notes",
+            Self::Review(_) => "Review",
         }
     }
 
@@ -112,6 +120,7 @@ impl Screen {
             Self::Progress(s) => s.on_enter(api, tx),
             Self::Timer(s) => s.on_enter(api, tx),
             Self::Notes(s) => s.on_enter(api, tx),
+            Self::Review(s) => s.on_enter(api, tx),
         }
     }
 
@@ -123,6 +132,7 @@ impl Screen {
             Self::Activities(s) => s.intercept_key(key),
             Self::Timer(s) => s.intercept_key(key),
             Self::Notes(s) => s.intercept_key(key),
+            Self::Review(s) => s.intercept_key(key),
             _ => None,
         }
     }
@@ -143,6 +153,7 @@ impl Screen {
             Self::Progress(s) => s.handle(action, api, tx).await,
             Self::Timer(s) => s.handle(action, api, tx).await,
             Self::Notes(s) => s.handle(action, api, tx).await,
+            Self::Review(s) => s.handle(action, api, tx).await,
         }
     }
 
@@ -157,6 +168,7 @@ impl Screen {
             Self::Progress(s) => s.render(frame, area),
             Self::Timer(s) => s.render(frame, area),
             Self::Notes(s) => s.render(frame, area),
+            Self::Review(s) => s.render(frame, area),
         }
     }
 
@@ -176,6 +188,7 @@ impl Screen {
                 ("t", "timer"),
                 ("a", "+activity"),
                 ("A", "activities"),
+                ("R", "review"),
                 ("n", "notes"),
                 ("c", "+note"),
                 ("s", "save"),
@@ -188,6 +201,7 @@ impl Screen {
                 ("a", "+activity"),
                 ("A", "activities"),
                 ("b", "books"),
+                ("R", "review"),
                 ("n", "notes"),
                 ("c", "+note"),
                 ("p", "progress"),
@@ -201,6 +215,7 @@ impl Screen {
             Self::Progress(s) => s.hints(),
             Self::Timer(s) => s.hints(),
             Self::Notes(s) => s.hints(),
+            Self::Review(s) => s.hints(),
         }
     }
 }

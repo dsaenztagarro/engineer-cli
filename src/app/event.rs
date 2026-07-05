@@ -79,6 +79,8 @@ fn leader(key: crossterm::event::KeyEvent) -> Option<Action> {
         // `A` (capital) opens the activities table; `a` stays "+activity" (the
         // new-activity form) so muscle memory is preserved.
         KeyCode::Char('A') => Some(Action::Goto(ScreenKind::Activities)),
+        // `R` opens the review screen; `r` stays the global refresh key.
+        KeyCode::Char('R') => Some(Action::Goto(ScreenKind::Review)),
         KeyCode::Char('b') => Some(Action::Goto(ScreenKind::Books)),
         KeyCode::Char('p') => Some(Action::Goto(ScreenKind::Progress)),
         KeyCode::Char('h') | KeyCode::Char('H') => Some(Action::Goto(ScreenKind::Home)),
@@ -99,6 +101,7 @@ fn screen_key(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action> 
             KeyCode::Char('t') => Some(Action::Goto(Timer)),
             KeyCode::Char('a') => Some(Action::Goto(ActivityNew)),
             KeyCode::Char('A') => Some(Action::Goto(Activities)),
+            KeyCode::Char('R') => Some(Action::Goto(Review)),
             KeyCode::Char('b') => Some(Action::Goto(Books)),
             KeyCode::Char('p') => Some(Action::Goto(Progress)),
             KeyCode::Char('n') => Some(Action::Goto(Notes)),
@@ -112,6 +115,43 @@ fn screen_key(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action> 
         Progress => progress_key(key),
         Timer => timer_key(key),
         Notes => notes_key(key),
+        Review => review_key(app, key),
+    }
+}
+
+/// Review-screen keys for the two non-modal base stages (dashboard + browse
+/// list). The rating contexts — the sitting and the browse detail read — and
+/// the browse search prompt own their keys via the screen's `intercept_key`,
+/// which runs before this; those keys never reach here.
+fn review_key(app: &App, key: crossterm::event::KeyEvent) -> Option<Action> {
+    use crate::app::screens::review::Stage;
+    let Screen::Review(s) = &app.current else {
+        return None;
+    };
+    match s.stage() {
+        Stage::Dashboard => match key.code {
+            // Enter or `s` starts the sitting at the queue head.
+            KeyCode::Enter | KeyCode::Char('s') => Some(Action::ReviewStartSitting),
+            KeyCode::Char('b') => Some(Action::ReviewOpenBrowse),
+            KeyCode::Char('h') | KeyCode::Esc => Some(Action::Goto(ScreenKind::Home)),
+            _ => None,
+        },
+        Stage::Browse => match (key.code, key.modifiers) {
+            (KeyCode::Char('j'), _) | (KeyCode::Down, _) => Some(Action::ReviewBrowseMove(1)),
+            (KeyCode::Char('k'), _) | (KeyCode::Up, _) => Some(Action::ReviewBrowseMove(-1)),
+            (KeyCode::Char('g'), _) => Some(Action::ReviewBrowseJumpStart),
+            (KeyCode::Char('G'), _) => Some(Action::ReviewBrowseJumpEnd),
+            (KeyCode::Enter, _) | (KeyCode::Char('l'), _) => Some(Action::ReviewBrowseOpenDetail),
+            // `s` cycles the sort ring (the #11 `f`-ring precedent).
+            (KeyCode::Char('s'), _) => Some(Action::ReviewBrowseCycleSort),
+            (KeyCode::Char(']'), _) => Some(Action::ReviewBrowsePageNext),
+            (KeyCode::Char('['), _) => Some(Action::ReviewBrowsePagePrev),
+            // `h`/Esc steps back to the dashboard, not out of the screen.
+            (KeyCode::Char('h'), _) | (KeyCode::Esc, _) => Some(Action::ReviewOpenDashboard),
+            _ => None,
+        },
+        // The sitting's keys (f/z/s/i rate, Esc exit) are handled in intercept_key.
+        Stage::Sitting => None,
     }
 }
 
@@ -259,6 +299,7 @@ fn refresh_for(kind: ScreenKind) -> Action {
         ScreenKind::Timer => Action::TimerReload,
         ScreenKind::Notes => Action::RefreshNotes,
         ScreenKind::Activities => Action::RefreshActivities,
+        ScreenKind::Review => Action::RefreshReview,
         _ => Action::RefreshHome,
     }
 }
