@@ -27,6 +27,93 @@ use crate::app::action::Action;
 use crate::ui::notify::Level;
 use crate::ui::{layout::bordered, theme, widgets};
 
+/// The four timer sub-verbs the `:` palette dispatches (`:timer start|pause|
+/// resume|stop`). Defined here, next to the actions they drive, so the grammar
+/// table and this screen share one spelling of the inventory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimerVerb {
+    Start,
+    Pause,
+    Resume,
+    Stop,
+}
+
+impl TimerVerb {
+    /// Canonical names, in help/completion order. The grammar table's argument
+    /// set and `from_name` both read from here.
+    pub const NAMES: &'static [&'static str] = &["start", "pause", "resume", "stop"];
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "start" => Some(Self::Start),
+            "pause" => Some(Self::Pause),
+            "resume" => Some(Self::Resume),
+            "stop" => Some(Self::Stop),
+            _ => None,
+        }
+    }
+}
+
+/// Run a `:timer <verb>` palette action against the app-owned snapshot, without
+/// routing through the screen (so it works from any screen and never races the
+/// screen's own load). Valid transitions spawn the same API op the on-screen
+/// keys do; the header cell reflects the result. An invalid transition returns
+/// the notify-tile warning to surface — the unbound-stop message matches the one
+/// the Timer screen shows for the same mistake.
+pub(crate) fn palette_dispatch(
+    verb: TimerVerb,
+    snap: Option<&TimerSnapshot>,
+    api: &ApiClient,
+    tx: &UnboundedSender<Action>,
+) -> Option<(Level, String)> {
+    let running = snap.is_some_and(|s| s.running);
+    let paused = snap.is_some_and(|s| s.paused);
+    let bound = snap.is_some_and(|s| s.bound);
+    match verb {
+        TimerVerb::Start => {
+            if running {
+                Some((Level::Warning, "a timer is already running".into()))
+            } else {
+                spawn_start_blank(api, tx);
+                None
+            }
+        }
+        TimerVerb::Pause => {
+            if !running {
+                Some((Level::Warning, "no timer running".into()))
+            } else if paused {
+                Some((Level::Warning, "timer is already paused".into()))
+            } else {
+                spawn_op(api, tx, TimerOp::Pause);
+                None
+            }
+        }
+        TimerVerb::Resume => {
+            if !running {
+                Some((Level::Warning, "no timer running".into()))
+            } else if !paused {
+                Some((Level::Warning, "timer isn't paused".into()))
+            } else {
+                spawn_op(api, tx, TimerOp::Resume);
+                None
+            }
+        }
+        TimerVerb::Stop => {
+            if !running {
+                Some((Level::Warning, "no timer to stop".into()))
+            } else if bound {
+                spawn_stop(api, tx);
+                None
+            } else {
+                Some((
+                    Level::Warning,
+                    "bind the timer before stopping (or `d` to discard)".into(),
+                ))
+            }
+        }
+    }
+}
+
 /// Displayed elapsed for a snapshot: the last server `elapsed_seconds` plus the
 /// monotonic time since it was fetched — but only while actually advancing (a
 /// paused clock is frozen). Shared with the header cell so both tick in step.
@@ -721,6 +808,91 @@ mod tests {
         )
         .await;
         assert!(matches!(s.stage, Stage::Stopped { .. }));
+    }
+
+    /// `palette_dispatch` returns `Some(warning)` for an invalid transition and
+    /// `None` when it accepts the action (and spawns the API op). The receiver
+    /// is leaked so the spawned tasks keep a live sender.
+    fn palette(verb: TimerVerb, snap: Option<serde_json::Value>) -> Option<(Level, String)> {
+        let config = Config::for_environment(Environment::Development);
+        let api = ApiClient::with_token(config.api_url.clone(), "tok".into());
+        let (tx, rx) = mpsc::unbounded_channel();
+        Box::leak(Box::new(rx));
+        let snap = snap.map(snapshot);
+        super::palette_dispatch(verb, snap.as_ref(), &api, &tx)
+    }
+
+    #[test]
+    fn timer_verb_names_round_trip() {
+        for name in TimerVerb::NAMES {
+            assert!(TimerVerb::from_name(name).is_some(), "{name}");
+        }
+        assert_eq!(TimerVerb::from_name("nope"), None);
+    }
+
+    #[tokio::test]
+    async fn palette_start_accepts_when_no_timer_and_warns_when_running() {
+        // No live timer → start is accepted (blank clock).
+        assert!(palette(TimerVerb::Start, None).is_none());
+        assert!(palette(
+            TimerVerb::Start,
+            Some(serde_json::json!({ "running": false })),
+        )
+        .is_none());
+        // Already running → warn instead of starting a second clock.
+        let warn = palette(
+            TimerVerb::Start,
+            Some(serde_json::json!({ "running": true, "bound": true })),
+        );
+        assert!(matches!(warn, Some((Level::Warning, _))));
+    }
+
+    #[tokio::test]
+    async fn palette_pause_and_resume_validate_the_paused_state() {
+        // Pause: needs a running, unpaused timer.
+        assert!(palette(TimerVerb::Pause, None).is_some());
+        assert!(palette(
+            TimerVerb::Pause,
+            Some(serde_json::json!({ "running": true, "paused": true })),
+        )
+        .is_some());
+        assert!(palette(
+            TimerVerb::Pause,
+            Some(serde_json::json!({ "running": true, "paused": false })),
+        )
+        .is_none());
+        // Resume: needs a paused timer.
+        assert!(palette(
+            TimerVerb::Resume,
+            Some(serde_json::json!({ "running": true, "paused": false })),
+        )
+        .is_some());
+        assert!(palette(
+            TimerVerb::Resume,
+            Some(serde_json::json!({ "running": true, "paused": true })),
+        )
+        .is_none());
+    }
+
+    #[tokio::test]
+    async fn palette_stop_requires_a_bound_running_timer() {
+        // Nothing running.
+        assert!(palette(TimerVerb::Stop, None).is_some());
+        // Running but unbound → the same warning the screen shows.
+        let unbound = palette(
+            TimerVerb::Stop,
+            Some(serde_json::json!({ "running": true, "bound": false })),
+        );
+        match unbound {
+            Some((Level::Warning, text)) => assert!(text.contains("bind"), "{text}"),
+            other => panic!("expected an unbound-stop warning, got {other:?}"),
+        }
+        // Running and bound → accepted.
+        assert!(palette(
+            TimerVerb::Stop,
+            Some(serde_json::json!({ "running": true, "bound": true })),
+        )
+        .is_none());
     }
 
     #[test]

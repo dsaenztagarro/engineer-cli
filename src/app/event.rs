@@ -277,6 +277,14 @@ fn command_mode(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action
             Some(Action::CommandCancel)
         }
         KeyCode::Enter => Some(Action::CommandSubmit),
+        // Tab completes the current verb (or timer sub-verb) toward the longest
+        // common prefix of the matches, per the grammar table.
+        KeyCode::Tab => {
+            if let Some(b) = app.command_buffer.as_mut() {
+                *b = crate::app::command::complete(b);
+            }
+            Some(Action::CommandInput)
+        }
         KeyCode::Backspace => {
             if let Some(b) = app.command_buffer.as_mut() {
                 b.pop();
