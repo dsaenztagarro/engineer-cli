@@ -15,6 +15,7 @@ pub mod book_detail;
 pub mod books;
 pub mod home;
 pub mod login;
+pub mod notes;
 pub mod progress;
 pub mod timer;
 
@@ -27,6 +28,7 @@ pub enum ScreenKind {
     ActivityNew,
     Progress,
     Timer,
+    Notes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +45,7 @@ pub enum Screen {
     ActivityNew(activity_new::ActivityNew),
     Progress(progress::Progress),
     Timer(timer::Timer),
+    Notes(notes::Notes),
 }
 
 impl Screen {
@@ -55,6 +58,7 @@ impl Screen {
             ScreenKind::ActivityNew => Self::ActivityNew(activity_new::ActivityNew::default()),
             ScreenKind::Progress => Self::Progress(progress::Progress::default()),
             ScreenKind::Timer => Self::Timer(timer::Timer::default()),
+            ScreenKind::Notes => Self::Notes(notes::Notes::default()),
         }
     }
 
@@ -67,6 +71,7 @@ impl Screen {
             Self::ActivityNew(_) => ScreenKind::ActivityNew,
             Self::Progress(_) => ScreenKind::Progress,
             Self::Timer(_) => ScreenKind::Timer,
+            Self::Notes(_) => ScreenKind::Notes,
         }
     }
 
@@ -79,6 +84,7 @@ impl Screen {
             Self::ActivityNew(_) => "New activity",
             Self::Progress(_) => "Progress",
             Self::Timer(_) => "Timer",
+            Self::Notes(_) => "Notes",
         }
     }
 
@@ -98,6 +104,7 @@ impl Screen {
             Self::ActivityNew(s) => s.on_enter(api, tx),
             Self::Progress(s) => s.on_enter(api, tx),
             Self::Timer(s) => s.on_enter(api, tx),
+            Self::Notes(s) => s.on_enter(api, tx),
         }
     }
 
@@ -107,6 +114,7 @@ impl Screen {
             Self::Books(s) => s.intercept_key(key),
             Self::BookDetail(s) => s.intercept_key(key),
             Self::Timer(s) => s.intercept_key(key),
+            Self::Notes(s) => s.intercept_key(key),
             _ => None,
         }
     }
@@ -125,6 +133,7 @@ impl Screen {
             Self::ActivityNew(s) => s.handle(action, api, tx).await,
             Self::Progress(s) => s.handle(action, api, tx).await,
             Self::Timer(s) => s.handle(action, api, tx).await,
+            Self::Notes(s) => s.handle(action, api, tx).await,
         }
     }
 
@@ -137,6 +146,7 @@ impl Screen {
             Self::ActivityNew(s) => s.render(frame, area),
             Self::Progress(s) => s.render(frame, area),
             Self::Timer(s) => s.render(frame, area),
+            Self::Notes(s) => s.render(frame, area),
         }
     }
 
@@ -155,6 +165,8 @@ impl Screen {
                 ("3", "progress"),
                 ("t", "timer"),
                 ("a", "+activity"),
+                ("n", "notes"),
+                ("c", "+note"),
                 ("s", "save"),
             ]);
         }
@@ -164,8 +176,9 @@ impl Screen {
                 ("t", "timer"),
                 ("a", "+activity"),
                 ("b", "books"),
+                ("n", "notes"),
+                ("c", "+note"),
                 ("p", "progress"),
-                ("r", "refresh"),
                 (":", "cmd"),
                 ("q", "quit"),
             ]),
@@ -174,6 +187,7 @@ impl Screen {
             Self::ActivityNew(s) => s.hints(),
             Self::Progress(s) => s.hints(),
             Self::Timer(s) => s.hints(),
+            Self::Notes(s) => s.hints(),
         }
     }
 }
