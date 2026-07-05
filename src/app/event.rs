@@ -67,8 +67,10 @@ fn leader(key: crossterm::event::KeyEvent) -> Option<Action> {
     match key.code {
         KeyCode::Char('1') => Some(Action::Goto(ScreenKind::Home)),
         KeyCode::Char('2') => Some(Action::Goto(ScreenKind::Books)),
+        KeyCode::Char('3') => Some(Action::Goto(ScreenKind::Progress)),
         KeyCode::Char('a') => Some(Action::Goto(ScreenKind::ActivityNew)),
         KeyCode::Char('b') => Some(Action::Goto(ScreenKind::Books)),
+        KeyCode::Char('p') => Some(Action::Goto(ScreenKind::Progress)),
         KeyCode::Char('h') | KeyCode::Char('H') => Some(Action::Goto(ScreenKind::Home)),
         KeyCode::Char('s') => Some(Action::ActivitySubmit),
         KeyCode::Char('r') => Some(refresh_for_default()),
@@ -84,11 +86,25 @@ fn screen_key(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action> 
         Home => match key.code {
             KeyCode::Char('a') => Some(Action::Goto(ActivityNew)),
             KeyCode::Char('b') => Some(Action::Goto(Books)),
+            KeyCode::Char('p') => Some(Action::Goto(Progress)),
             _ => None,
         },
         Books => books_key(key),
         BookDetail => book_detail_key(key),
         ActivityNew => activity_normal_key(key),
+        Progress => progress_key(key),
+    }
+}
+
+fn progress_key(key: crossterm::event::KeyEvent) -> Option<Action> {
+    match key.code {
+        // `[` / `]` step weeks (a vim-ish prev/next idiom that avoids the
+        // `h`-means-back convention the other screens use); `t` jumps to today.
+        KeyCode::Char('[') => Some(Action::ProgressWeekStep(-1)),
+        KeyCode::Char(']') => Some(Action::ProgressWeekStep(1)),
+        KeyCode::Char('t') => Some(Action::ProgressWeekReset),
+        KeyCode::Char('h') | KeyCode::Esc => Some(Action::Goto(ScreenKind::Home)),
+        _ => None,
     }
 }
 
@@ -163,7 +179,7 @@ fn command_mode(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action
 
 fn refresh_for(kind: ScreenKind) -> Action {
     match kind {
-        ScreenKind::Home => Action::RefreshHome,
+        ScreenKind::Progress => Action::RefreshProgress,
         _ => Action::RefreshHome,
     }
 }

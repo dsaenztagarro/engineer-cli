@@ -1,4 +1,4 @@
-use crate::api::{Activity, Book, BookChapter};
+use crate::api::{Activity, Book, BookChapter, Progress};
 use crate::app::screens::ScreenKind;
 use crate::ui::notify::Level;
 
@@ -69,6 +69,13 @@ pub enum Action {
         errors: Vec<crate::api::FieldError>,
         detail: String,
     },
+
+    // Progress
+    ProgressLoaded(Box<Progress>),
+    ProgressLoadFailed(String),
+    ProgressWeekStep(i32),
+    ProgressWeekReset,
+    RefreshProgress,
 
     // Command mode. The buffer is mutated in the event layer; these are signals.
     CommandBegin,
