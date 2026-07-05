@@ -16,6 +16,7 @@ pub mod books;
 pub mod home;
 pub mod login;
 pub mod progress;
+pub mod timer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScreenKind {
@@ -25,6 +26,7 @@ pub enum ScreenKind {
     BookDetail,
     ActivityNew,
     Progress,
+    Timer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +42,7 @@ pub enum Screen {
     BookDetail(book_detail::BookDetail),
     ActivityNew(activity_new::ActivityNew),
     Progress(progress::Progress),
+    Timer(timer::Timer),
 }
 
 impl Screen {
@@ -51,6 +54,7 @@ impl Screen {
             ScreenKind::BookDetail => Self::BookDetail(book_detail::BookDetail::default()),
             ScreenKind::ActivityNew => Self::ActivityNew(activity_new::ActivityNew::default()),
             ScreenKind::Progress => Self::Progress(progress::Progress::default()),
+            ScreenKind::Timer => Self::Timer(timer::Timer::default()),
         }
     }
 
@@ -62,6 +66,7 @@ impl Screen {
             Self::BookDetail(_) => ScreenKind::BookDetail,
             Self::ActivityNew(_) => ScreenKind::ActivityNew,
             Self::Progress(_) => ScreenKind::Progress,
+            Self::Timer(_) => ScreenKind::Timer,
         }
     }
 
@@ -73,6 +78,7 @@ impl Screen {
             Self::BookDetail(_) => "Book",
             Self::ActivityNew(_) => "New activity",
             Self::Progress(_) => "Progress",
+            Self::Timer(_) => "Timer",
         }
     }
 
@@ -91,6 +97,7 @@ impl Screen {
             Self::BookDetail(s) => s.on_enter(api, tx),
             Self::ActivityNew(s) => s.on_enter(api, tx),
             Self::Progress(s) => s.on_enter(api, tx),
+            Self::Timer(s) => s.on_enter(api, tx),
         }
     }
 
@@ -99,6 +106,7 @@ impl Screen {
         match self {
             Self::Books(s) => s.intercept_key(key),
             Self::BookDetail(s) => s.intercept_key(key),
+            Self::Timer(s) => s.intercept_key(key),
             _ => None,
         }
     }
@@ -116,6 +124,7 @@ impl Screen {
             Self::BookDetail(s) => s.handle(action, api, tx).await,
             Self::ActivityNew(s) => s.handle(action, api, tx).await,
             Self::Progress(s) => s.handle(action, api, tx).await,
+            Self::Timer(s) => s.handle(action, api, tx).await,
         }
     }
 
@@ -127,6 +136,7 @@ impl Screen {
             Self::BookDetail(s) => s.render(frame, area),
             Self::ActivityNew(s) => s.render(frame, area),
             Self::Progress(s) => s.render(frame, area),
+            Self::Timer(s) => s.render(frame, area),
         }
     }
 
@@ -143,6 +153,7 @@ impl Screen {
                 ("1", "home"),
                 ("2", "books"),
                 ("3", "progress"),
+                ("t", "timer"),
                 ("a", "+activity"),
                 ("s", "save"),
             ]);
@@ -150,6 +161,7 @@ impl Screen {
         match self {
             Self::Login(s) => s.hints(),
             Self::Home(_) => crate::ui::widgets::footer_hints(&[
+                ("t", "timer"),
                 ("a", "+activity"),
                 ("b", "books"),
                 ("p", "progress"),
@@ -161,6 +173,7 @@ impl Screen {
             Self::BookDetail(s) => s.hints(),
             Self::ActivityNew(s) => s.hints(),
             Self::Progress(s) => s.hints(),
+            Self::Timer(s) => s.hints(),
         }
     }
 }

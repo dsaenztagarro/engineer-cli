@@ -1,4 +1,4 @@
-use crate::api::{Activity, Book, BookChapter, Progress};
+use crate::api::{Activity, Book, BookChapter, Progress, Timer, TimerCandidate, TimerStopped};
 use crate::app::screens::ScreenKind;
 use crate::ui::notify::Level;
 
@@ -76,6 +76,29 @@ pub enum Action {
     ProgressWeekStep(i32),
     ProgressWeekReset,
     RefreshProgress,
+
+    // Timer — the header cell (app-owned snapshot) and the Timer screen.
+    // `RefreshTimer` re-polls the header snapshot; `TimerLoaded` updates the
+    // app snapshot and is forwarded to the Timer screen; `TimerCleared` wipes
+    // the header snapshot without disturbing the screen (used after stop, so the
+    // segment confirmation survives). The rest are Timer-screen intents.
+    RefreshTimer,
+    TimerLoaded(Box<Timer>),
+    TimerCleared,
+    TimerReload,
+    TimerStartBlank,
+    TimerPauseResume,
+    TimerStop,
+    TimerStopped(Box<TimerStopped>),
+    TimerDismissStopped,
+    TimerDiscard,
+    TimerBindBegin,
+    TimerBindCancel,
+    TimerBindInput(char),
+    TimerBindBackspace,
+    TimerBindMove(i32),
+    TimerBindSubmit,
+    TimerCandidatesLoaded(Vec<TimerCandidate>),
 
     // Command mode. The buffer is mutated in the event layer; these are signals.
     CommandBegin,
