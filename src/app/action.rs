@@ -55,10 +55,14 @@ pub enum Action {
     EditPageBackspace,
     SubmitPage,
     CancelEdit,
+    // Status picker modal (opened with `s` on BookDetail). `BookStatusSelect`
+    // moves the highlight to a status (the `r/c/u/h/a` mnemonics); `j/k` step it
+    // via `BookStatusMove`; `BookStatusConfirm` PATCHes the book; `Esc` cancels.
     BookStatusPicker,
-    // Handled by BookDetail but not yet emitted (status picker is a TODO).
-    #[allow(dead_code)]
-    PickStatus(crate::api::BookStatus),
+    BookStatusMove(i32),
+    BookStatusSelect(crate::api::BookStatus),
+    BookStatusConfirm,
+    BookStatusCancel,
     BookUpdated(Box<Book>),
 
     // Activity new
