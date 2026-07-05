@@ -15,10 +15,10 @@ use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::{stdout, Stdout};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-use crate::api::ApiClient;
+use crate::api::{ApiClient, Timer};
 use crate::auth::TokenProvider;
 use crate::config::Config;
 use crate::ui::notify::{Level, Notification};
@@ -33,6 +33,11 @@ use screens::{Screen, ScreenKind};
 
 const TICK: Duration = Duration::from_millis(250);
 
+/// How often the header timer cell re-polls the server. Between polls the
+/// displayed elapsed is ticked locally from `elapsed_seconds` + a monotonic
+/// baseline, so the cell advances smoothly without a request per second.
+const TIMER_POLL_INTERVAL: Duration = Duration::from_secs(15);
+
 pub struct App {
     pub config: Config,
     pub api: ApiClient,
@@ -43,6 +48,14 @@ pub struct App {
     pub command_buffer: Option<String>,
     pub should_quit: bool,
     pub tx: mpsc::UnboundedSender<Action>,
+    /// Latest timer snapshot shared by every screen's header cell (`None` until
+    /// the first poll / when no timer is running).
+    pub timer: Option<Timer>,
+    /// Monotonic instant the current `timer` snapshot was received — the base
+    /// for ticking the displayed elapsed between polls.
+    pub timer_base: Option<Instant>,
+    /// When the last header poll was dispatched, to honour `TIMER_POLL_INTERVAL`.
+    pub timer_last_poll: Instant,
 }
 
 pub async fn run(config: Config) -> Result<()> {
@@ -81,11 +94,15 @@ async fn run_loop(
         command_buffer: None,
         should_quit: false,
         tx: tx.clone(),
+        timer: None,
+        timer_base: None,
+        timer_last_poll: Instant::now(),
     };
 
     // Kick off initial loads (only meaningful once authenticated).
     if logged_in {
         app.dispatch(Action::FetchMe);
+        app.dispatch(Action::RefreshTimer);
     }
     app.current.on_enter(&app.api, &app.tx);
 
@@ -111,6 +128,7 @@ async fn run_loop(
                 if app.notification.as_ref().is_some_and(Notification::is_expired) {
                     app.notification = None;
                 }
+                app.poll_timer_if_due();
             }
         }
     }
@@ -165,6 +183,40 @@ impl App {
                 });
             }
             Action::SetUser(email) => self.user = Some(email),
+            // Header timer cell. Plain polling: `GET /api/v1/timer` returns the
+            // full snapshot on each request — the endpoint does not offer
+            // conditional revalidation (If-None-Match / 304), so every poll
+            // transfers the whole body.
+            Action::RefreshTimer => {
+                let api = self.api.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    match api.timer().await {
+                        Ok(t) => {
+                            let _ = tx.send(Action::TimerLoaded(Box::new(t)));
+                        }
+                        Err(e) => {
+                            tracing::warn!(target: "engineer_cli::api", error = %e, "timer poll failed");
+                        }
+                    }
+                });
+            }
+            Action::TimerLoaded(t) => {
+                self.timer = Some((*t).clone());
+                self.timer_base = Some(Instant::now());
+                // Forward to the Timer screen so its detailed view mirrors the
+                // same snapshot; other screens ignore it.
+                let _ = self
+                    .current
+                    .handle(Action::TimerLoaded(t), &self.api, &self.tx)
+                    .await;
+            }
+            // Wipe the header cell without touching the current screen (used
+            // after a stop, so the segment confirmation view is preserved).
+            Action::TimerCleared => {
+                self.timer = None;
+                self.timer_base = None;
+            }
             Action::Login => {
                 if let Screen::Login(s) = &mut self.current {
                     s.set_pending();
@@ -214,6 +266,7 @@ impl App {
                     "q" | "quit" => self.should_quit = true,
                     "home" => self.dispatch(Action::Goto(ScreenKind::Home)),
                     "books" => self.dispatch(Action::Goto(ScreenKind::Books)),
+                    "timer" => self.dispatch(Action::Goto(ScreenKind::Timer)),
                     "activity" | "a" => self.dispatch(Action::Goto(ScreenKind::ActivityNew)),
                     "logout" => self.notify(Level::Info, "run `engineer logout` from the shell"),
                     "logs" => match Config::log_dir() {
@@ -241,6 +294,7 @@ impl App {
             user: self.user.as_deref(),
             identity_host: host,
             screen_title: self.current.title(),
+            timer: self.timer_cell_spans(),
             notification: self.notification.as_ref(),
             hints: self
                 .current
@@ -248,6 +302,22 @@ impl App {
         };
         let body = render_chrome(frame, frame.area(), chrome);
         self.current.render(frame, body);
+    }
+
+    /// Re-poll the header timer snapshot when a poll is due and we're signed in.
+    fn poll_timer_if_due(&mut self) {
+        if self.user.is_some() && self.timer_last_poll.elapsed() >= TIMER_POLL_INTERVAL {
+            self.timer_last_poll = Instant::now();
+            self.dispatch(Action::RefreshTimer);
+        }
+    }
+
+    /// The header timer cell spans, with the displayed elapsed ticked locally
+    /// from the last snapshot. `None` when no timer is running.
+    fn timer_cell_spans(&self) -> Option<Vec<ratatui::text::Span<'static>>> {
+        let t = self.timer.as_ref()?;
+        let elapsed = screens::timer::live_elapsed(t, self.timer_base);
+        crate::ui::widgets::timer_cell(t.running, t.paused, elapsed)
     }
 }
 
@@ -272,8 +342,19 @@ mod tests {
             command_buffer: None,
             should_quit: false,
             tx,
+            timer: None,
+            timer_base: None,
+            timer_last_poll: Instant::now(),
         };
         (app, rx)
+    }
+
+    fn running_timer(elapsed_seconds: i64) -> Timer {
+        serde_json::from_value(serde_json::json!({
+            "running": true, "bound": true, "paused": false,
+            "label": "consensus", "elapsed_seconds": elapsed_seconds,
+        }))
+        .unwrap()
     }
 
     fn rendered_text(app: &mut App) -> String {
@@ -305,6 +386,41 @@ mod tests {
         let (mut app, _rx) = test_app(None);
         app.handle(Action::SetUser("bob@example.com".into())).await;
         assert_eq!(app.user.as_deref(), Some("bob@example.com"));
+    }
+
+    #[tokio::test]
+    async fn header_shows_running_timer_pill() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.timer = Some(running_timer(272));
+        app.timer_base = Some(Instant::now());
+        let text = rendered_text(&mut app);
+        // ● + mm:ss in the header, never the activity title/label.
+        assert!(text.contains("● 04:32"), "{text}");
+        assert!(!text.contains("consensus"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn header_has_no_pill_without_a_timer() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        assert!(!rendered_text(&mut app).contains('●'));
+    }
+
+    #[tokio::test]
+    async fn timer_loaded_updates_shared_snapshot() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.handle(Action::TimerLoaded(Box::new(running_timer(60))))
+            .await;
+        assert!(app.timer.as_ref().is_some_and(|t| t.running));
+        assert!(app.timer_base.is_some());
+    }
+
+    #[tokio::test]
+    async fn timer_cleared_wipes_the_header_snapshot() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.timer = Some(running_timer(60));
+        app.timer_base = Some(Instant::now());
+        app.handle(Action::TimerCleared).await;
+        assert!(app.timer.is_none());
     }
 
     #[tokio::test]

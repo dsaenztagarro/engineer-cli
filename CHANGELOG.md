@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Timer screen + persistent header cell.** A new `Timer` screen owns the daily-loop timekeeping moments: start a blank clock ("name it later"), bind a running timer to work by searching `/api/v1/timer/candidates` or minting a new activity from a typed title, pause/resume, and stop — which shows the written segment (minutes → activity) so the ledger is trusted. On top, a fixed-width **header cell on every screen** renders the live timer per the web pill contract: an accent `● mm:ss` (widening to `h:mm:ss`) when running, an amber `‖ mm:ss` when paused, and nothing when absent — never the activity title. The snapshot lives in app state and is polled every 15s from `GET /api/v1/timer`, with the displayed elapsed ticked locally between polls. Reachable from Home with `t` (or the `<Space>` leader `t`, or `:timer`); on-screen keys are `s` start · `/` bind · `p` pause/resume · `x` stop · `d` discard.
+
 - **Progress screen (`engineer pace` meters).** A new read-only screen renders the weekly pace aggregate from `GET /api/v1/progress` as one ASCII meter per target, behind-first: a block-bar with a now-tick (where the week expects you to be), `actual/target` hours, the signed delta, and the pace state (`behind` amber / `on pace` green / `met`). A week-header line (`2026-W27 · sat · day N of 7 · now = NN%`), a behind-total footer naming the largest gap, and a compact kind-mix line round it out. Reachable from Home with `p` (or the `<Space>` leader `3`/`p`); step weeks with `[` / `]` and return to the current week with `t`. Pace is derived from segments at read time, so nothing is stored client-side.
 
 ## [0.2.0] - 2026-06-21

@@ -15,12 +15,14 @@ mod books;
 mod envelope;
 mod error;
 mod progress;
+mod timer;
 
 pub use activities::{Activity, ActivityCreate, ActivityFilters};
 pub use books::{Book, BookChapter, BookStatus, BookUpdate};
 pub use envelope::List;
 pub use error::{ApiError, FieldError};
 pub use progress::{PaceState, Progress, ProgressReading};
+pub use timer::{Timer, TimerCandidate, TimerStopped};
 
 /// Current user from `GET /api/v1/me`. Fields mirror the API contract; not all
 /// are consumed by the UI yet.
@@ -116,6 +118,18 @@ impl ApiClient {
         body: &B,
     ) -> Result<T, ApiError> {
         let req = self.request(Method::PATCH, path).await?.json(body);
+        send(req).await
+    }
+
+    async fn delete(&self, path: &str) -> Result<(), ApiError> {
+        let req = self.request(Method::DELETE, path).await?;
+        send(req).await
+    }
+
+    // POST for member actions that take no request body (pause, resume, stop, …)
+    // but return the updated resource.
+    async fn post_empty<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
+        let req = self.request(Method::POST, path).await?;
         send(req).await
     }
 

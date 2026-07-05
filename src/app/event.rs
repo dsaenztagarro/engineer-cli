@@ -68,6 +68,7 @@ fn leader(key: crossterm::event::KeyEvent) -> Option<Action> {
         KeyCode::Char('1') => Some(Action::Goto(ScreenKind::Home)),
         KeyCode::Char('2') => Some(Action::Goto(ScreenKind::Books)),
         KeyCode::Char('3') => Some(Action::Goto(ScreenKind::Progress)),
+        KeyCode::Char('t') => Some(Action::Goto(ScreenKind::Timer)),
         KeyCode::Char('a') => Some(Action::Goto(ScreenKind::ActivityNew)),
         KeyCode::Char('b') => Some(Action::Goto(ScreenKind::Books)),
         KeyCode::Char('p') => Some(Action::Goto(ScreenKind::Progress)),
@@ -84,6 +85,7 @@ fn screen_key(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action> 
     match app.current.kind() {
         Login => login_key(key),
         Home => match key.code {
+            KeyCode::Char('t') => Some(Action::Goto(Timer)),
             KeyCode::Char('a') => Some(Action::Goto(ActivityNew)),
             KeyCode::Char('b') => Some(Action::Goto(Books)),
             KeyCode::Char('p') => Some(Action::Goto(Progress)),
@@ -93,6 +95,23 @@ fn screen_key(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action> 
         BookDetail => book_detail_key(key),
         ActivityNew => activity_normal_key(key),
         Progress => progress_key(key),
+        Timer => timer_key(key),
+    }
+}
+
+/// Timer-screen keys (bind-panel keys are handled by the screen's
+/// `intercept_key`, which runs before this). Intents are validated by the
+/// screen's reducer against the current stage, so the map is stage-agnostic.
+fn timer_key(key: crossterm::event::KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Char('s') => Some(Action::TimerStartBlank),
+        KeyCode::Char('p') => Some(Action::TimerPauseResume),
+        KeyCode::Char('x') => Some(Action::TimerStop),
+        KeyCode::Char('d') => Some(Action::TimerDiscard),
+        KeyCode::Char('/') | KeyCode::Char('b') => Some(Action::TimerBindBegin),
+        KeyCode::Enter => Some(Action::TimerDismissStopped),
+        KeyCode::Char('h') | KeyCode::Esc => Some(Action::Goto(ScreenKind::Home)),
+        _ => None,
     }
 }
 
@@ -180,6 +199,7 @@ fn command_mode(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action
 fn refresh_for(kind: ScreenKind) -> Action {
     match kind {
         ScreenKind::Progress => Action::RefreshProgress,
+        ScreenKind::Timer => Action::TimerReload,
         _ => Action::RefreshHome,
     }
 }
