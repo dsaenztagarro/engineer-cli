@@ -76,6 +76,9 @@ fn leader(key: crossterm::event::KeyEvent) -> Option<Action> {
         KeyCode::Char('3') => Some(Action::Goto(ScreenKind::Progress)),
         KeyCode::Char('t') => Some(Action::Goto(ScreenKind::Timer)),
         KeyCode::Char('a') => Some(Action::Goto(ScreenKind::ActivityNew)),
+        // `A` (capital) opens the activities table; `a` stays "+activity" (the
+        // new-activity form) so muscle memory is preserved.
+        KeyCode::Char('A') => Some(Action::Goto(ScreenKind::Activities)),
         KeyCode::Char('b') => Some(Action::Goto(ScreenKind::Books)),
         KeyCode::Char('p') => Some(Action::Goto(ScreenKind::Progress)),
         KeyCode::Char('h') | KeyCode::Char('H') => Some(Action::Goto(ScreenKind::Home)),
@@ -95,6 +98,7 @@ fn screen_key(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action> 
         Home => match key.code {
             KeyCode::Char('t') => Some(Action::Goto(Timer)),
             KeyCode::Char('a') => Some(Action::Goto(ActivityNew)),
+            KeyCode::Char('A') => Some(Action::Goto(Activities)),
             KeyCode::Char('b') => Some(Action::Goto(Books)),
             KeyCode::Char('p') => Some(Action::Goto(Progress)),
             KeyCode::Char('n') => Some(Action::Goto(Notes)),
@@ -104,9 +108,33 @@ fn screen_key(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action> 
         Books => books_key(key),
         BookDetail => book_detail_key(key),
         ActivityNew => activity_normal_key(key),
+        Activities => activities_key(key),
         Progress => progress_key(key),
         Timer => timer_key(key),
         Notes => notes_key(key),
+    }
+}
+
+/// Activities-table keys (search and the detail read own their keys via the
+/// screen's `intercept_key`, which runs before this). `[`/`]` step pages —
+/// consistent with the Progress screen's week nav — and `t` binds the live
+/// timer to the selected activity.
+fn activities_key(key: crossterm::event::KeyEvent) -> Option<Action> {
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('j'), _) | (KeyCode::Down, _) => Some(Action::ActivitiesMove(1)),
+        (KeyCode::Char('k'), _) | (KeyCode::Up, _) => Some(Action::ActivitiesMove(-1)),
+        (KeyCode::Char('g'), _) => Some(Action::ActivitiesJumpStart),
+        (KeyCode::Char('G'), _) => Some(Action::ActivitiesJumpEnd),
+        (KeyCode::Enter, _) | (KeyCode::Char('l'), _) => Some(Action::ActivitiesOpenDetail),
+        (KeyCode::Char('c'), _) => Some(Action::ActivitiesComplete),
+        (KeyCode::Char('a'), _) => Some(Action::ActivitiesArchive),
+        (KeyCode::Char('d'), _) => Some(Action::ActivitiesDuplicate),
+        (KeyCode::Char('t'), _) => Some(Action::ActivitiesStartTimer),
+        (KeyCode::Char('f'), _) => Some(Action::ActivitiesCycleFilter),
+        (KeyCode::Char(']'), _) => Some(Action::ActivitiesPageNext),
+        (KeyCode::Char('['), _) => Some(Action::ActivitiesPagePrev),
+        (KeyCode::Char('h'), _) => Some(Action::Goto(ScreenKind::Home)),
+        _ => None,
     }
 }
 
@@ -230,6 +258,7 @@ fn refresh_for(kind: ScreenKind) -> Action {
         ScreenKind::Progress => Action::RefreshProgress,
         ScreenKind::Timer => Action::TimerReload,
         ScreenKind::Notes => Action::RefreshNotes,
+        ScreenKind::Activities => Action::RefreshActivities,
         _ => Action::RefreshHome,
     }
 }

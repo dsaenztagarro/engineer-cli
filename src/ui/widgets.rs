@@ -15,6 +15,28 @@ pub fn status_pill(status: BookStatus) -> Span<'static> {
     Span::styled(label, Style::default().fg(Color::Black).bg(fg))
 }
 
+/// An activity's lifecycle status as a black-ink semantic pill, matching the
+/// book status-pill idiom. Status is free-form on the wire, so the colour is
+/// keyed off the value and an unrecognised status still renders literally
+/// (neutral fill) rather than being dropped. An absent status reads ` logged `.
+pub fn activity_status_pill(status: Option<&str>) -> Span<'static> {
+    let s = status.unwrap_or("").trim().to_ascii_lowercase();
+    let (label, fg): (String, Color) = if s.is_empty() {
+        (" logged ".into(), theme::MUTED)
+    } else if s.contains("complet") || s == "done" {
+        (" done ".into(), theme::SUCCESS)
+    } else if s.contains("progress") || s.contains("started") || s.contains("active") {
+        (" active ".into(), theme::ACCENT)
+    } else if s.contains("plan") || s.contains("pending") || s.contains("todo") {
+        (" planned ".into(), theme::MUTED)
+    } else if s.contains("abandon") || s.contains("cancel") || s.contains("drop") {
+        (" stopped ".into(), theme::DANGER)
+    } else {
+        (format!(" {} ", s.replace('_', " ")), theme::MUTED)
+    };
+    Span::styled(label, Style::default().fg(Color::Black).bg(fg))
+}
+
 /// Inline progress bar like `███▍·····  42%`.
 pub fn progress_bar(pct: f32, width: usize) -> Line<'static> {
     let pct = pct.clamp(0.0, 100.0);
