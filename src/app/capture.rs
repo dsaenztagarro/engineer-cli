@@ -23,7 +23,7 @@ use ratatui::Frame;
 use tokio::sync::mpsc::UnboundedSender;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
-use tui_textarea::TextArea;
+use tui_textarea::{CursorMove, TextArea};
 
 use crate::api::{Anchor, ApiClient, Book, Note, NoteInput};
 use crate::app::action::Action;
@@ -81,6 +81,19 @@ impl Default for QuickCapture {
 impl QuickCapture {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A *new* draft pre-filled with text — the `:note <text>` palette handoff.
+    /// The cursor lands at the end so the user keeps typing, adds an anchor, or
+    /// saves (Ctrl-S) straight away. Empty text is just a blank capture.
+    pub fn with_text(text: &str) -> Self {
+        let mut content = make_textarea(text);
+        content.move_cursor(CursorMove::Bottom);
+        content.move_cursor(CursorMove::End);
+        Self {
+            content,
+            ..Self::default()
+        }
     }
 
     /// The overlay pre-filled to edit an existing note — one editor, two verbs.
@@ -672,6 +685,15 @@ mod tests {
         let body = s.build_input();
         assert!(body.book_id.is_none());
         assert!(body.anchors.is_none());
+    }
+
+    #[test]
+    fn with_text_prefills_a_new_draft() {
+        let s = QuickCapture::with_text("closures are objects");
+        // Content is prefilled but this is a fresh note, not an edit.
+        assert_eq!(s.content_text(), "closures are objects");
+        assert!(s.editing.is_none());
+        assert!(s.has_input());
     }
 
     #[test]

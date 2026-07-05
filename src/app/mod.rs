@@ -25,6 +25,7 @@ use crate::ui::notify::{Level, Notification};
 
 mod action;
 mod capture;
+pub mod command;
 mod event;
 pub mod screens;
 
@@ -264,6 +265,7 @@ impl App {
             // (they create or drop `self.capture`); the live-edit actions below
             // route to the overlay's own reducer.
             Action::CaptureOpen => self.capture = Some(QuickCapture::new()),
+            Action::CaptureOpenText(text) => self.capture = Some(QuickCapture::with_text(&text)),
             Action::CaptureOpenEdit(note) => self.capture = Some(QuickCapture::for_edit(*note)),
             Action::CaptureClose => self.capture = None,
             Action::CaptureSaved => {
@@ -302,26 +304,7 @@ impl App {
             }
             Action::CommandSubmit => {
                 let buf = self.command_buffer.take().unwrap_or_default();
-                match buf.trim() {
-                    "q" | "quit" => self.should_quit = true,
-                    "home" => self.dispatch(Action::Goto(ScreenKind::Home)),
-                    "books" => self.dispatch(Action::Goto(ScreenKind::Books)),
-                    "timer" => self.dispatch(Action::Goto(ScreenKind::Timer)),
-                    // Bare nav verb, matching the `:timer` precedent (#9). The
-                    // `:note <text>` capture action is deferred to the #14
-                    // command grammar, which designs argument shapes.
-                    "notes" => self.dispatch(Action::Goto(ScreenKind::Notes)),
-                    "review" => self.dispatch(Action::Goto(ScreenKind::Review)),
-                    "activities" => self.dispatch(Action::Goto(ScreenKind::Activities)),
-                    "activity" | "a" => self.dispatch(Action::Goto(ScreenKind::ActivityNew)),
-                    "logout" => self.notify(Level::Info, "run `engineer logout` from the shell"),
-                    "logs" => match Config::log_dir() {
-                        Ok(dir) => self.notify(Level::Info, format!("logs: {}", dir.display())),
-                        Err(e) => self.notify(Level::Error, format!("log dir error: {e}")),
-                    },
-                    "w" => self.dispatch(Action::ActivitySubmit),
-                    other => self.notify(Level::Warning, format!("unknown command: :{other}")),
-                }
+                self.run_command(&buf);
             }
             other => {
                 let next = self.current.handle(other, &self.api, &self.tx).await;
@@ -329,6 +312,67 @@ impl App {
                     self.notify(level, text);
                 }
             }
+        }
+    }
+
+    /// Parse a submitted `:` line against the grammar table and act on it. The
+    /// table is the single source of truth: this dispatches, and the completion
+    /// / inline hints (`command::complete`, `command::render_line`) read the same
+    /// `ENTRIES`, so what runs and what the UI advertises can't drift.
+    fn run_command(&mut self, buf: &str) {
+        use command::Parse;
+        match command::parse(buf) {
+            Parse::Empty => {}
+            Parse::Run(cmd) => self.execute_command(cmd),
+            Parse::Unknown(verb) => {
+                self.notify(Level::Warning, format!("unknown :{verb} — try :help"));
+            }
+            Parse::Ambiguous(matches) => {
+                self.notify(
+                    Level::Warning,
+                    format!("ambiguous — {}", matches.join(" · ")),
+                );
+            }
+            Parse::BadArg {
+                verb,
+                expected,
+                got,
+            } => {
+                self.notify(
+                    Level::Warning,
+                    format!(":{verb} {got}? — try {}", expected.join("|")),
+                );
+            }
+            Parse::AmbiguousArg { verb, matches } => {
+                self.notify(Level::Warning, format!(":{verb} {}?", matches.join(" or ")));
+            }
+        }
+    }
+
+    fn execute_command(&mut self, cmd: command::Command) {
+        use command::Command;
+        match cmd {
+            Command::Nav(kind) => self.dispatch(Action::Goto(kind)),
+            // Timer actions run against the app-owned snapshot from any screen;
+            // the header cell shows the result, and an invalid transition surfaces
+            // the same warning the Timer screen would.
+            Command::Timer(verb) => {
+                if let Some((level, text)) =
+                    screens::timer::palette_dispatch(verb, self.timer.as_ref(), &self.api, &self.tx)
+                {
+                    self.notify(level, text);
+                }
+            }
+            Command::Note(None) => self.dispatch(Action::CaptureOpen),
+            Command::Note(Some(text)) => self.dispatch(Action::CaptureOpenText(text)),
+            Command::Quit => self.should_quit = true,
+            Command::Write => self.dispatch(Action::ActivitySubmit),
+            Command::Logs => match Config::log_dir() {
+                Ok(dir) => self.notify(Level::Info, format!("logs: {}", dir.display())),
+                Err(e) => self.notify(Level::Error, format!("log dir error: {e}")),
+            },
+            Command::Logout => self.notify(Level::Info, "run `engineer logout` from the shell"),
+            Command::Help => self.notify(Level::Info, command::help_summary()),
         }
     }
 
@@ -533,6 +577,87 @@ mod tests {
         assert!(app.capture.is_none());
         let n = app.notification.expect("a confirmation is shown");
         assert_eq!(n.level, Level::Success);
+    }
+
+    fn drain(rx: &mut mpsc::UnboundedReceiver<Action>) -> Vec<Action> {
+        let mut out = Vec::new();
+        while let Ok(a) = rx.try_recv() {
+            out.push(a);
+        }
+        out
+    }
+
+    async fn submit_command(app: &mut App, buf: &str) {
+        app.command_buffer = Some(buf.to_string());
+        app.handle(Action::CommandSubmit).await;
+    }
+
+    #[tokio::test]
+    async fn command_nav_verb_dispatches_goto() {
+        let (mut app, mut rx) = test_app(Some("alice@example.com".into()));
+        submit_command(&mut app, "books").await;
+        assert!(drain(&mut rx)
+            .iter()
+            .any(|a| matches!(a, Action::Goto(ScreenKind::Books))));
+        assert!(app.command_buffer.is_none(), "buffer is consumed on submit");
+    }
+
+    #[tokio::test]
+    async fn command_prefix_resolves_to_activities() {
+        let (mut app, mut rx) = test_app(Some("alice@example.com".into()));
+        submit_command(&mut app, "act").await;
+        assert!(drain(&mut rx)
+            .iter()
+            .any(|a| matches!(a, Action::Goto(ScreenKind::Activities))));
+    }
+
+    #[tokio::test]
+    async fn command_note_prefills_the_capture_overlay() {
+        let (mut app, mut rx) = test_app(Some("alice@example.com".into()));
+        submit_command(&mut app, "note closures are objects").await;
+
+        // The submit enqueues the prefilled open; apply it, then it must render.
+        let opened = drain(&mut rx)
+            .into_iter()
+            .find(|a| matches!(a, Action::CaptureOpenText(t) if t == "closures are objects"));
+        assert!(opened.is_some(), "expected a prefilled CaptureOpenText");
+        app.handle(opened.unwrap()).await;
+        assert!(app.capture.is_some());
+        assert!(rendered_text(&mut app).contains("closures are objects"));
+    }
+
+    #[tokio::test]
+    async fn command_unknown_verb_notifies_helpfully() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        submit_command(&mut app, "wobble").await;
+        let n = app.notification.expect("a warning is shown");
+        assert_eq!(n.level, Level::Warning);
+        assert!(n.text.contains("unknown"), "{}", n.text);
+        assert!(n.text.contains(":help"), "{}", n.text);
+    }
+
+    #[tokio::test]
+    async fn command_timer_stop_on_unbound_timer_warns() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        // A running-but-unbound timer: `:timer stop` must refuse with the same
+        // guidance the Timer screen gives.
+        app.timer = Some(
+            serde_json::from_value(serde_json::json!({ "running": true, "bound": false })).unwrap(),
+        );
+        submit_command(&mut app, "timer stop").await;
+        let n = app.notification.expect("a warning is shown");
+        assert_eq!(n.level, Level::Warning);
+        assert!(n.text.contains("bind"), "{}", n.text);
+    }
+
+    #[tokio::test]
+    async fn command_help_lists_the_table() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        submit_command(&mut app, "help").await;
+        let n = app.notification.expect("help is shown");
+        assert_eq!(n.level, Level::Info);
+        assert!(n.text.contains("home"), "{}", n.text);
+        assert!(n.text.contains("timer"), "{}", n.text);
     }
 
     #[tokio::test]

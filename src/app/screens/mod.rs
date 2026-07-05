@@ -174,11 +174,9 @@ impl Screen {
 
     pub fn hints(&self, leader: bool, command: Option<&str>) -> Line<'static> {
         if let Some(buf) = command {
-            return Line::from(vec![
-                ratatui::text::Span::styled(":", crate::ui::theme::focused()),
-                ratatui::text::Span::raw(buf.to_string()),
-                ratatui::text::Span::styled("█", crate::ui::theme::muted()),
-            ]);
+            // The command line renders its own four states (empty / partial /
+            // unknown / executing) from the grammar table.
+            return crate::app::command::render_line(buf);
         }
         if leader {
             return crate::ui::widgets::footer_hints(&[

@@ -192,6 +192,10 @@ pub enum Action {
     // by `App` (they create or drop `App::capture`); the rest are routed to the
     // live overlay reducer.
     CaptureOpen,
+    /// Open quick-capture prefilled with text (the `:note <text>` palette
+    /// action). The overlay is a *new* draft — safer than a direct create, since
+    /// the user can add an anchor or Ctrl-S immediately.
+    CaptureOpenText(String),
     CaptureOpenEdit(Box<Note>),
     CaptureClose,
     CaptureSaved,
