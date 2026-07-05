@@ -15,6 +15,7 @@ pub mod book_detail;
 pub mod books;
 pub mod home;
 pub mod login;
+pub mod progress;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScreenKind {
@@ -23,6 +24,7 @@ pub enum ScreenKind {
     Books,
     BookDetail,
     ActivityNew,
+    Progress,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +39,7 @@ pub enum Screen {
     Books(books::Books),
     BookDetail(book_detail::BookDetail),
     ActivityNew(activity_new::ActivityNew),
+    Progress(progress::Progress),
 }
 
 impl Screen {
@@ -47,6 +50,7 @@ impl Screen {
             ScreenKind::Books => Self::Books(books::Books::default()),
             ScreenKind::BookDetail => Self::BookDetail(book_detail::BookDetail::default()),
             ScreenKind::ActivityNew => Self::ActivityNew(activity_new::ActivityNew::default()),
+            ScreenKind::Progress => Self::Progress(progress::Progress::default()),
         }
     }
 
@@ -57,6 +61,7 @@ impl Screen {
             Self::Books(_) => ScreenKind::Books,
             Self::BookDetail(_) => ScreenKind::BookDetail,
             Self::ActivityNew(_) => ScreenKind::ActivityNew,
+            Self::Progress(_) => ScreenKind::Progress,
         }
     }
 
@@ -67,6 +72,7 @@ impl Screen {
             Self::Books(_) => "Books",
             Self::BookDetail(_) => "Book",
             Self::ActivityNew(_) => "New activity",
+            Self::Progress(_) => "Progress",
         }
     }
 
@@ -84,6 +90,7 @@ impl Screen {
             Self::Books(s) => s.on_enter(api, tx),
             Self::BookDetail(s) => s.on_enter(api, tx),
             Self::ActivityNew(s) => s.on_enter(api, tx),
+            Self::Progress(s) => s.on_enter(api, tx),
         }
     }
 
@@ -108,6 +115,7 @@ impl Screen {
             Self::Books(s) => s.handle(action, api, tx).await,
             Self::BookDetail(s) => s.handle(action, api, tx).await,
             Self::ActivityNew(s) => s.handle(action, api, tx).await,
+            Self::Progress(s) => s.handle(action, api, tx).await,
         }
     }
 
@@ -118,6 +126,7 @@ impl Screen {
             Self::Books(s) => s.render(frame, area),
             Self::BookDetail(s) => s.render(frame, area),
             Self::ActivityNew(s) => s.render(frame, area),
+            Self::Progress(s) => s.render(frame, area),
         }
     }
 
@@ -133,6 +142,7 @@ impl Screen {
             return crate::ui::widgets::footer_hints(&[
                 ("1", "home"),
                 ("2", "books"),
+                ("3", "progress"),
                 ("a", "+activity"),
                 ("s", "save"),
             ]);
@@ -142,6 +152,7 @@ impl Screen {
             Self::Home(_) => crate::ui::widgets::footer_hints(&[
                 ("a", "+activity"),
                 ("b", "books"),
+                ("p", "progress"),
                 ("r", "refresh"),
                 (":", "cmd"),
                 ("q", "quit"),
@@ -149,6 +160,7 @@ impl Screen {
             Self::Books(s) => s.hints(),
             Self::BookDetail(s) => s.hints(),
             Self::ActivityNew(s) => s.hints(),
+            Self::Progress(s) => s.hints(),
         }
     }
 }

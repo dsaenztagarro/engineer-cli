@@ -14,11 +14,13 @@ mod activities;
 mod books;
 mod envelope;
 mod error;
+mod progress;
 
 pub use activities::{Activity, ActivityCreate, ActivityFilters};
 pub use books::{Book, BookChapter, BookStatus, BookUpdate};
 pub use envelope::List;
 pub use error::{ApiError, FieldError};
+pub use progress::{PaceState, Progress, ProgressReading};
 
 /// Current user from `GET /api/v1/me`. Fields mirror the API contract; not all
 /// are consumed by the UI yet.
