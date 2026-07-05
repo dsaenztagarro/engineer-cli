@@ -1,0 +1,1207 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <meta name="design_doc_mode" content="canvas">
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  </style>
+</helmet>
+
+<!-- ============================ LEGEND / DESIGN SYSTEM ============================ -->
+<div style="position:absolute; left:40px; top:40px; width:560px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">DESIGN SYSTEM</div>
+  <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — palette &amp; modes</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="color:#8787FF; font-weight:700; white-space:pre"> system </span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080"> · terminal client · ratatui</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:6px 10px 2px"><span style="color:#808080">PALETTE</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; gap:24px"><span><span style="color:#8787FF">████</span> accent <span style="color:#808080">#8787FF</span></span><span><span style="color:#87AF87">████</span> success <span style="color:#808080">#87AF87</span></span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; gap:24px"><span><span style="color:#D7AF5F">████</span> warn&nbsp;&nbsp; <span style="color:#808080">#D7AF5F</span></span><span><span style="color:#D75F5F">████</span> danger&nbsp; <span style="color:#808080">#D75F5F</span></span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; gap:24px"><span><span style="color:#808080">████</span> muted&nbsp; <span style="color:#808080">#808080</span></span><span><span style="color:#585858">████</span> border&nbsp; <span style="color:#808080">#585858</span></span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:8px 10px 2px"><span style="color:#808080">MODES</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; gap:8px">
+        <span style="background:#E6EBF2; color:#0B0E14; font-weight:700; white-space:pre"> NORMAL </span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre"> INSERT </span>
+        <span style="background:#D7AF5F; color:#0B0E14; font-weight:700; white-space:pre"> COMMAND </span>
+        <span style="background:#5F5FAF; color:#0B0E14; font-weight:700; white-space:pre"> VISUAL </span>
+      </div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:8px 10px 2px"><span style="color:#808080">KEYS</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px"><span style="color:#8787FF">j/k</span> move<span style="color:#585858"> · </span><span style="color:#8787FF">gg/G</span> top/end<span style="color:#585858"> · </span><span style="color:#8787FF">/</span> search<span style="color:#585858"> · </span><span style="color:#8787FF">n/N</span> next/prev</div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 4px"><span style="color:#8787FF">:</span> command<span style="color:#585858"> · </span><span style="color:#8787FF">⎵</span> leader<span style="color:#585858"> · </span><span style="color:#8787FF">i/Esc</span> insert<span style="color:#585858"> · </span><span style="color:#8787FF">q</span> quit</div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ SIGN IN ============================ -->
+<div style="position:absolute; left:660px; top:40px; width:560px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">SIGN IN</div>
+  <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — 64×18</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Sign in</span>
+        <span style="flex:1"></span>
+        <span style="color:#808080">not signed in</span>
+      </div>
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="color:#8787FF; font-weight:700; white-space:pre"> Sign in </span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:14px 10px 2px; text-align:center"><span style="color:#8787FF; font-weight:700">engineer</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; text-align:center; color:#808080">Track what you study, from the terminal.</div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:14px 10px 2px; text-align:center"><span style="color:#D7AF5F">●</span> <span style="color:#808080">you're not signed in</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px 2px; text-align:center">Press <span style="color:#8787FF; font-weight:700">Enter</span> to log in.</div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:14px 10px 4px; text-align:center; color:#585858">OAuth2 · PKCE · loopback 127.0.0.1 · keyring</div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; align-items:center; margin-top:8px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ⏎ </span><span>&nbsp;log in</span>
+        <span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> q </span><span>&nbsp;quit</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ HOME / DASHBOARD ============================ -->
+<div style="position:absolute; left:40px; top:480px; width:840px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">HOME · DASHBOARD</div>
+  <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Home · 96×30</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Home</span>
+        <span style="flex:1"></span>
+        <span style="color:#808080">alice @ identity.dsaenz.dev</span>
+      </div>
+
+      <!-- Today -->
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="color:#8787FF; font-weight:700; white-space:pre"> Today · 95 min logged </span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; color:#8787FF; font-weight:700"><span style="width:64px">TIME</span><span style="width:150px">KIND</span><span style="width:64px">DUR</span><span>TITLE</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="width:64px; color:#808080">08:40</span><span style="width:150px">read</span><span style="width:64px; color:#808080">45m</span><span>Designing Data-Intensive Apps</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="width:64px; color:#808080">12:15</span><span style="width:150px">practice</span><span style="width:64px; color:#808080">30m</span><span>Rustlings · iterators set</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 2px; display:flex"><span style="width:64px; color:#808080">19:05</span><span style="width:150px">write</span><span style="width:64px; color:#808080">20m</span><span>Raft consensus summary</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+
+      <!-- Currently reading -->
+      <div style="display:flex; margin-top:4px">
+        <span style="color:#585858">┌</span>
+        <span style="color:#8787FF; font-weight:700; white-space:pre"> Currently reading · 2 </span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 0; display:flex; align-items:center"><span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> reading </span><span>&nbsp;&nbsp;</span><span style="font-weight:700">Designing Data-Intensive Applications</span><span style="color:#808080">&nbsp;&nbsp;· Martin Kleppmann</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 10px 3px; display:flex"><span style="color:#8787FF; white-space:pre">████████████▌·················</span><span style="color:#808080">&nbsp;&nbsp;42%</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 0; display:flex; align-items:center"><span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> reading </span><span>&nbsp;&nbsp;</span><span style="font-weight:700">Crafting Interpreters</span><span style="color:#808080">&nbsp;&nbsp;· Robert Nystrom</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 10px 4px; display:flex"><span style="color:#8787FF; white-space:pre">█████▍························</span><span style="color:#808080">&nbsp;&nbsp;18%</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+
+      <!-- footer -->
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:8px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> a </span><span>&nbsp;add</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> b </span><span>&nbsp;books</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> / </span><span>&nbsp;search</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> : </span><span>&nbsp;command</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ⎵ </span><span>&nbsp;leader</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> q </span><span>&nbsp;quit</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ============================ BOOKS LIST ============================ -->
+<div style="position:absolute; left:940px; top:480px; width:780px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">BOOKS · LIST</div>
+  <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Books · 92×24</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Books</span>
+        <span style="flex:1"></span>
+        <span style="color:#808080">alice @ identity.dsaenz.dev</span>
+      </div>
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Books · </span><span style="color:#E6EBF2; font-weight:700">all</span><span style="color:#808080"> · reading · completed </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 1px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="background:#87AF87; color:#0B0E14; font-weight:600; white-space:pre"> done </span><span>&nbsp;&nbsp;The Rust Programming Language</span><span style="color:#808080">&nbsp;&nbsp;· Steve Klabnik</span><span style="flex:1"></span><span style="color:#808080">100%</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌  reading   Designing Data-Intensive Applications  · Martin Kleppmann</span><span style="flex:1"></span><span>42%</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> reading </span><span>&nbsp;&nbsp;Crafting Interpreters</span><span style="color:#808080">&nbsp;&nbsp;· Robert Nystrom</span><span style="flex:1"></span><span style="color:#808080">&nbsp;18%</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="background:#808080; color:#0B0E14; font-weight:600; white-space:pre"> unread </span><span>&nbsp;&nbsp;The Pragmatic Programmer</span><span style="color:#808080">&nbsp;&nbsp;· Hunt &amp; Thomas</span><span style="flex:1"></span><span style="color:#808080">&nbsp;&nbsp;0%</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="background:#D7AF5F; color:#0B0E14; font-weight:600; white-space:pre"> hold </span><span>&nbsp;&nbsp;Structure &amp; Interpretation of Computer Programs</span><span style="color:#808080">&nbsp;&nbsp;· Abelson</span><span style="flex:1"></span><span style="color:#808080">&nbsp;35%</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="background:#D75F5F; color:#0B0E14; font-weight:600; white-space:pre"> stop </span><span>&nbsp;&nbsp;Gödel, Escher, Bach</span><span style="color:#808080">&nbsp;&nbsp;· Hofstadter</span><span style="flex:1"></span><span style="color:#808080">&nbsp;&nbsp;7%</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:8px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ↵ </span><span>&nbsp;open</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> / </span><span>&nbsp;search</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> 1/2/3 </span><span>&nbsp;filter</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> h </span><span>&nbsp;back</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ BOOK DETAIL ============================ -->
+<div style="position:absolute; left:40px; top:1120px; width:780px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">BOOK DETAIL · CHAPTERS</div>
+  <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Book · 92×28</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Books</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Designing Data-Intensive Applications</span>
+        <span style="flex:1"></span>
+        <span style="color:#808080">alice @ identity.dsaenz.dev</span>
+      </div>
+      <!-- header panel -->
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="color:#8787FF; font-weight:700; white-space:pre"> &nbsp; </span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 0; display:flex; align-items:center"><span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> reading </span><span>&nbsp;&nbsp;</span><span style="color:#8787FF; font-weight:700">Designing Data-Intensive Applications</span><span style="color:#808080">&nbsp;&nbsp;· Martin Kleppmann</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="color:#8787FF; white-space:pre">████████████████▊·······················</span><span>&nbsp;&nbsp;42%</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; color:#808080">page 312 / 740</div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <!-- chapters -->
+      <div style="display:flex; margin-top:4px">
+        <span style="color:#585858">┌</span>
+        <span style="color:#8787FF; font-weight:700; white-space:pre"> Chapters · 12 </span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 1px; display:flex"><span style="color:#8787FF; white-space:pre"> [✓] </span><span style="color:#808080; white-space:pre">  1.  </span><span>Reliable, Scalable &amp; Maintainable Applications</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="color:#8787FF; white-space:pre"> [✓] </span><span style="color:#808080; white-space:pre">  2.  </span><span>Data Models &amp; Query Languages</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ [ ]   3.  Storage &amp; Retrieval</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="color:#808080; white-space:pre"> [ ] </span><span style="color:#808080; white-space:pre">  4.  </span><span>Encoding &amp; Evolution</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="color:#808080; white-space:pre"> [·] </span><span style="color:#808080; white-space:pre">  5.  </span><span style="color:#808080">Replication&nbsp;&nbsp;<span>skipped</span></span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; display:flex"><span style="color:#808080; white-space:pre"> [ ] </span><span style="color:#808080; white-space:pre">  6.  </span><span>Partitioning</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:8px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;chapter</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ⎵ </span><span>&nbsp;done &amp; next</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> p </span><span>&nbsp;page</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> s </span><span>&nbsp;status</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> h </span><span>&nbsp;back</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ NEW ACTIVITY (INSERT) ============================ -->
+<div style="position:absolute; left:1760px; top:480px; width:760px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">ACTIVITY FORM · NEW / EDIT (detail = edit)</div>
+  <div data-screen-label="Activity form" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Activity · edit · 84×24</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Activities</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Read DDIA ch.3</span>
+        <span style="flex:1"></span>
+        <span style="color:#808080">alice @ identity.dsaenz.dev</span>
+      </div>
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Activity </span><span style="color:#808080">· one always-editable form (same as :activity new) </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <!-- title (focused) -->
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:6px 12px 0">
+        <div style="display:flex"><span style="color:#8787FF">┌</span><span style="color:#808080; white-space:pre"> title </span><span style="color:#8787FF; flex:1; min-width:0; overflow:hidden; white-space:nowrap">──────────────────────────────────────────────────────────────────────────────────────────</span><span style="color:#8787FF">┐</span></div>
+        <div style="display:flex"><span style="color:#8787FF">│</span><div style="flex:1; min-width:0; padding:0 8px">Read DDIA ch.3 — Storage &amp; Retrieval<span style="background:#E6EBF2; color:#05080F">&nbsp;</span></div><span style="color:#8787FF">│</span></div>
+        <div style="display:flex"><span style="color:#8787FF">└</span><span style="color:#8787FF; flex:1; min-width:0; overflow:hidden; white-space:nowrap">──────────────────────────────────────────────────────────────────────────────────────────</span><span style="color:#8787FF">┘</span></div>
+      </div><span style="color:#585858">│</span></div>
+      <!-- status | kind -->
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 12px; display:flex; gap:10px">
+        <div style="flex:1; min-width:0">
+          <div style="display:flex"><span style="color:#585858">┌</span><span style="color:#808080; white-space:pre"> status </span><span style="color:#585858; flex:1; min-width:0; overflow:hidden; white-space:nowrap">──────────────────────────────────</span><span style="color:#585858">┐</span></div>
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 8px; display:flex"><span style="color:#8787FF">● in progress</span><span style="flex:1"></span><span style="color:#585858">▾</span></div><span style="color:#585858">│</span></div>
+          <div style="display:flex"><span style="color:#585858">└</span><span style="color:#585858; flex:1; min-width:0; overflow:hidden; white-space:nowrap">──────────────────────────────────</span><span style="color:#585858">┘</span></div>
+        </div>
+        <div style="flex:1; min-width:0">
+          <div style="display:flex"><span style="color:#585858">┌</span><span style="color:#808080; white-space:pre"> kind </span><span style="color:#585858; flex:1; min-width:0; overflow:hidden; white-space:nowrap">──────────────────────────────────</span><span style="color:#585858">┐</span></div>
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 8px; display:flex"><span>read</span><span style="flex:1"></span><span style="color:#585858">▾</span></div><span style="color:#585858">│</span></div>
+          <div style="display:flex"><span style="color:#585858">└</span><span style="color:#585858; flex:1; min-width:0; overflow:hidden; white-space:nowrap">──────────────────────────────────</span><span style="color:#585858">┘</span></div>
+        </div>
+      </div><span style="color:#585858">│</span></div>
+      <!-- domain | subdomain -->
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 12px; display:flex; gap:10px">
+        <div style="flex:1; min-width:0">
+          <div style="display:flex"><span style="color:#585858">┌</span><span style="color:#808080; white-space:pre"> domain </span><span style="color:#585858; flex:1; min-width:0; overflow:hidden; white-space:nowrap">──────────────────────────────────</span><span style="color:#585858">┐</span></div>
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 8px; display:flex"><span>Distributed Systems</span><span style="flex:1"></span><span style="color:#585858">▾</span></div><span style="color:#585858">│</span></div>
+          <div style="display:flex"><span style="color:#585858">└</span><span style="color:#585858; flex:1; min-width:0; overflow:hidden; white-space:nowrap">──────────────────────────────────</span><span style="color:#585858">┘</span></div>
+        </div>
+        <div style="flex:1; min-width:0">
+          <div style="display:flex"><span style="color:#585858">┌</span><span style="color:#808080; white-space:pre"> subdomain </span><span style="color:#585858; flex:1; min-width:0; overflow:hidden; white-space:nowrap">──────────────────────────────────</span><span style="color:#585858">┐</span></div>
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 8px; display:flex"><span>Storage</span><span style="flex:1"></span><span style="color:#585858">▾</span></div><span style="color:#585858">│</span></div>
+          <div style="display:flex"><span style="color:#585858">└</span><span style="color:#585858; flex:1; min-width:0; overflow:hidden; white-space:nowrap">──────────────────────────────────</span><span style="color:#585858">┘</span></div>
+        </div>
+      </div><span style="color:#585858">│</span></div>
+      <!-- bloom | path -->
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 12px; display:flex; gap:10px">
+        <div style="flex:1; min-width:0">
+          <div style="display:flex"><span style="color:#585858">┌</span><span style="color:#808080; white-space:pre"> bloom </span><span style="color:#585858; flex:1; min-width:0; overflow:hidden; white-space:nowrap">──────────────────────────────────</span><span style="color:#585858">┐</span></div>
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 8px; display:flex"><span>understand</span><span style="flex:1"></span><span style="color:#585858">▾</span></div><span style="color:#585858">│</span></div>
+          <div style="display:flex"><span style="color:#585858">└</span><span style="color:#585858; flex:1; min-width:0; overflow:hidden; white-space:nowrap">──────────────────────────────────</span><span style="color:#585858">┘</span></div>
+        </div>
+        <div style="flex:1; min-width:0">
+          <div style="display:flex"><span style="color:#585858">┌</span><span style="color:#808080; white-space:pre"> path </span><span style="color:#585858; flex:1; min-width:0; overflow:hidden; white-space:nowrap">──────────────────────────────────</span><span style="color:#585858">┐</span></div>
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 8px; display:flex"><span>DS Foundations</span><span style="color:#808080">&nbsp;· 3/6</span><span style="flex:1"></span><span style="color:#585858">▾</span></div><span style="color:#585858">│</span></div>
+          <div style="display:flex"><span style="color:#585858">└</span><span style="color:#585858; flex:1; min-width:0; overflow:hidden; white-space:nowrap">──────────────────────────────────</span><span style="color:#585858">┘</span></div>
+        </div>
+      </div><span style="color:#585858">│</span></div>
+      <!-- tags -->
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 12px">
+        <div style="display:flex"><span style="color:#585858">┌</span><span style="color:#808080; white-space:pre"> tags </span><span style="color:#585858; flex:1; min-width:0; overflow:hidden; white-space:nowrap">──────────────────────────────────────────────────────────────────────────────────────────</span><span style="color:#585858">┐</span></div>
+        <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 8px; display:flex; align-items:center"><span style="background:#8787FF; color:#0B0E14; white-space:pre"> lsm-trees × </span><span style="white-space:pre"> </span><span style="background:#8787FF; color:#0B0E14; white-space:pre"> storage × </span><span style="color:#585858">&nbsp;&nbsp;type to add…</span></div><span style="color:#585858">│</span></div>
+        <div style="display:flex"><span style="color:#585858">└</span><span style="color:#585858; flex:1; min-width:0; overflow:hidden; white-space:nowrap">──────────────────────────────────────────────────────────────────────────────────────────</span><span style="color:#585858">┘</span></div>
+      </div><span style="color:#585858">│</span></div>
+      <!-- description ($EDITOR) -->
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 12px">
+        <div style="display:flex"><span style="color:#585858">┌</span><span style="color:#808080; white-space:pre"> description </span><span style="color:#585858; flex:1; min-width:0; overflow:hidden; white-space:nowrap">──────────────────────────────────────────────────────────────────────────────────────────</span><span style="color:#585858">┐</span></div>
+        <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 8px; display:flex"><span style="color:#808080">Write amplification trade-offs; compaction strategies…</span><span style="flex:1"></span><span style="color:#585858">e opens $EDITOR (nvim)</span></div><span style="color:#585858">│</span></div>
+        <div style="display:flex"><span style="color:#585858">└</span><span style="color:#585858; flex:1; min-width:0; overflow:hidden; white-space:nowrap">──────────────────────────────────────────────────────────────────────────────────────────</span><span style="color:#585858">┘</span></div>
+      </div><span style="color:#585858">│</span></div>
+      <!-- collections & segments live on the activity detail -->
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:5px 12px 5px; color:#585858"><span style="color:#808080">books · repos · notes · segments</span> — managed on the activity detail&nbsp;&nbsp;·&nbsp;&nbsp;<span style="color:#8787FF">o</span> open detail</div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:8px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre"> INSERT </span><span style="color:#808080; white-space:pre">&nbsp;&nbsp;type&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Tab </span><span>&nbsp;next field</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ⇧Tab </span><span>&nbsp;prev</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Esc </span><span>&nbsp;normal</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> :w </span><span>&nbsp;save</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> :q </span><span>&nbsp;cancel</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ DESIGN NOTES (annotation, not a TUI mock) ============================ -->
+<div style="position:absolute; left:2560px; top:480px; width:560px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">DESIGN NOTES · BEHAVIOUR + WEB→TUI</div>
+  <div style="background:#0A0E16; border:1px dashed #2A3446; border-radius:8px; padding:16px 18px; font-size:13px; line-height:1.55; color:#C4CCD8">
+
+    <div style="color:#8787FF; font-weight:700; letter-spacing:.04em">◆ ACTIVITY FORM — what changed</div>
+    <div style="margin:8px 0 2px"><span style="color:#87AF87; font-weight:700">Deduped the mode line.</span> The form carried an in-panel <span style="color:#808080">-- INSERT --</span> row <span style="color:#808080">and</span> a footer below the Block — the same state twice. ratatui draws the form <span style="color:#E6EBF2">Block</span>, then <span style="color:#E6EBF2">one</span> footer <span style="color:#E6EBF2">Line</span> (mode badge + keys). Never two.</div>
+    <div style="margin:6px 0 2px"><span style="color:#87AF87; font-weight:700">Trimmed to editable metadata.</span> Books · repos · notes · segments left the create/edit form — they already live on the <span style="color:#E6EBF2">Activity detail</span>. The form no longer mirrors the whole record; it fits ~24 rows instead of 44. <span style="color:#808080">:activity new</span> and <span style="color:#808080">e</span> on a row open this same short form.</div>
+
+    <div style="color:#8787FF; font-weight:700; letter-spacing:.04em; margin-top:14px">◆ RATATUI behaviour (form)</div>
+    <div style="margin:8px 0 2px"><span style="color:#E6EBF2">•</span> Each field = its own one-row <span style="color:#E6EBF2">Block</span>. Focused field: border = accent <span style="color:#8787FF">105</span>, cursor = inverse cell.</div>
+    <div style="margin:2px 0"><span style="color:#E6EBF2">•</span> status · kind · domain · subdomain · bloom · path are <span style="color:#E6EBF2">closed pickers</span> — <span style="color:#808080">⏎/Space</span> opens a popup <span style="color:#E6EBF2">List</span> (Telescope-flavoured) over the form; never free text.</div>
+    <div style="margin:2px 0"><span style="color:#E6EBF2">•</span> tags = inline chips + input: <span style="color:#808080">⏎</span> commits, <span style="color:#808080">⌫</span> on empty removes the last.</div>
+    <div style="margin:2px 0"><span style="color:#E6EBF2">•</span> description = <span style="color:#808080">e → $EDITOR</span>; the box only previews. No <span style="color:#D75F5F">TextArea</span> in the grid.</div>
+    <div style="margin:2px 0"><span style="color:#E6EBF2">•</span> <span style="color:#808080">:w</span> writes (POST/PATCH), <span style="color:#808080">:q / Esc×2</span> cancels. Headless twin: <span style="color:#808080">engineer activity new --title … --kind …</span>.</div>
+
+    <div style="color:#8787FF; font-weight:700; letter-spacing:.04em; margin-top:14px">◆ WEB → TUI translation (review · coding-sessions · book-practice)</div>
+    <div style="margin:8px 0 2px">The web cockpits stack many rich panels on one page. In the grid, <span style="color:#E6EBF2">collapse each to List → detail</span>, one job per screen:</div>
+    <div style="margin:2px 0"><span style="color:#E6EBF2">•</span> <span style="color:#E6EBF2; font-weight:700">review</span> — the due queue is a <span style="color:#E6EBF2">List</span>; the drill is a full-screen single card + rate row (<span style="color:#808080">already shipped ✓</span>).</div>
+    <div style="margin:2px 0"><span style="color:#E6EBF2">•</span> <span style="color:#E6EBF2; font-weight:700">coding-sessions</span> — session <span style="color:#E6EBF2">Table</span> (repo · lang · intent · logged); detail = exercise ledger as a <span style="color:#E6EBF2">List</span>, solved/unsolved via glyph + colour. Drop pill soup — intent is one styled Span.</div>
+    <div style="margin:2px 0"><span style="color:#E6EBF2">•</span> <span style="color:#E6EBF2; font-weight:700">book-practice</span> — the contents tree is a <span style="color:#E6EBF2">List</span> with indent + <span style="color:#808080">▸/▾</span> disclosure; one edition column, second on <span style="color:#808080">Tab</span>. Exercise <span style="color:#808080">blocks</span> (not individual rows) with a LineGauge; repos as a short list. No side-by-side edition columns.</div>
+    <div style="margin:8px 0 0; color:#808080; font-style:normal">Rule of thumb: one panel per screen, <span style="color:#8787FF">/</span> to filter, <span style="color:#8787FF">⏎</span> to descend, <span style="color:#8787FF">h</span> to climb — depth replaces the web's width.</div>
+  </div>
+</div>
+
+<!-- ============================ COMMAND PALETTE ============================ -->
+<div style="position:absolute; left:40px; top:1860px; width:780px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">COMMAND PALETTE · :</div>
+  <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — :command · 92×24</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Books</span>
+        <span style="flex:1"></span>
+        <span style="color:#808080">alice @ identity.dsaenz.dev</span>
+      </div>
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> commands </span><span style="color:#808080">· match "bo" </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 1px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ :books</span><span style="flex:1"></span><span>open the books list</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  :</span><span style="color:#8787FF; font-weight:700">bo</span><span>ok reading</span><span style="flex:1"></span><span style="color:#808080">filter status = reading</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  :</span><span style="color:#8787FF; font-weight:700">bo</span><span>ok done</span><span style="flex:1"></span><span style="color:#808080">filter status = completed</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; color:#585858"><span style="white-space:pre">  :activity new</span><span style="flex:1"></span><span>log an activity</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; color:#585858"><span style="white-space:pre">  :whoami</span><span style="flex:1"></span><span>show the authenticated user</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; display:flex; align-items:center; color:#585858"><span style="white-space:pre">  :logout</span><span style="flex:1"></span><span>revoke token &amp; sign out</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <!-- command line -->
+      <div style="display:flex; align-items:center; margin-top:6px"><span style="color:#D7AF5F; font-weight:700">:</span><span>bo</span><span style="background:#D7AF5F; color:#05080F; white-space:pre">&nbsp;</span><span style="flex:1"></span><span style="color:#808080">↵ run · Tab complete · Esc cancel</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ WHICH-KEY LEADER OVERLAY ============================ -->
+<div style="position:absolute; left:860px; top:1860px; width:720px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">LEADER · WHICH-KEY</div>
+  <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — ⎵ leader · 84×24</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Home</span>
+        <span style="flex:1"></span>
+        <span style="color:#808080">alice @ identity.dsaenz.dev</span>
+      </div>
+      <!-- dimmed body hint -->
+      <div style="color:#3a4150; padding:2px 2px 10px">Currently reading · 2 ··· Today · 95 min logged ···</div>
+      <!-- which-key popup -->
+      <div style="display:flex">
+        <span style="color:#8787FF">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> ⎵ leader </span><span style="color:#808080">· pick a key </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#8787FF">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#8787FF">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#8787FF">│</span><div style="flex:1; min-width:0; padding:4px 12px 1px; display:flex"><div style="flex:1; display:flex; align-items:center"><span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre"> 1 </span><span style="color:#808080">&nbsp;→&nbsp;</span><span>Home</span></div><div style="flex:1; display:flex; align-items:center"><span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre"> a </span><span style="color:#808080">&nbsp;→&nbsp;</span><span>Add activity</span></div></div><span style="color:#8787FF">│</span></div>
+      <div style="display:flex"><span style="color:#8787FF">│</span><div style="flex:1; min-width:0; padding:1px 12px; display:flex"><div style="flex:1; display:flex; align-items:center"><span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre"> 2 </span><span style="color:#808080">&nbsp;→&nbsp;</span><span>Books</span></div><div style="flex:1; display:flex; align-items:center"><span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre"> n </span><span style="color:#808080">&nbsp;→&nbsp;</span><span>New activity</span></div></div><span style="color:#8787FF">│</span></div>
+      <div style="display:flex"><span style="color:#8787FF">│</span><div style="flex:1; min-width:0; padding:1px 12px; display:flex"><div style="flex:1; display:flex; align-items:center"><span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre"> b </span><span style="color:#808080">&nbsp;→&nbsp;</span><span>Books</span></div><div style="flex:1; display:flex; align-items:center"><span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre"> s </span><span style="color:#808080">&nbsp;→&nbsp;</span><span>Submit form</span></div></div><span style="color:#8787FF">│</span></div>
+      <div style="display:flex"><span style="color:#8787FF">│</span><div style="flex:1; min-width:0; padding:1px 12px 4px; display:flex"><div style="flex:1; display:flex; align-items:center"><span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre"> h </span><span style="color:#808080">&nbsp;→&nbsp;</span><span>Home</span></div><div style="flex:1; display:flex; align-items:center"><span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre"> r </span><span style="color:#808080">&nbsp;→&nbsp;</span><span>Refresh</span></div></div><span style="color:#8787FF">│</span></div>
+      <div style="display:flex">
+        <span style="color:#8787FF">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#8787FF">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#8787FF">┘</span>
+      </div>
+      <div style="display:flex; align-items:center; margin-top:8px; color:#808080"><span style="color:#8787FF; font-weight:700">⎵</span>&nbsp;pressed — waiting for the next key · <span style="color:#8787FF">Esc</span>&nbsp;cancel</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ NOTIFICATION & SEARCH STATES ============================ -->
+<div style="position:absolute; left:40px; top:2440px; width:780px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">FOOTER · NOTIFICATION &amp; SEARCH STATES</div>
+  <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">footer states</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.7; color:#E6EBF2">
+      <div style="color:#808080; margin-bottom:6px">The footer row swaps key-hints for a level-styled tile. Info/success read as colour; warning/error fill the row. Each auto-expires.</div>
+      <div><span style="color:#8787FF; white-space:pre"> ℹ search: type then Enter </span></div>
+      <div><span style="color:#87AF87; font-weight:700; white-space:pre"> ✓ progress saved </span></div>
+      <div><span style="background:#D7AF5F; color:#0B0E14; white-space:pre; display:inline-block; width:100%"> ⚠ offline — showing cached books</span></div>
+      <div><span style="background:#D75F5F; color:#0B0E14; white-space:pre; display:inline-block; width:100%"> ✖ books load failed: request timed out</span></div>
+      <div style="color:#808080; margin:10px 0 6px">Search active — the query rides in the panel title with a caret, and <span style="color:#8787FF">n/N</span> step matches:</div>
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Books · all · </span><span style="color:#E6EBF2">/rust</span><span style="background:#8787FF; color:#05080F">&nbsp;</span><span style="color:#8787FF; font-weight:700"> </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="background:#87AF87; color:#0B0E14; font-weight:600; white-space:pre"> done </span><span>&nbsp;&nbsp;The </span><span style="background:#8787FF; color:#0B0E14">Rust</span><span>&nbsp;Programming Language</span><span style="flex:1"></span><span style="color:#808080">100%</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center; color:#808080"><span style="white-space:pre">  </span><span>no other matches for "</span><span style="color:#8787FF">rust</span><span>"</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; align-items:center; margin-top:8px; color:#808080">type to search · <span style="color:#8787FF">↵</span>&nbsp;apply · <span style="color:#8787FF">n/N</span>&nbsp;next match · <span style="color:#8787FF">Esc</span>&nbsp;cancel</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ ACTIVITIES · TABLE ============================ -->
+<div style="position:absolute; left:40px; top:3060px; width:860px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">ACTIVITIES · TABLE</div>
+  <div data-screen-label="Activities list" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Activities · 96×28</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Activities</span>
+        <span style="flex:1"></span>
+        <span style="color:#87AF87">systems 24:13 ●</span><span style="color:#808080">&nbsp;&nbsp;·&nbsp;&nbsp;alice @ identity.dsaenz.dev</span>
+      </div>
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Activities · </span><span style="color:#E6EBF2; font-weight:700">all</span><span style="color:#808080"> · planned · in progress · finished </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; color:#8787FF; font-weight:700"><span style="white-space:pre">  </span><span style="width:80px">DATE</span><span style="width:88px">KIND</span><span style="width:160px">DOMAIN</span><span style="width:104px">BLOOM</span><span style="width:72px">LOGGED</span><span>TITLE</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ </span><span style="width:80px">jul 05</span><span style="width:88px">read</span><span style="width:160px">Distributed Sys</span><span style="width:104px">understand</span><span style="width:72px">1h05</span><span>Read DDIA ch.3</span><span style="flex:1"></span><span>● in progress</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:80px; color:#808080">jul 05</span><span style="width:88px">practice</span><span style="width:160px">Functional Prog</span><span style="width:104px; color:#808080">apply</span><span style="width:72px; color:#808080">48m</span><span>Cats Effect ex. 1–10</span><span style="flex:1"></span><span style="color:#87AF87">✓ finished</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:80px; color:#808080">jul 04</span><span style="width:88px">build</span><span style="width:160px">Distributed Sys</span><span style="width:104px; color:#808080">create</span><span style="width:72px; color:#808080">0h</span><span>raftlite in Rust</span><span style="flex:1"></span><span style="color:#808080">○ planned</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:80px; color:#808080">jul 04</span><span style="width:88px">write</span><span style="width:160px">Distributed Sys</span><span style="width:104px; color:#808080">evaluate</span><span style="width:72px; color:#808080">3h10</span><span>LSM vs B-tree writeup</span><span style="flex:1"></span><span style="color:#87AF87">✓ finished</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:80px; color:#808080">jul 03</span><span style="width:88px">watch</span><span style="width:160px">Databases</span><span style="width:104px; color:#808080">understand</span><span style="width:72px; color:#808080">55m</span><span>CMU 15-445 · lec 07</span><span style="flex:1"></span><span style="color:#87AF87">✓ finished</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:80px; color:#808080">jul 02</span><span style="width:88px">review</span><span style="width:160px; color:#808080">3 domains</span><span style="width:104px; color:#585858">—</span><span style="width:72px; color:#808080">22m</span><span>Review · 5 topics</span><span style="flex:1"></span><span style="color:#808080">⟲ generated</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:8px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ↵ </span><span>&nbsp;open</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> e </span><span>&nbsp;edit</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> c </span><span>&nbsp;finish</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> x </span><span>&nbsp;archive</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> y </span><span>&nbsp;dup</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> / </span><span>&nbsp;search</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> s </span><span>&nbsp;sort</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ ACTIVITY DETAIL · SEGMENTS ============================ -->
+<div style="position:absolute; left:940px; top:3060px; width:800px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">ACTIVITY DETAIL · SEGMENTS</div>
+  <div data-screen-label="Activity detail" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Activity · 92×30</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Activities</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Read DDIA ch.3</span>
+        <span style="flex:1"></span>
+        <span style="color:#87AF87">systems 24:13 ●</span><span style="color:#808080">&nbsp;&nbsp;·&nbsp;&nbsp;alice</span>
+      </div>
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="color:#8787FF; font-weight:700; white-space:pre"> &nbsp; </span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 0; display:flex; align-items:center"><span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> read </span><span>&nbsp;&nbsp;</span><span style="color:#8787FF; font-weight:700">Read DDIA ch.3 — Storage &amp; Retrieval</span><span style="color:#808080">&nbsp;&nbsp;·&nbsp;</span><span style="color:#8787FF">● in progress</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; color:#808080">domain <span style="color:#E6EBF2">Distributed Systems › Storage</span> · bloom <span style="color:#E6EBF2">understand</span> · path <span style="color:#E6EBF2">DS Foundations 3/6</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; color:#808080">books <span style="color:#E6EBF2">DDIA</span> · repos <span style="color:#585858">—</span> · notes <span style="color:#E6EBF2">B-trees vs LSM-trees</span> · tags <span style="color:#E6EBF2">lsm-trees, storage</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; color:#808080">total <span style="color:#E6EBF2; font-weight:700">1h05</span> · 3 segments · created jul 05, 08:38</div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; margin-top:4px">
+        <span style="color:#585858">┌</span>
+        <span style="color:#8787FF; font-weight:700; white-space:pre"> Segments · 3 </span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; color:#8787FF; font-weight:700"><span style="white-space:pre">  </span><span style="width:80px">START</span><span style="width:80px">END</span><span style="width:56px">DUR</span><span style="width:104px">WHERE</span><span style="width:96px">SOURCE</span><span>NOTE</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:80px; color:#808080">08:40</span><span style="width:80px; color:#808080">09:10</span><span style="width:56px">30m</span><span style="width:104px; color:#808080">desk</span><span style="width:96px; color:#808080">● timer</span><span style="color:#585858">first pass §1–§2</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ </span><span style="width:80px">12:15</span><span style="width:80px">12:35</span><span style="width:56px">20m</span><span style="width:104px">commute</span><span style="width:96px">● timer</span><span>—</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:80px; color:#808080">21:00</span><span style="width:80px; color:#808080">21:15</span><span style="width:56px">15m</span><span style="width:104px; color:#808080">desk</span><span style="width:96px; color:#808080">✎ manual</span><span style="color:#585858">re-read compaction</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; margin-top:4px">
+        <span style="color:#585858">┌</span>
+        <span style="color:#8787FF; font-weight:700; white-space:pre"> Description </span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px 0">B-trees vs LSM-trees — write amplification trade-offs;</div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 10px; color:#808080">compaction strategies: size-tiered vs leveled …</div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; color:#585858">e opens the description in $EDITOR (nvim) — prose is never typed into a TUI box</div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:8px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> a </span><span>&nbsp;segment</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> e </span><span>&nbsp;edit</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> d </span><span>&nbsp;delete</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> e </span><span>&nbsp;$EDITOR desc</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> s </span><span>&nbsp;status</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> h </span><span>&nbsp;back</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ NOTES · LIST ============================ -->
+<div style="position:absolute; left:40px; top:3760px; width:800px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">NOTES · LIST</div>
+  <div data-screen-label="Notes list" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Notes · 92×26</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Notes</span>
+        <span style="flex:1"></span>
+        <span style="color:#808080">alice @ identity.dsaenz.dev</span>
+      </div>
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Notes · </span><span style="color:#E6EBF2; font-weight:700">all</span><span style="color:#808080"> · linked · loose </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; color:#8787FF; font-weight:700"><span style="white-space:pre">  </span><span style="width:80px">DATE</span><span>TITLE</span><span style="flex:1"></span><span>ANCHOR</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ </span><span style="width:80px">jul 05</span><span>Raft consensus summary</span><span style="flex:1"></span><span>→ DDIA · ch.5</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:80px; color:#808080">jul 03</span><span>B-trees vs LSM-trees</span><span style="flex:1"></span><span style="color:#808080">→ DDIA · ch.3</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:80px; color:#808080">jul 01</span><span>Pratt parsing cheat-sheet</span><span style="flex:1"></span><span style="color:#808080">→ Crafting Interpreters · ch.17</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:80px; color:#808080">jun 28</span><span>Zellij layout recipes</span><span style="flex:1"></span><span style="color:#585858">—</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:80px; color:#808080">jun 24</span><span>Week 26 retro</span><span style="flex:1"></span><span style="color:#808080">→ retro · week 26</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:8px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ↵ </span><span>&nbsp;open</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> a </span><span>&nbsp;new</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> e </span><span>&nbsp;$EDITOR</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> d </span><span>&nbsp;delete</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> / </span><span>&nbsp;search</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ NOTE DETAIL · $EDITOR ============================ -->
+<div style="position:absolute; left:880px; top:3760px; width:760px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">NOTE DETAIL · PREVIEW + $EDITOR</div>
+  <div data-screen-label="Note detail" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Note · 84×26</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Notes</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Raft consensus summary</span>
+        <span style="flex:1"></span>
+        <span style="color:#808080">alice</span>
+      </div>
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="color:#8787FF; font-weight:700; white-space:pre"> &nbsp; </span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 0; display:flex; align-items:baseline"><span style="color:#8787FF; font-weight:700">Raft consensus summary</span><span style="flex:1"></span><span style="color:#808080">214 words</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; color:#808080">→ DDIA · ch.5 · edited jul 05, 21:24 · created jul 05</div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; margin-top:4px">
+        <span style="color:#585858">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> preview </span><span style="color:#808080">· read-only </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 0; color:#8787FF; font-weight:700"># Raft consensus</div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px">Leader election: randomized timeouts (150–300 ms) keep</div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px">split votes rare; a follower that misses heartbeats runs.</div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:5px 10px 0; color:#8787FF; font-weight:700">## Log replication</div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px">AppendEntries carries prevLogIndex/prevLogTerm — the</div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; color:#585858">… 14 more lines · j/k to scroll</div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="margin-top:8px"><span style="color:#87AF87; font-weight:700; white-space:pre"> ✓ saved — pulled back from nvim </span></div>
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:6px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> e </span><span>&nbsp;edit in nvim</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;scroll</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> d </span><span>&nbsp;delete</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> h </span><span>&nbsp;back</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ VIDEOS · LIST ============================ -->
+<div style="position:absolute; left:40px; top:4440px; width:800px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">VIDEOS · LIST</div>
+  <div data-screen-label="Videos list" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Videos · 92×24</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Videos</span>
+        <span style="flex:1"></span>
+        <span style="color:#808080">alice @ identity.dsaenz.dev</span>
+      </div>
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Videos · </span><span style="color:#E6EBF2; font-weight:700">all</span><span style="color:#808080"> · watching · done </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 1px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌  watching  CMU 15-445 · Database Systems  · Andy Pavlo</span><span style="flex:1"></span><span>27%</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> watching </span><span>&nbsp;&nbsp;MIT 6.824 · Distributed Systems</span><span style="color:#808080">&nbsp;&nbsp;· lec 03/20</span><span style="flex:1"></span><span style="color:#808080">15%</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="background:#808080; color:#0B0E14; font-weight:600; white-space:pre"> queued </span><span>&nbsp;&nbsp;Neural Networks: Zero to Hero</span><span style="color:#808080">&nbsp;&nbsp;· Andrej Karpathy</span><span style="flex:1"></span><span style="color:#808080">&nbsp;0%</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="background:#87AF87; color:#0B0E14; font-weight:600; white-space:pre"> done </span><span>&nbsp;&nbsp;Rust API design talks</span><span style="color:#808080">&nbsp;&nbsp;· RustConf</span><span style="flex:1"></span><span style="color:#808080">100%</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:8px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ↵ </span><span>&nbsp;open</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> / </span><span>&nbsp;search</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> 1/2/3 </span><span>&nbsp;filter</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> h </span><span>&nbsp;back</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ VIDEO DETAIL · LECTURES ============================ -->
+<div style="position:absolute; left:880px; top:4440px; width:760px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">VIDEO DETAIL · LECTURES</div>
+  <div data-screen-label="Video detail" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Video · 84×26</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Videos</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>CMU 15-445</span>
+        <span style="flex:1"></span>
+        <span style="color:#808080">alice</span>
+      </div>
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="color:#8787FF; font-weight:700; white-space:pre"> &nbsp; </span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 0; display:flex; align-items:center"><span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> watching </span><span>&nbsp;&nbsp;</span><span style="color:#8787FF; font-weight:700">CMU 15-445 · Database Systems</span><span style="color:#808080">&nbsp;&nbsp;· Andy Pavlo</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="color:#8787FF; white-space:pre">██████████▊······································</span><span>&nbsp;&nbsp;27%</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; color:#808080">lecture 07 / 26 · resume at <span style="color:#E6EBF2">34:12</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; margin-top:4px">
+        <span style="color:#585858">┌</span>
+        <span style="color:#8787FF; font-weight:700; white-space:pre"> Lectures · 26 </span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 1px; display:flex"><span style="color:#8787FF; white-space:pre"> [✓] </span><span style="color:#808080; white-space:pre"> 05.  </span><span>Buffer Pools</span><span style="flex:1"></span><span style="color:#808080">1:12:40</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="color:#8787FF; white-space:pre"> [✓] </span><span style="color:#808080; white-space:pre"> 06.  </span><span>Hash Tables</span><span style="flex:1"></span><span style="color:#808080">1:08:12</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ [ ]  07.  Tree Indexes I · at 34:12</span><span style="flex:1"></span><span>1:15:03</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="color:#808080; white-space:pre"> [ ] </span><span style="color:#808080; white-space:pre"> 08.  </span><span>Tree Indexes II</span><span style="flex:1"></span><span style="color:#808080">1:10:05</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; display:flex"><span style="color:#808080; white-space:pre"> [·] </span><span style="color:#808080; white-space:pre"> 09.  </span><span style="color:#808080">Index Concurrency&nbsp;&nbsp;<span>skipped</span></span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:8px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;lecture</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ⎵ </span><span>&nbsp;done &amp; next</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> p </span><span>&nbsp;position</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> s </span><span>&nbsp;status</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> h </span><span>&nbsp;back</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ REVIEW · DUE LIST ============================ -->
+<div style="position:absolute; left:40px; top:5100px; width:800px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">REVIEW · DUE LIST</div>
+  <div data-screen-label="Review due list" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Review · 92×26</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Review</span>
+        <span style="flex:1"></span>
+        <span style="color:#808080">alice @ identity.dsaenz.dev</span>
+      </div>
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Review · </span><span style="color:#D7AF5F; font-weight:700">due 5</span><span style="color:#808080"> · upcoming 12 · fresh 8 </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 1px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="background:#D75F5F; color:#0B0E14; font-weight:600; white-space:pre"> over 3d </span><span>&nbsp;&nbsp;B-trees &amp; LSM internals</span><span style="color:#808080">&nbsp;&nbsp;· systems</span><span style="flex:1"></span><span style="color:#808080">rated 2/5 · 5 reviews</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌  today     Raft leader election             · distributed</span><span style="flex:1"></span><span>rated 3/5</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="background:#D7AF5F; color:#0B0E14; font-weight:600; white-space:pre"> today </span><span>&nbsp;&nbsp;Pratt parsing</span><span style="color:#808080">&nbsp;&nbsp;· compilers</span><span style="flex:1"></span><span style="color:#808080">rated 3/5</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="color:#808080; white-space:pre"> in 2d </span><span>&nbsp;&nbsp;&nbsp;Rust lifetimes — elision rules</span><span style="color:#808080">&nbsp;&nbsp;· rust</span><span style="flex:1"></span><span style="color:#808080">rated 4/5</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="color:#808080; white-space:pre"> in 5d </span><span>&nbsp;&nbsp;&nbsp;TCP congestion control</span><span style="color:#808080">&nbsp;&nbsp;· networks</span><span style="flex:1"></span><span style="color:#808080">rated 4/5</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:8px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ↵ </span><span>&nbsp;rate</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> s </span><span>&nbsp;skip</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ⎵r </span><span>&nbsp;review all due</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> h </span><span>&nbsp;back</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ REVIEW · RATE DRILL ============================ -->
+<div style="position:absolute; left:880px; top:5100px; width:740px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">REVIEW · RATE DRILL</div>
+  <div data-screen-label="Review rate drill" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Review · rate · 84×24</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Review</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>rate</span>
+        <span style="flex:1"></span>
+        <span style="color:#808080">alice</span>
+      </div>
+      <div style="display:flex">
+        <span style="color:#8787FF">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Rate </span><span style="color:#808080">· 1 of 5 due </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#8787FF">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#8787FF">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#8787FF">│</span><div style="flex:1; min-width:0; padding:10px 12px 0; text-align:center"><span style="color:#8787FF; font-weight:700">B-trees &amp; LSM internals</span></div><span style="color:#8787FF">│</span></div>
+      <div style="display:flex"><span style="color:#8787FF">│</span><div style="flex:1; min-width:0; padding:2px 12px; text-align:center; color:#808080">systems · 5th review · last rated 2/5, 21 days ago</div><span style="color:#8787FF">│</span></div>
+      <div style="display:flex"><span style="color:#8787FF">│</span><div style="flex:1; min-width:0; padding:12px 12px 0; text-align:center">How well do you recall it?</div><span style="color:#8787FF">│</span></div>
+      <div style="display:flex"><span style="color:#8787FF">│</span><div style="flex:1; min-width:0; padding:6px 12px 0; display:flex; justify-content:center; align-items:center; flex-wrap:wrap">
+        <span style="color:#808080; white-space:pre"> 1 blank </span><span style="color:#585858">·</span>
+        <span style="color:#808080; white-space:pre"> 2 hazy </span><span style="color:#585858">·</span>
+        <span style="color:#808080; white-space:pre"> 3 effortful </span><span style="color:#585858">·</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre"> 4 solid </span><span style="color:#585858">·</span>
+        <span style="color:#808080; white-space:pre"> 5 instant </span>
+      </div><span style="color:#8787FF">│</span></div>
+      <div style="display:flex"><span style="color:#8787FF">│</span><div style="flex:1; min-width:0; padding:8px 12px 12px; text-align:center; color:#808080">4 → next review in <span style="color:#87AF87">12 days</span> (jul 17)</div><span style="color:#8787FF">│</span></div>
+      <div style="display:flex">
+        <span style="color:#8787FF">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#8787FF">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#8787FF">┘</span>
+      </div>
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:8px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> 1–5 </span><span>&nbsp;rate</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ↵ </span><span>&nbsp;confirm</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> s </span><span>&nbsp;skip</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Esc </span><span>&nbsp;cancel</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ RATATUI WIDGET MAP ============================ -->
+<div style="position:absolute; left:860px; top:2440px; width:720px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">RATATUI · WIDGET MAP (core dependency)</div>
+  <div data-screen-label="Ratatui widget map" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — mock atom → ratatui widget</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> ratatui </span><span style="color:#808080">· every atom maps 1:1 — one cell size, BOLD + colour only </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 1px; display:flex"><span style="width:190px; color:#808080">bordered panel + title</span><span>Block::bordered().title()</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="width:190px; color:#808080">table + header row</span><span>Table / Row · widths in character cells</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="width:190px; color:#808080">full-row selection</span><span>highlight_style (inverse) + highlight_symbol "▌ "</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="width:190px; color:#808080">progress meter</span><span>LineGauge · block glyphs █▊····</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="width:190px; color:#808080">status pill / badge</span><span>Span::styled with bg colour</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="width:190px; color:#808080">footer key hints</span><span>Line of styled Spans</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="width:190px; color:#808080">notify tile</span><span>auto-expiring footer Paragraph</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="width:190px; color:#808080">fuzzy picker</span><span>List + input line (Telescope-flavoured)</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="width:190px; color:#808080">form field</span><span>one Block per input · cursor = inverse cell</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; display:flex"><span style="width:190px; color:#808080">long-form prose</span><span>$EDITOR — never a TextArea in ratatui</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; align-items:center; margin-top:8px; color:#808080; white-space:nowrap; overflow:hidden">rules in&nbsp;<span style="color:#8787FF">CLAUDE.md</span>&nbsp;· no font sizes · no letter-spacing · no italic</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ CODING SESSIONS · TABLE ============================ -->
+<div style="position:absolute; left:40px; top:5780px; width:940px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">CODING SESSIONS · TABLE</div>
+  <div data-screen-label="Coding sessions list" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Coding · 104×26</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Activities</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Coding sessions</span>
+        <span style="flex:1"></span>
+        <span style="color:#87AF87">rust 25:04 ●</span><span style="color:#808080">&nbsp;&nbsp;·&nbsp;&nbsp;alice</span>
+      </div>
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Sessions · </span><span style="color:#E6EBF2; font-weight:700">all</span><span style="color:#808080"> · anchor ⌨ code · intent · language </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; color:#8787FF; font-weight:700"><span style="white-space:pre">  </span><span style="width:60px">DATE</span><span style="width:150px; white-space:nowrap">INTENT</span><span style="width:254px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">ANCHOR</span><span style="width:86px">LANG</span><span style="width:64px">EX</span><span style="width:60px">LOGGED</span><span>DETAIL</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ </span><span style="width:60px">jul 05</span><span style="width:150px; white-space:nowrap"><span style="background:#D75F5F; color:#0B0E14; white-space:pre"> chal </span></span><span style="width:254px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">◈ dsaenz/rustlings</span><span style="width:86px">Rust</span><span style="width:64px">5/7</span><span style="width:60px">1h05</span><span style="white-space:nowrap">options &amp; errors</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:60px; color:#808080">jul 04</span><span style="width:150px; white-space:nowrap"><span style="background:#8787FF; color:#0B0E14; white-space:pre"> impl </span></span><span style="width:254px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">▪ SICP</span><span style="width:86px">Scheme</span><span style="width:64px; color:#808080">18/24</span><span style="width:60px; color:#808080">2h20</span><span style="color:#808080; white-space:nowrap">abstractions · data</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:60px; color:#808080">jul 03</span><span style="width:150px; white-space:nowrap"><span style="background:#D7AF5F; color:#0B0E14; white-space:pre"> follow </span></span><span style="width:254px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">▸ Haskell Unfolder · Ep.34</span><span style="width:86px">Haskell</span><span style="width:64px; color:#808080">2/3</span><span style="width:60px; color:#808080">48m</span><span style="color:#808080; white-space:nowrap">monads · code-along</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:60px; color:#808080">jul 01</span><span style="width:150px; white-space:nowrap"><span style="background:#5F5FAF; color:#0B0E14; white-space:pre"> study </span></span><span style="width:254px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">◈ dsaenz/rustlings</span><span style="width:86px">Rust</span><span style="width:64px; color:#585858">—</span><span style="width:60px; color:#808080">25m</span><span style="color:#808080; white-space:nowrap">REPL · iterators</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:60px; color:#808080">jun 30</span><span style="width:150px; white-space:nowrap"><span style="background:#8787FF; color:#0B0E14; white-space:pre"> impl </span></span><span style="width:254px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">◈ dsaenz/sicp-streams-scratch</span><span style="width:86px">Racket</span><span style="width:64px; color:#808080">4/15</span><span style="width:60px; color:#808080">1h10</span><span style="color:#808080">§3.5 streams</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex"><div style="padding:3px 4px 0; color:#585858">anchor <span style="color:#808080">◈ repo · ▪ book · ▸ video</span> — domain, language &amp; stack are inherited from it, never re-typed on the session</div></div>
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:6px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ↵ </span><span>&nbsp;ledger</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> n </span><span>&nbsp;new</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> i </span><span>&nbsp;intent</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> f </span><span>&nbsp;fluency due</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> / </span><span>&nbsp;search</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ CODING SESSION · EXERCISE LEDGER ============================ -->
+<div style="position:absolute; left:1000px; top:5780px; width:920px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">CODING SESSION · EXERCISE LEDGER (detail)</div>
+  <div data-screen-label="Coding session ledger" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Session · 100×30</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Coding</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>rustlings · challenge</span>
+        <span style="flex:1"></span>
+        <span style="color:#87AF87">rust 25:04 ●</span><span style="color:#808080">&nbsp;&nbsp;·&nbsp;&nbsp;alice</span>
+      </div>
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="color:#8787FF; font-weight:700; white-space:pre"> &nbsp; </span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 0; display:flex; align-items:center"><span style="color:#8787FF; font-weight:700">◈ dsaenz/rustlings</span><span style="color:#808080">&nbsp;&nbsp;·&nbsp;</span><span style="background:#D75F5F; color:#0B0E14; white-space:pre"> challenge again </span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; color:#808080">inherited &nbsp;domain <span style="color:#E6EBF2">Systems Programming</span> · lang <span style="color:#E6EBF2">Rust</span> · stack <span style="color:#E6EBF2">Tokio · serde · hyper</span> <span style="color:#585858">(Cargo.toml)</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; color:#808080">7 exercises · <span style="color:#87AF87">5 solved</span> · <span style="color:#8787FF">2 re-solved</span> · total <span style="color:#E6EBF2; font-weight:700">1h05</span> across 2 sittings</div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; margin-top:4px">
+        <span style="color:#585858">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Exercise ledger · 5 </span><span style="color:#808080">· the exercise is the unit of truth, not the session </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; color:#8787FF; font-weight:700"><span style="white-space:pre">  </span><span style="width:252px; white-space:nowrap">EXERCISE</span><span style="width:150px; white-space:nowrap">STATE</span><span style="width:74px">TRIES</span><span style="width:76px">BEST</span><span style="width:70px">DIFF</span><span style="width:70px">LAST</span><span>FLUENCY</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:252px; white-space:nowrap">variables/options1 <span style="color:#585858">#12</span></span><span style="width:150px; white-space:nowrap; color:#8787FF">⟲ re-solved ×3</span><span style="width:74px"><span style="color:#87AF87">●●●</span></span><span style="width:76px; color:#808080">4m10</span><span style="width:70px; color:#87AF87">easy</span><span style="width:70px; color:#808080">2d</span><span style="color:#87AF87">● fresh</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:252px; white-space:nowrap">error_handling/errors5 <span style="color:#585858">#16</span></span><span style="width:150px; white-space:nowrap; color:#87AF87">✓ solved</span><span style="width:74px"><span style="color:#D75F5F">●●</span><span style="color:#87AF87">●</span></span><span style="width:76px; color:#808080">31m</span><span style="width:70px; color:#D75F5F">hard</span><span style="width:70px; color:#808080">2d</span><span style="color:#87AF87">● fresh</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ </span><span style="width:252px; white-space:nowrap">traits/traits3 #21</span><span style="width:150px; white-space:nowrap">✓ solved</span><span style="width:74px">●</span><span style="width:76px">8m40</span><span style="width:70px">med</span><span style="width:70px">11mo</span><span style="white-space:nowrap">◀ due · re-solve</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:252px; white-space:nowrap">lifetimes/lifetimes2 <span style="color:#585858">#24</span></span><span style="width:150px; white-space:nowrap; color:#87AF87">✓ solved</span><span style="width:74px"><span style="color:#D75F5F">●</span><span style="color:#87AF87">●</span></span><span style="width:76px; color:#808080">19m</span><span style="width:70px; color:#D75F5F">hard</span><span style="width:70px; color:#808080">13mo</span><span style="color:#D75F5F">● stale</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:252px; white-space:nowrap">iterators/iterators5 <span style="color:#585858">#28</span></span><span style="width:150px; white-space:nowrap; color:#808080">○ unsolved</span><span style="width:74px; color:#585858">—</span><span style="width:76px; color:#585858">—</span><span style="width:70px; color:#D7AF5F">med</span><span style="width:70px; color:#585858">—</span><span style="color:#8787FF">○ up next</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex"><div style="padding:3px 4px 0; color:#585858">fluency feeds <span style="color:#8787FF">Review</span> — a language you haven't re-solved surfaces like a stale topic · tries <span style="color:#87AF87">●</span> pass <span style="color:#D75F5F">●</span> fail</div></div>
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:6px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ↵ </span><span>&nbsp;open in repo</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> c </span><span>&nbsp;re-solve</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ⎵ </span><span>&nbsp;toggle solve</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> e </span><span>&nbsp;$EDITOR note</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> h </span><span>&nbsp;back</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ============================ BOOK · CONTENTS TREE ============================ -->
+<div style="position:absolute; left:40px; top:6560px; width:940px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">BOOK PRACTICE · CONTENTS TREE</div>
+  <div data-screen-label="Book contents tree" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Book · Contents · 104×30</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Library</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>SICP</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Contents</span>
+        <span style="flex:1"></span>
+        <span style="color:#808080">alice</span>
+      </div>
+      <!-- edition + scope bar -->
+      <div style="display:flex"><div style="flex:1; padding:0 2px 4px; display:flex; align-items:center; flex-wrap:wrap">
+        <span style="color:#808080">edition&nbsp;</span><span style="background:#8787FF; color:#0B0E14; white-space:pre"> Print · 2nd ed </span><span style="color:#808080">&nbsp;canon&nbsp;&nbsp;</span><span style="color:#585858">Tab ▸</span><span style="color:#808080">&nbsp;iPad · reflowable&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="color:#808080">tracking&nbsp;</span><span style="color:#E6EBF2; font-weight:700">6 sections</span><span style="color:#808080">&nbsp;·&nbsp;</span><span style="color:#87AF87">3 done</span><span style="color:#808080">, 1 now&nbsp;&nbsp;</span><span style="color:#8787FF; white-space:pre">██████▌·····</span><span style="color:#808080">&nbsp;3/6</span>
+      </div></div>
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Contents </span><span style="color:#808080">· chapter / section </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">─────────────────────────────────────────────────────────────────────────</div>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> PRINT </span><span style="color:#808080"> iPad·loc </span></span>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="width:24px; color:#585858">▸</span><span style="width:36px; color:#87AF87">✓</span><span style="width:64px; color:#808080">CH 1</span><span>Building Abstractions with Procedures</span><span style="flex:1"></span><span style="width:78px; color:#808080">p.1</span><span style="width:74px; color:#585858">loc.240</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="width:24px; color:#585858">▸</span><span style="width:36px; color:#87AF87">✓</span><span style="width:64px; color:#808080">CH 2</span><span>Building Abstractions with Data</span><span style="flex:1"></span><span style="width:78px; color:#808080">p.79</span><span style="width:74px; color:#585858">loc.1,921</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="width:24px; color:#8787FF">▾</span><span style="width:36px; color:#8787FF">●</span><span style="width:64px; color:#E6EBF2; font-weight:700">CH 3</span><span style="font-weight:700">Modularity, Objects, and State</span><span>&nbsp;&nbsp;</span><span style="background:#8787FF; color:#0B0E14; white-space:pre"> now </span><span style="flex:1"></span><span style="width:78px; color:#808080">p.217</span><span style="width:74px; color:#585858">loc.4,981</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="width:60px"></span><span style="width:36px; color:#87AF87">✓</span><span style="width:64px; color:#808080">§ 3.1</span><span style="color:#808080">Assignment and Local State</span><span style="flex:1"></span><span style="width:78px; color:#808080">p.217</span><span style="width:74px; color:#585858">loc.4,981</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="width:60px"></span><span style="width:36px; color:#87AF87">✓</span><span style="width:64px; color:#808080">§ 3.2</span><span style="color:#808080">The Environment Model of Evaluation</span><span style="flex:1"></span><span style="width:78px; color:#808080">p.239</span><span style="width:74px; color:#585858">loc.5,421</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="width:36px; white-space:pre">▌ </span><span style="width:36px">●</span><span style="width:64px">§ 3.3</span><span>Modeling with Mutable Data</span><span>&nbsp;&nbsp;now</span><span style="flex:1"></span><span style="width:78px">p.268</span><span style="width:74px">loc.6,091</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="width:60px"></span><span style="width:36px; color:#D75F5F">✗</span><span style="width:64px; color:#585858">§ 3.4</span><span style="color:#585858">Concurrency: Time Is of the Essence&nbsp;&nbsp;skipped</span><span style="flex:1"></span><span style="width:78px; color:#585858">p.300</span><span style="width:74px; color:#585858">loc.6,841</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="width:60px"></span><span style="width:36px; color:#808080">○</span><span style="width:64px; color:#808080">§ 3.5</span><span>Streams</span><span style="flex:1"></span><span style="width:78px; color:#808080">p.327</span><span style="width:74px; color:#585858">loc.7,461</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="width:24px; color:#585858">+</span><span style="width:36px"></span><span style="color:#585858">add a section under Ch. 3</span><span style="flex:1"></span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="width:24px; color:#585858">▸</span><span style="width:36px; color:#808080">○</span><span style="width:64px; color:#808080">CH 4</span><span style="color:#808080">Metalinguistic Abstraction&nbsp;&nbsp;</span><span style="color:#585858">no sections tracked</span><span style="flex:1"></span><span style="width:78px; color:#808080">p.359</span><span style="width:74px; color:#585858">loc.8,261</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; display:flex; align-items:center"><span style="width:24px; color:#585858">▸</span><span style="width:36px; color:#808080">○</span><span style="width:64px; color:#808080">CH 5</span><span style="color:#808080">Computing with Register Machines</span><span style="flex:1"></span><span style="width:78px; color:#808080">p.491</span><span style="width:74px; color:#585858">loc.11,401</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex"><div style="padding:3px 4px 0; color:#585858"><span style="color:#87AF87">✓</span> done <span style="color:#8787FF">●</span> now <span style="color:#808080">○</span> tracked <span style="color:#D75F5F">✗</span> skipped&nbsp;&nbsp;·&nbsp;&nbsp;% is over what you've tracked — not an invented chapter total</div></div>
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:6px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> l </span><span>&nbsp;expand</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> h </span><span>&nbsp;collapse</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ⎵ </span><span>&nbsp;cycle state</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> a </span><span>&nbsp;add</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Tab </span><span>&nbsp;edition</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ BOOK · EXERCISE BLOCKS + REPOS ============================ -->
+<div style="position:absolute; left:1000px; top:6560px; width:920px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">BOOK PRACTICE · EXERCISE BLOCKS + REPOS</div>
+  <div data-screen-label="Book exercise blocks" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Book · Exercises · 100×32</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Library</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>SICP</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Exercises</span>
+        <span style="flex:1"></span>
+        <span style="color:#808080">alice</span>
+      </div>
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Exercise blocks · 3 </span><span style="color:#808080">· the block is the unit — not individual exercises · filter ★ to practice </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <!-- block 1 (selected) -->
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 0; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ </span><span>◫ Chapter 3 exercises — Mutable Data &amp; State</span><span style="flex:1"></span><span style="white-space:pre">★ to practice</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 10px; display:flex; align-items:center"><span style="white-space:pre">    </span><span style="color:#808080">§3.1–3.3 · p.217–299 · ~24 ex</span><span style="flex:1"></span><span style="color:#8787FF; white-space:pre">████████████▊·····</span><span>&nbsp;&nbsp;</span><span style="color:#8787FF">mostly 18/~24</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 10px 3px; display:flex; align-items:center"><span style="white-space:pre">    </span><span style="color:#808080">solved in&nbsp;&nbsp;</span><span>◈ dsaenz/sicp</span><span style="color:#585858">&nbsp;fork·12c&nbsp;&nbsp;·&nbsp;&nbsp;</span><span>▪ Mutable-data solutions</span><span style="color:#585858">&nbsp;note</span></div><span style="color:#585858">│</span></div>
+      <!-- block 2 -->
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:4px 10px 0; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="font-weight:700">◫ Streams exercises — §3.5</span><span style="flex:1"></span><span style="color:#D7AF5F; white-space:pre">★ to practice</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 10px; display:flex; align-items:center"><span style="white-space:pre">    </span><span style="color:#808080">§3.5 · p.327–358 · iPad §4.1 · ~15 ex</span><span style="flex:1"></span><span style="color:#D7AF5F; white-space:pre">████▍·············</span><span>&nbsp;&nbsp;</span><span style="color:#D7AF5F">sketched 4/~15</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 10px 3px; display:flex; align-items:center"><span style="white-space:pre">    </span><span style="color:#808080">solved in&nbsp;&nbsp;</span><span>◈ dsaenz/sicp-streams-scratch</span><span style="color:#585858">&nbsp;scratch&nbsp;&nbsp;·&nbsp;&nbsp;</span><span style="color:#585858">no note yet</span></div><span style="color:#585858">│</span></div>
+      <!-- block 3 -->
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:4px 10px 0; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="font-weight:700">◫ Chapter 2 exercises — Abstractions with Data</span><span style="flex:1"></span><span style="color:#585858; white-space:pre">✓ practiced</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 10px; display:flex; align-items:center"><span style="white-space:pre">    </span><span style="color:#808080">§2.1–2.5 · p.79–216 · ~97 ex</span><span style="flex:1"></span><span style="color:#87AF87; white-space:pre">█████████████████</span><span>&nbsp;&nbsp;</span><span style="color:#87AF87">implemented · curated 22</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 10px 3px; display:flex; align-items:center"><span style="white-space:pre">    </span><span style="color:#808080">solved in&nbsp;&nbsp;</span><span>◈ dsaenz/sicp</span><span style="color:#585858">&nbsp;fork·ch2/&nbsp;&nbsp;·&nbsp;&nbsp;</span><span>▪ Symbolic differentiation</span><span style="color:#585858">&nbsp;note</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <!-- repos strip -->
+      <div style="display:flex; margin-top:4px">
+        <span style="color:#585858">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Repos · 3 </span><span style="color:#808080">· role lives on the book↔repo link · lineage from GitHub </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px 0; display:flex; align-items:center"><span style="width:30px; color:#808080">◎</span><span style="width:280px"><span style="color:#808080">mit-cml/</span>sicp</span><span style="width:150px; color:#87AF87">official repo</span><span style="width:90px; color:#808080">Scheme</span><span style="flex:1; color:#585858">read-only mirror</span><span style="color:#808080">synced 3m</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 10px; display:flex; align-items:center"><span style="width:30px; color:#8787FF">◈</span><span style="width:280px"><span style="color:#808080">dsaenz/</span>sicp&nbsp;&nbsp;<span style="background:#8787FF; color:#0B0E14; white-space:pre"> push </span></span><span style="width:150px; color:#8787FF">your fork</span><span style="width:90px; color:#808080">Scheme</span><span style="flex:1; color:#585858">fork of mit-cml · 42c</span><span style="color:#808080">synced 3m</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 10px 3px; display:flex; align-items:center"><span style="width:30px; color:#808080">✎</span><span style="width:280px"><span style="color:#808080">dsaenz/</span>sicp-streams-scratch</span><span style="width:150px; color:#808080">scratch</span><span style="width:90px; color:#808080">Racket</span><span style="flex:1; color:#585858">standalone · §3.5</span><span style="color:#D7AF5F">● 2d stale</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:6px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ↵ </span><span>&nbsp;open block</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> l </span><span>&nbsp;list exercises</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> p </span><span>&nbsp;flag practice</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> g </span><span>&nbsp;repos</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> a </span><span>&nbsp;add</span>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

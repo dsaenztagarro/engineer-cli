@@ -1,0 +1,100 @@
+# MISSING — what `timer.dc.html` still needs to be in sync with engineer's shipped timer
+
+**For:** Claude Design (the **engineer-cli** terminal project).
+**Purpose:** the next design pass on `timer.dc.html` should close the gaps below, so the CLI design covers the **full timer feature set the engineer app has already shipped** before we implement it.
+**Method:** `timer.dc.html` was diffed against engineer's shipped timer behavior — the live timer + idle guard + focus + segment audit (epic #717, `engineer/docs/features/timer-hygiene.md`), the canonical pill spec (`engineer/docs/designs/navigation-bar.html` §M), the overrun ping (`engineer/docs/designs/nudges.html` §B), the settings knobs (`engineer/docs/designs/settings.html`), and the `api/v1` timer/segments endpoints the CLI consumes.
+**Status of the current doc:** strong — the hero face, status-line collapse, start picker, idle reclaim, overnight/4 AM panel, focus rhythm, segment audit, and headless reads are all present. The items below are what's *not* there yet, plus a few places where the design's verbs drifted from the server's.
+
+The kit rules still bind (`README.md`, `design-system.dc.html`): character grid, keyboard-only, `j/k`/`⏎`/`Esc` grammar, the shipped chrome and widget idioms.
+
+---
+
+## A. Missing screens & states
+
+### M1 — Unnamed stopwatch & bind-at-stop
+
+The server supports a timer with **no activity** (start bare, label optional, bind later); stopping an unbound timer is a 422 — it *must* be bound (or discarded) first.
+Web precedent: nav-bar §M state "running-unnamed" — italic *Untitled*, and pressing stop **freezes the clock and opens the name/attach flow** instead of saving silently.
+Missing in `timer.dc.html`:
+
+- A "just start, name it later" path in §Start a timer (the picker currently forces choosing or creating an activity).
+- The unnamed running state on the hero and the status line (italic *untitled* label).
+- The **bind-at-stop** moment: `s` on an unbound timer → frozen clock + the activity picker (reuse §Start's list) → save; `d` remains the discard escape.
+
+### M2 — Start-while-running conflict (stop & switch)
+
+Only one timer can run; a second start is a **409** unless `switch=true`, which stops-and-saves the current one first.
+Web precedent: §M conflict prompt — "A timer is already running on X (12:47). Start tracking Y instead?" → [Keep running] / [Stop & switch].
+Missing: §Start a timer only shows the "nothing running" state. Design the running-conflict variant (banner or inline row state + the two choices), and the headless twin (`engineer timer start --switch`, plus the non-switch failure output/exit code).
+
+### M3 — Paused state (plain pause, not just focus break)
+
+Pause freezes the clock, the dot stops pulsing, the paused gap is excluded from the total, and **a paused timer never goes idle**.
+Missing: the paused face on the hero (stopwatch *and* focus variants) and a plain paused status-line row — the current §Status-line only shows the focus-break flavor of "not counting". Clarify `SPC` as pause/resume toggle and what the resume affordance looks like.
+
+### M4 — Focus phase boundaries: offers, long break, mid-session mode switch
+
+Shipped focus behavior (timer-hygiene §B): transitions **never fire on their own** — at 0:00 the UI reveals an *offer* ("Interval complete" → [Start 10m break] / [Keep working]; "Break's over" → [Back to work]); every Nth break is a **long break** (`focus_long_break_every`, default every 4th, 20m); a running timer can **switch mode** stopwatch ↔ focus mid-session.
+Missing in `timer.dc.html`:
+
+- The interval-end **offer moment** in the TUI — on the hero, and how it surfaces when the user is on another screen (status-line glyph change? notify tile?). `n skip interval` exists as a key but the offer flow it short-circuits is undrawn.
+- The **long break** state (rhythm track, pomodoro dots, offer label reading the configured duration).
+- The **mode switch** on a running timer (the picker's Tab toggle only covers a fresh start).
+
+### M5 — Overrun ping (bound timer past its plan)
+
+Shipped (nudges §B, `overrun_ping_enabled` default on): when a bound activity has a planned duration and **cumulative** time (already-logged segments + live elapsed) crosses it, the clock turns amber and a card offers [Wrap up & save] / [Keep going] — once per timer, never auto-stopping.
+Missing entirely: no over state in §Status-line, no offer moment, no headless representation (an `over` flag in `--json`? its own exit code? the plain-text form). The terminal-client brief calls this "especially natural as a status-bar state and a notify tile" — design it here, it's a timer state, not a separate surface.
+
+### M6 — Audit: the acknowledge action, and verb alignment
+
+Shipped audit row actions are **Fix** (opens the activity edit), **Looks right** (stamps `audit_acknowledged_at`, permanently clearing the two amber duration flags), and **Delete**. There is **no "trim" verb on a completed segment** anywhere in the backend.
+`timer.dc.html` §Segment audit shows `[Trim]` on long rows and has no acknowledge at all.
+Fix in design: add the **Looks right / acknowledge** action (key + what happens to the row), and either drop `[Trim]` or explicitly spec it as a segment-edit preset (a `PATCH` that shortens the duration) so implementation knows what it writes. Also state whether the CLI gets an ambient "N to audit" badge (web: chip on Progress, `audit_badge_enabled`) or the count lives only in this screen.
+
+### M7 — Timer settings: where knobs live in the CLI
+
+Engineer has per-user knobs, all with a settings UI on the web: default mode, work/short-break/long-break minutes, long-break-every-N, idle guard on/off, idle threshold, default reclaim action, audit long/short thresholds, audit badge, overrun ping.
+`timer.dc.html` hardcodes their defaults into copy ("50m work · 10m break · ×4", "over ~6h", "under 60s").
+Needed: (a) make the copy read as **settings-driven**, not constants; (b) decide and design the CLI's settings story — a settings screen / `engineer config` verbs, or an explicit "view-only here, edit on the web" pointer. Either is fine; it must be a decision, not an omission.
+
+### M8 — Headless: the write verbs and the full status-string contract
+
+§Headless covers the reads (`timer`, `timer --json`, `timer status`) and one write (`stop --reclaim=trim`). The brief requires **every** verb to have a one-shot twin. Missing:
+
+- `engineer timer start` (fuzzy bind argument, `--switch`), `toggle` (the keybind-friendly form for multiplexers), `pause` / `resume`, `bind`, `discard`, and `candidates --json`.
+- The plain-text status string for **every** state — paused, idle, focus work/break, over, unnamed, nothing-running — with the fixed-footprint promise §Status-line makes in-app extended to the piped form (this *is* the zellij/tmux status-bar deliverable).
+- The complete exit-code table (0 running / 3 idle-pending-reclaim / 1 nothing running exist; state codes for paused/over if scripts should branch on them).
+
+### M9 — Stop confirmation, undo, and discard confirm
+
+Web: stopping a bound timer saves immediately and confirms with a toast + **Undo** ("12m added to … · total tracked now 1h 30m"); discard asks for confirmation past ~2 minutes.
+Missing: the post-save moment in the TUI (a notify tile with the written segment — and whether undo exists, which the segment-delete API makes possible), and the discard confirmation state for `d`.
+
+### M10 — Idle presence semantics for a terminal (design note, small)
+
+Web idle = absence of `pointerdown`/`keydown` on the page, heartbeated at most once per minute. The CLI must define its equivalent: what counts as presence (keystrokes inside the TUI only? does a detached/closed TUI count as absent?), and when the §Idle reclaim screen is entered (on launch with an idle timer? on `g t`? on any keypress, mirroring the web's next-interaction rule). One caption on the reclaim screen can settle this.
+
+---
+
+## B. Design ↔ server alignment flags (drift to resolve, not new screens)
+
+- **F1 — Reclaim options don't match the server's verbs.** Shipped reclaim verbs: **keep** (tail counts, timer continues), **trim** (idle span moved to paused time, **timer keeps running**), **stop** (save up to last input, timer ends). `timer.dc.html` shows four options (*Trim to last activity / Split into work + idle / Keep all & resume / Discard the idle tail*) under "⏎ apply & stop" — i.e. every option ends the timer, "Trim" behaves like the server's *stop*, and "Split … logged idle" implies writing an idle segment, which the server never does (idle time is *never* logged). Rename/remap so each option is one server verb — including a continue-running trim — or explicitly call out the new semantics as an API change request.
+- **F2 — Audit `[Trim]` / missing acknowledge** — see M6.
+- **F3 — Hardcoded knob values in copy** — see M7.
+- **F4 — Rail nit:** the hero rail block labeled **TODAY** renders a `mon → sun` sparkline — a week series under a "today" label. Clarify which it is.
+
+---
+
+## C. Backend API gaps (context for implementation — no design action, but don't design around them silently)
+
+The v1 JSON API the CLI consumes exposes the timer read (with `idle`, `mode`, `phase`, `intervals_completed`), start/pause/resume/stop/bind/candidates/discard, and segment CRUD. **Web-only today (no API):** heartbeat, reclaim, focus phase transition, mode switch, the segment audit (list/acknowledge/delete-flow), and settings. Consequences:
+
+- `engineer timer stop --reclaim=…` (§Headless) and the §Idle reclaim screen need a reclaim-capable API before they can ship; same for focus transitions (M4), audit actions (M6), and any settings surface (M7).
+- These will be tracked as blocked tickets on the implementation epic and raised against the engineer repo — the design should still specify them fully so the API request is concrete.
+
+---
+
+## D. Adjacent timer-touching surfaces intentionally *not* in `timer.dc.html`
+
+Tracked elsewhere, per the terminal-client brief's phasing (§8) — don't fold them in here: the weekly recap line (`engineer recap --last`) and thin-week invite (a `cli-nudges` follow-up), the enriched Home leading with timer + pace, week-planning's "Start binds the timer to a planned item", and the Progress pace/rollup screens the audit subtabs point at.

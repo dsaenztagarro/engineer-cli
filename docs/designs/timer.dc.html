@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <meta name="design_doc_mode" content="canvas">
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#0B0E14; }
+    @keyframes pulse { 0%{opacity:1} 45%{opacity:.28} 100%{opacity:1} }
+    @keyframes breathe { 0%{opacity:.55} 50%{opacity:1} 100%{opacity:.55} }
+  </style>
+</helmet>
+
+<!-- ============================ INTRO ============================ -->
+<div style="position:absolute; left:40px; top:36px; width:1040px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">TIMER · engineer-cli</div>
+  <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:16px 18px; font-size:13.5px; line-height:1.55; color:#E6EBF2; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div><span style="color:#8787FF; font-weight:700">The timer, watch-face simple.</span> <span style="color:#808080">One glorious number when you want it; a single status glyph when you don't. The instrument rail folds away with </span><span style="color:#8787FF">i</span><span style="color:#808080"> — collapsed is the calm face, expanded is the cockpit. Every richer moment — idle reclaim, focus rhythm, the segment audit — is a full-row list you drive with </span><span style="color:#8787FF">j/k</span><span style="color:#808080"> and </span><span style="color:#8787FF">↵</span><span style="color:#808080">. Nothing here needs a mouse; everything here also runs headless.</span></div>
+    <div style="margin-top:10px; color:#808080; display:flex; gap:22px; flex-wrap:wrap; font-size:12.5px">
+      <span><span style="color:#8787FF">████</span> accent</span>
+      <span><span style="color:#87AF87">████</span> counts / safe</span>
+      <span><span style="color:#D7AF5F">████</span> idle / attention</span>
+      <span><span style="color:#D75F5F">████</span> stop / destructive</span>
+      <span><span style="color:#808080">████</span> muted · not counting</span>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ HERO · UNIFIED (rail show/hide) ============================ -->
+<div style="position:absolute; left:40px; top:190px; width:1180px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em; display:flex; align-items:center; gap:8px">
+    <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:1px 7px; border-radius:4px">1</span> HERO · FULL-SCREEN · <span style="color:#8787FF">i</span> folds the instrument rail (expanded = cockpit · collapsed = calm)
+  </div>
+  <div data-screen-label="Timer hero" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Timer · focus · 100×32</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Timer</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span style="color:#8787FF">focus</span>
+        <span style="flex:1"></span>
+        <span onclick="{{ toggleInstruments }}" title="toggle instrument rail (i)" style="cursor:pointer; user-select:none; color:#8787FF; border:1px solid #1A2230; border-radius:5px; padding:1px 8px; white-space:pre">◧ i&nbsp;·&nbsp;rail</span>
+        <span style="color:#808080">&nbsp;&nbsp;·&nbsp;&nbsp;today&nbsp;</span><span style="color:#87AF87; font-weight:700">3h 47m</span>
+      </div>
+
+      <div style="display:flex; gap:22px; align-items:stretch; padding:22px 6px 14px">
+        <!-- main: the number (always) -->
+        <div style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center">
+          <div style="display:flex; align-items:center; gap:9px; margin-bottom:18px">
+            <span style="width:9px; height:9px; border-radius:50%; background:#8787FF; animation:pulse 1.7s ease-in-out infinite"></span>
+            <span style="color:#8787FF; font-weight:700; letter-spacing:.12em; font-size:12.5px">WORK · INTERVAL 3 / 4</span>
+          </div>
+          <div style="color:#8787FF; font-weight:700; white-space:pre; line-height:1.02; text-align:center; text-shadow:0 0 24px rgba(135,135,255,.28)">
+<div>█████ █████   █████ █████</div>
+<div>    █     █ █ █   █ █   █</div>
+<div>█████ █████   █   █ █████</div>
+<div>    █ █     █ █   █ █   █</div>
+<div>█████ █████   █████ █████</div>
+          </div>
+          <div style="margin-top:16px; color:#808080; font-size:12.5px">18m left of 50m</div>
+          <div style="margin-top:20px; text-align:center">
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> build </span>
+            <span style="font-weight:700; margin-left:8px">Implement Raft leader election</span>
+          </div>
+          <div style="margin-top:6px; color:#808080; text-align:center; font-size:12.5px">Distributed Systems › Consensus&nbsp;&nbsp;·&nbsp;&nbsp;desk&nbsp;&nbsp;·&nbsp;&nbsp;since 1:40</div>
+        </div>
+
+        <!-- rail: the instruments (foldable) -->
+        <sc-if value="{{ showInstruments }}" hint-placeholder-val="{{ true }}">
+          <div style="width:250px; display:flex; flex-direction:column; gap:16px; justify-content:center; border-left:1px solid #1A2230; padding-left:22px">
+            <div>
+              <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin-bottom:5px">INTERVAL</div>
+              <div style="white-space:pre; color:#8787FF">██████████████▊·······</div>
+              <div style="color:#808080; font-size:11.5px; margin-top:3px">64% · this work block</div>
+            </div>
+            <div>
+              <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin-bottom:5px">POMODORO · 3 OF 4</div>
+              <div style="font-size:16px; letter-spacing:2px"><span style="color:#87AF87">●</span> <span style="color:#87AF87">●</span> <span style="color:#8787FF">●</span> <span style="color:#585858">○</span></div>
+              <div style="color:#808080; font-size:11.5px; margin-top:4px">2 done · <span style="color:#8787FF">1 now</span> · break excluded</div>
+            </div>
+            <div>
+              <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin-bottom:5px">TODAY</div>
+              <div style="white-space:pre; color:#87AF87; font-size:15px; line-height:1">▂▃▅▂▇█▃</div>
+              <div style="color:#808080; font-size:11.5px; margin-top:4px">mon → sun · <span style="color:#E6EBF2">3h 47m</span> so far</div>
+            </div>
+          </div>
+        </sc-if>
+      </div>
+
+      <div style="border-top:1px solid #1A2230; padding-top:10px; margin-top:6px; display:flex; align-items:center; flex-wrap:wrap">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> SPC </span><span>&nbsp;pause</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> i </span><span>&nbsp;instruments</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> b </span><span>&nbsp;break now</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#D75F5F; color:#0B0E14; font-weight:600; white-space:pre"> s </span><span>&nbsp;end &amp; save</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> d </span><span>&nbsp;discard</span>
+      </div>
+    </div>
+  </div>
+  <div style="margin-top:8px; font-size:12px; color:#808080; line-height:1.5">One screen, two densities. <span style="color:#8787FF">i</span> (or click <span style="color:#8787FF">◧ i · rail</span>) folds the rail away — the number recenters into the calm watch face; fold it back for interval gauge, pomodoro ticks and today. Click the chip above to try it.</div>
+</div>
+
+<!-- ============================ STATUS-LINE COLLAPSE ============================ -->
+<div style="position:absolute; left:1300px; top:190px; width:720px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">STATUS-LINE · COLLAPSED (lives in every screen)</div>
+  <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">the timer, folded into the breadcrumb</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; color:#E6EBF2; line-height:1.35">
+      <div style="color:#808080; margin-bottom:10px; font-size:12.5px">Fold the whole face down one more notch and it's a single right-aligned segment on any screen's top line. One glyph carries the state; <span style="color:#8787FF">g t</span> jumps back to the full face.</div>
+
+      <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:6px 0 4px">RUNNING</div>
+      <div style="display:flex; align-items:baseline; padding:4px 0"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Activities</span><span style="flex:1"></span><span style="color:#87AF87">●</span>&nbsp;<span style="color:#E6EBF2; font-weight:700">0:52:14</span>&nbsp;<span style="color:#808080">read · DDIA ch.7</span></div>
+
+      <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:12px 0 4px">IDLE — the dot stops, turns amber</div>
+      <div style="display:flex; align-items:baseline; padding:4px 0"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Activities</span><span style="flex:1"></span><span style="color:#D7AF5F">◐</span>&nbsp;<span style="color:#D7AF5F; font-weight:700">2:41:00</span>&nbsp;<span style="background:#D7AF5F; color:#0B0E14; font-weight:600; white-space:pre"> idle 1h27m </span></div>
+
+      <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:12px 0 4px">FOCUS · WORK</div>
+      <div style="display:flex; align-items:baseline; padding:4px 0"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Roadmaps</span><span style="flex:1"></span><span style="color:#8787FF">◆</span>&nbsp;<span style="color:#E6EBF2; font-weight:700">32:08</span>&nbsp;<span style="color:#808080">focus</span>&nbsp;<span style="letter-spacing:1px"><span style="color:#87AF87">●●</span><span style="color:#8787FF">●</span><span style="color:#585858">○</span></span></div>
+
+      <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:12px 0 4px">FOCUS · BREAK — muted, not counting</div>
+      <div style="display:flex; align-items:baseline; padding:4px 0"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Roadmaps</span><span style="flex:1"></span><span style="color:#808080">○</span>&nbsp;<span style="color:#808080; font-weight:700">break 4:12</span>&nbsp;<span style="color:#585858">paused</span></div>
+
+      <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:12px 0 4px">NARROW RAIL — glyph only</div>
+      <div style="display:flex; align-items:baseline; padding:4px 0"><span style="color:#8787FF; font-weight:700">engineer</span><span style="flex:1"></span><span style="color:#87AF87">●</span>&nbsp;<span style="color:#E6EBF2; font-weight:700">0:52</span></div>
+
+      <div style="margin-top:14px; border-top:1px solid #1A2230; padding-top:10px; color:#808080; font-size:12px">Same fixed footprint in every state — the bar never changes shape, only the glyph and its colour.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ START-A-TIMER PICKER ============================ -->
+<div style="position:absolute; left:40px; top:900px; width:820px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">START A TIMER · PICKER (stopwatch vs focus)</div>
+  <div data-screen-label="Start a timer" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Start · 84×24</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; color:#E6EBF2; line-height:1.35">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Start a timer</span>
+        <span style="flex:1"></span><span style="color:#808080">nothing running</span>
+      </div>
+
+      <!-- mode -->
+      <div style="display:flex; align-items:center; gap:10px; margin:2px 0 10px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre"> ● Stopwatch </span>
+        <span style="color:#585858; white-space:pre"> ○ Focus </span>
+        <span style="color:#808080; font-size:12px">&nbsp;&nbsp;<span style="color:#8787FF">Tab</span> switches mode · focus = <span style="color:#E6EBF2">50m work · 10m break · ×4</span></span>
+      </div>
+
+      <!-- activity list -->
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Bind to activity · </span><span style="color:#E6EBF2">/ddia</span><span style="background:#8787FF; color:#05080F">&nbsp;</span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ </span><span style="background:#0B0E14; color:#8787FF; font-weight:600; white-space:pre"> read </span><span>&nbsp;&nbsp;Read DDIA ch.7 — Transactions</span><span style="flex:1"></span><span>Distributed Sys · 1h05</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> build </span><span>&nbsp;&nbsp;Implement Raft leader election</span><span style="flex:1"></span><span style="color:#808080">Distributed Sys · 2h30</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> read </span><span>&nbsp;&nbsp;Crafting Interpreters — ch.4</span><span style="flex:1"></span><span style="color:#808080">Languages · 18%</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; display:flex; align-items:center; color:#808080"><span style="white-space:pre">  </span><span style="color:#585858">＋</span><span>&nbsp;&nbsp;new activity — type a title, </span><span style="color:#8787FF">⏎</span><span>&nbsp;to create &amp; start</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:8px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Tab </span><span>&nbsp;mode</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ⏎ </span><span>&nbsp;start</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> / </span><span>&nbsp;filter</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Esc </span><span>&nbsp;cancel</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ IDLE RECLAIM ============================ -->
+<div style="position:absolute; left:900px; top:900px; width:900px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">IDLE RECLAIM · WELCOME BACK (full-row list)</div>
+  <div data-screen-label="Idle reclaim" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Reclaim · 88×22</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; color:#E6EBF2; line-height:1.35">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Timer&nbsp;›&nbsp;</span><span style="color:#D7AF5F">Reclaim</span>
+        <span style="flex:1"></span><span style="color:#D7AF5F">◐</span>&nbsp;<span style="color:#D7AF5F; font-weight:700">frozen while you decide</span>
+      </div>
+
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="white-space:pre"><span style="color:#D7AF5F; font-weight:700"> Welcome back — the clock went quiet </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; color:#808080">running <span style="color:#E6EBF2; font-weight:700">2h41m</span> · last input <span style="color:#E6EBF2">3:12 PM</span> · idle <span style="color:#D7AF5F; font-weight:700">1h27m</span> → keep <span style="color:#87AF87; font-weight:700">1h14m</span>?</div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 10px 3px; color:#585858">read · Read DDIA ch.7 — Transactions · started 12:31 PM</div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+
+      <div style="color:#808080; font-size:12px; margin:8px 2px 4px">What was the idle tail worth?</div>
+      <!-- selected: trim -->
+      <div style="display:flex"><span style="color:#585858">&nbsp;</span><div style="flex:1; min-width:0; padding:3px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ </span><span style="color:#0B0E14">✓ Trim to last activity</span><span style="background:#0B0E14; color:#87AF87; font-weight:700; white-space:pre; margin-left:8px"> safe pick </span><span style="flex:1"></span><span>ends 3:12 · keeps 1h14m</span></div></div>
+      <div style="display:flex"><span style="color:#585858">&nbsp;</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span>⇔ Split into work + idle</span><span style="flex:1"></span><span style="color:#808080">1h14m kept · 1h27m logged idle</span></div></div>
+      <div style="display:flex"><span style="color:#585858">&nbsp;</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span>▸ Keep all &amp; resume</span><span style="flex:1"></span><span style="color:#808080">I really was working · 2h41m</span></div></div>
+      <div style="display:flex"><span style="color:#585858">&nbsp;</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="color:#D75F5F">✗ Discard the idle tail</span><span style="flex:1"></span><span style="color:#D75F5F">−1h27m</span></div></div>
+
+      <div style="margin-top:8px; color:#808080; font-size:12px; border-top:1px solid #1A2230; padding-top:8px">Nothing is written until you choose. Idle = <span style="color:#E6EBF2">absence of input only</span> — no screenshots, no keystrokes, ever.</div>
+
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:8px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;choose</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#87AF87; color:#0B0E14; font-weight:600; white-space:pre"> ⏎ </span><span>&nbsp;apply &amp; stop</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Esc </span><span>&nbsp;keep running</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ OVERNIGHT / 4AM EDGE ============================ -->
+<div style="position:absolute; left:1840px; top:900px; width:760px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">EDGE · OVERNIGHT IDLE &amp; THE 4 AM BOUNDARY</div>
+  <div data-screen-label="Overnight boundary" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">one clock, honest attribution</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; color:#E6EBF2; line-height:1.4">
+      <div style="color:#808080; font-size:12.5px; margin-bottom:12px">Started <span style="color:#E6EBF2">Jul 2, 11:20 PM</span> · worked <span style="color:#87AF87">1h14m</span> · idle from <span style="color:#D7AF5F">12:34 AM</span> · back <span style="color:#E6EBF2">6:02 AM</span>.</div>
+
+      <div style="font-size:12px; color:#808080; display:flex; justify-content:space-between; margin-bottom:2px"><span>Jul 2</span><span style="color:#D7AF5F">┊ 04:00 boundary</span><span>Jul 3</span></div>
+      <div style="white-space:pre; line-height:1.15; font-size:14px">
+<div><span style="color:#87AF87">████████</span><span style="color:#D7AF5F">░░░░░░░░░░░░░░</span><span style="color:#585858">┊</span><span style="color:#D7AF5F">░░░░░░░░░░░░░</span></div>
+<div><span style="color:#808080">11:20PM  </span><span style="color:#D7AF5F">12:34AM idle</span><span style="color:#585858">      ┊</span><span style="color:#808080">      6:02AM</span></div>
+      </div>
+
+      <div style="margin-top:14px; display:flex; flex-direction:column; gap:6px; font-size:12.5px">
+        <div style="display:flex; gap:8px; align-items:baseline"><span style="color:#87AF87; white-space:pre">████</span><span>counted work — <span style="color:#E6EBF2; font-weight:700">1h14m</span>, all attributed to <span style="color:#87AF87; font-weight:700">Jul 2</span></span></div>
+        <div style="display:flex; gap:8px; align-items:baseline"><span style="color:#D7AF5F; white-space:pre">░░░░</span><span style="color:#808080">idle tail — trimmed / discarded, never counted, never splits the streak</span></div>
+      </div>
+
+      <div style="margin-top:12px; border-top:1px solid #1A2230; padding-top:10px; font-size:12.5px; display:flex; gap:9px; align-items:flex-start">
+        <span style="color:#D7AF5F; font-weight:700">⚠</span>
+        <span style="color:#808080">Attribution follows the <span style="color:#E6EBF2">start</span> and the 4 AM boundary — not raw midnight, not the return. Trim runs <span style="color:#E6EBF2">before</span> attribution, so a forgotten overnight timer can't light up two days.</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ FOCUS · RHYTHM & OUTCOMES ============================ -->
+<div style="position:absolute; left:40px; top:1560px; width:880px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">FOCUS · RHYTHM &amp; WHAT IT LEAVES</div>
+  <div data-screen-label="Focus rhythm" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Focus · 88×24</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; color:#E6EBF2; line-height:1.35">
+      <!-- the track -->
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Session rhythm · 50m work · 10m break · ×4 </span></span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:4px 10px; white-space:pre; font-size:15px; line-height:1"><span style="color:#8787FF">████</span><span style="color:#585858">░</span><span style="color:#8787FF">████</span><span style="color:#585858">░</span><span style="color:#8787FF">██</span><span style="color:#585858">▊·· ░ ···· ░</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:0 10px 3px; color:#808080; font-size:12px"><span style="color:#8787FF">██ work · counts</span>&nbsp;&nbsp;&nbsp;<span style="color:#585858">░ break · excluded</span>&nbsp;&nbsp;&nbsp;now: <span style="color:#8787FF">interval 3 of 4 · 64%</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+
+      <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:12px 2px 6px">WHAT A FOCUS BLOCK LEAVES BEHIND</div>
+      <div style="display:flex; align-items:baseline; padding:3px 4px"><span style="color:#87AF87; width:120px; font-weight:700">✓ completed</span><span style="color:#808080">one clean segment — summed work <span style="color:#E6EBF2">3 × 50m = 2h30m</span>, breaks excluded</span></div>
+      <div style="display:flex; align-items:baseline; padding:3px 4px"><span style="color:#E6EBF2; width:120px; font-weight:700">↧ end early</span><span style="color:#808080">closes with work so far — a normal short segment, not an error</span></div>
+      <div style="display:flex; align-items:baseline; padding:3px 4px"><span style="color:#D75F5F; width:120px; font-weight:700">✗ abandoned</span><span style="color:#808080">nothing written — no junk; idle guard governs the work tail</span></div>
+      <div style="display:flex; align-items:baseline; padding:3px 4px"><span style="color:#808080; width:120px">○ break</span><span style="color:#808080">never a segment — a UI rhythm, never logged data</span></div>
+
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:10px; border-top:1px solid #1A2230; padding-top:10px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> SPC </span><span>&nbsp;pause</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> b </span><span>&nbsp;break</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> n </span><span>&nbsp;skip interval</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#D75F5F; color:#0B0E14; font-weight:600; white-space:pre"> s </span><span>&nbsp;end &amp; save</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ SEGMENT AUDIT ============================ -->
+<div style="position:absolute; left:960px; top:1560px; width:1000px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">SEGMENT AUDIT · FIND &amp; FIX (Progress ▸ audit)</div>
+  <div data-screen-label="Segment audit" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Progress · Segment audit · 100×30</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; color:#E6EBF2; line-height:1.35">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Progress&nbsp;›&nbsp;</span><span>Segment audit</span>
+        <span style="flex:1"></span><span style="background:#D7AF5F; color:#0B0E14; font-weight:700; white-space:pre"> 9 flagged </span><span style="color:#808080">&nbsp;of 214</span>
+      </div>
+      <!-- subtabs -->
+      <div style="display:flex; gap:0; margin-bottom:8px; color:#808080; font-size:12.5px">
+        <span style="padding:0 10px">Overview</span><span style="color:#585858">·</span>
+        <span style="padding:0 10px">Pace</span><span style="color:#585858">·</span>
+        <span style="padding:0 10px">Week rollup</span><span style="color:#585858">·</span>
+        <span style="padding:0 10px; color:#8787FF; font-weight:700; border-bottom:2px solid #8787FF">Segment audit</span>
+      </div>
+
+      <!-- group: long -->
+      <div style="display:flex; align-items:center; gap:8px; margin:6px 0 2px"><span style="color:#D75F5F; font-weight:700; font-size:12px; letter-spacing:.06em">IMPLAUSIBLY LONG</span><span style="color:#D75F5F">2</span><span style="flex:1; height:1px; background:#1A2230"></span><span style="color:#585858; font-size:11.5px">over ~6h · route → trim</span></div>
+      <div style="display:flex"><span style="color:#585858">&nbsp;</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ </span><span>☾ Read DDIA ch.7 — Transactions</span><span style="flex:1"></span><span style="white-space:pre">2h41m  likely idle tail  </span><span style="background:#0B0E14; color:#8787FF; font-weight:600; white-space:pre"> Trim </span></div></div>
+      <div style="display:flex"><span style="color:#585858">&nbsp;</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span>☾ Implement Raft leader election</span><span style="flex:1"></span><span style="color:#D75F5F; white-space:pre">8h05m  </span><span style="color:#808080; white-space:pre">overnight  </span><span style="color:#8787FF; white-space:pre">[Trim]</span></div></div>
+
+      <!-- group: zero -->
+      <div style="display:flex; align-items:center; gap:8px; margin:10px 0 2px"><span style="color:#D7AF5F; font-weight:700; font-size:12px; letter-spacing:.06em">ZERO / NEAR-ZERO</span><span style="color:#D7AF5F">2</span><span style="flex:1; height:1px; background:#1A2230"></span><span style="color:#585858; font-size:11.5px">under 60s · route → delete</span></div>
+      <div style="display:flex"><span style="color:#585858">&nbsp;</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span>⏱ Consensus · Raft</span><span style="flex:1"></span><span style="color:#808080; white-space:pre">4s  mis-tap  </span><span style="color:#D75F5F; white-space:pre">[Delete]</span></div></div>
+      <div style="display:flex"><span style="color:#585858">&nbsp;</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="color:#808080; font-style:italic">⏱ Untitled timer</span><span style="flex:1"></span><span style="color:#808080; white-space:pre">11s  mis-tap  </span><span style="color:#D75F5F; white-space:pre">[Delete]</span></div></div>
+
+      <!-- group: missing metadata -->
+      <div style="display:flex; align-items:center; gap:8px; margin:10px 0 2px"><span style="color:#8787FF; font-weight:700; font-size:12px; letter-spacing:.06em">MISSING METADATA</span><span style="color:#8787FF">5</span><span style="flex:1; height:1px; background:#1A2230"></span><span style="color:#585858; font-size:11.5px">no kind / no anchor · route → fix</span></div>
+      <div style="display:flex"><span style="color:#585858">&nbsp;</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="color:#808080; font-style:italic">⚑ Untitled timer</span><span style="flex:1"></span><span style="color:#808080; white-space:pre">1h05m  no kind · no anchor  </span><span style="color:#8787FF; white-space:pre">[Fix]</span></div></div>
+      <div style="display:flex"><span style="color:#585858">&nbsp;</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span>⚑ pgvector exploration</span><span style="flex:1"></span><span style="color:#808080; white-space:pre">52m  no kind  </span><span style="color:#8787FF; white-space:pre">[Fix]</span></div></div>
+      <div style="display:flex"><span style="color:#585858">&nbsp;</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; color:#585858"><span style="white-space:pre">  ▾ </span><span>show 3 more missing-metadata segments</span></div></div>
+
+      <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:10px; border-top:1px solid #1A2230; padding-top:10px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ⏎ </span><span>&nbsp;open</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> f </span><span>&nbsp;fix inline</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#D75F5F; color:#0B0E14; font-weight:600; white-space:pre"> d </span><span>&nbsp;delete (confirms)</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="color:#585858">clean log → no badge, anywhere</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ HEADLESS ============================ -->
+<div style="position:absolute; left:40px; top:2280px; width:1180px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">HEADLESS · SAME TIMER, PIPED (no TTY → no ANSI)</div>
+  <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">zsh — every read has a one-shot form</span>
+    </div>
+    <div style="padding:14px 16px; font-size:13px; color:#E6EBF2; line-height:1.5">
+      <div><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> timer</div>
+      <div style="color:#E6EBF2"><span style="color:#87AF87">●</span> tracking&nbsp;&nbsp;0:52:14&nbsp;&nbsp;read · Read DDIA ch.7 — Transactions&nbsp;&nbsp;<span style="color:#808080">(desk, since 12:31)</span></div>
+
+      <div style="margin-top:10px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> timer <span style="color:#D7AF5F">--json</span></div>
+      <div style="color:#808080; white-space:pre">{
+  <span style="color:#8787FF">"state"</span>: <span style="color:#87AF87">"running"</span>,   <span style="color:#8787FF">"mode"</span>: <span style="color:#87AF87">"stopwatch"</span>,
+  <span style="color:#8787FF">"activity"</span>: { <span style="color:#8787FF">"id"</span>: <span style="color:#87AF87">"a_7f3c"</span>, <span style="color:#8787FF">"kind"</span>: <span style="color:#87AF87">"read"</span>, <span style="color:#8787FF">"title"</span>: <span style="color:#87AF87">"Read DDIA ch.7 — Transactions"</span> },
+  <span style="color:#8787FF">"started_at"</span>: <span style="color:#87AF87">"2026-07-05T12:31:04Z"</span>,   <span style="color:#8787FF">"elapsed_s"</span>: <span style="color:#D7AF5F">3134</span>,
+  <span style="color:#8787FF">"last_input_at"</span>: <span style="color:#87AF87">"2026-07-05T13:22:58Z"</span>,   <span style="color:#8787FF">"idle_s"</span>: <span style="color:#D7AF5F">0</span>
+}</div>
+
+      <div style="margin-top:10px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> timer stop <span style="color:#D7AF5F">--reclaim=trim --json</span></div>
+      <div style="color:#808080; white-space:pre">{ <span style="color:#8787FF">"saved_segment_s"</span>: <span style="color:#D7AF5F">4440</span>, <span style="color:#8787FF">"trimmed_idle_s"</span>: <span style="color:#D7AF5F">5220</span>, <span style="color:#8787FF">"attributed_day"</span>: <span style="color:#87AF87">"2026-07-02"</span> }</div>
+
+      <div style="margin-top:10px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> timer status <span style="color:#808080">| cat</span>&nbsp;&nbsp;&nbsp;<span style="color:#585858"># NO_COLOR, plain, exit 0 while running</span></div>
+      <div style="color:#E6EBF2">running 3134 stopwatch a_7f3c read "Read DDIA ch.7 — Transactions"</div>
+
+      <div style="margin-top:12px; border-top:1px solid #1A2230; padding-top:10px; color:#808080; font-size:12px">Meaningful exit codes: <span style="color:#87AF87">0</span> running · <span style="color:#D7AF5F">3</span> idle-pending-reclaim · <span style="color:#585858">1</span> nothing running. Scripts branch on the code; humans read the glyph.</div>
+    </div>
+  </div>
+</div>
+
+<template id="__bundler_thumbnail">
+  <svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+    <rect width="80" height="80" rx="16" fill="#05080F"/>
+    <circle cx="40" cy="40" r="21" fill="none" stroke="#8787FF" stroke-width="5"/>
+    <path d="M40 27v13l9 5" fill="none" stroke="#8787FF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+</template>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { showInstruments: true };
+  renderVals() {
+    return {
+      showInstruments: this.state.showInstruments,
+      toggleInstruments: () => this.setState(s => ({ showInstruments: !s.showInstruments })),
+    };
+  }
+}
+</script>
+</body>
+</html>

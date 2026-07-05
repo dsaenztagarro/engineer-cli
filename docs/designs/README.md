@@ -1,9 +1,9 @@
 # engineer-cli — terminal design references
 
-Design references for the **terminal** client, organized by app area (mirroring
-`engineer/docs/designs/`). Each `*.html` is a self-contained, faithful mockup of one screen as
-[ratatui](https://ratatui.rs) renders it; `terminal-tokens.css` is the shared palette they
-render against.
+Design references for the **terminal** client, organized by app area (mirroring `engineer/docs/designs/`).
+Mockups are Claude Design **canvas docs** (`*.dc.html`, rendered by the bundled `support.js` runtime): each is a board of [ratatui](https://ratatui.rs)-faithful screens for one app area.
+`design-system.dc.html` is the shared palette and component legend they all follow;
+`MISSING.md` is the open worklist of gaps between the current mockups and the timer features engineer has already shipped.
 
 This directory is also the **reference kit** to seed a *new* Claude Design project for the
 terminal app. The terminal is a sibling surface to the web app — it shares the brand and the
@@ -14,16 +14,9 @@ architecture, colour semantics, brand) rather than its pixel/CSS chrome.
 
 ## How to use this kit in Claude Design
 
-1. In **claude.ai/design**, create a new project named **`engineer-cli`** (separate from the
-   web `engineer` project — keep the two media from cross-contaminating).
-2. Upload the **transferable web references** (information architecture + brand), from the web
-   `engineer` project / `engineer/docs/designs/`:
-   `tokens.css`, `Design System.html`, `Activities.html`, `books.html`, `roadmap.html`,
-   `Roadmaps and Book Progress v2.html`, `Command Palette v2.html`.
-3. Upload this **kit**: `README.md`, `terminal-tokens.css`, `books.html`.
-4. Ask Claude Design to extend `books.html` into the remaining screens, holding to the palette
-   mapping, chrome conventions, and translate/don't-translate rules below. `books.html` is the
-   style anchor; everything else should look like it belongs in the same terminal.
+The **`engineer-cli`** Claude Design project is live (seeded from this kit's original `books.html` anchor + `terminal-tokens.css`, both since retired);
+its outputs land here as `*.dc.html` canvas docs — `design-system.dc.html` (the style anchor) and one doc per app area (`timer.dc.html`, …).
+To iterate on an area: give the project the area's current `.dc.html`, `design-system.dc.html`, this `README.md`, `MISSING.md`, and the relevant brief from `briefs/`, and ask for the gaps to be closed within the palette mapping, chrome conventions, and translate/don't-translate rules below.
 
 > Why a new project, not the web one: the web project carries ~50 files of web-CSS iteration.
 > For a TUI, most of that is the wrong medium and biases output toward shadows/rounded/pixel
@@ -68,13 +61,17 @@ seeded by the web designs.
 | Terminal screen | Seeds from (web) | Status |
 |---|---|---|
 | Home / dashboard | dashboard + quick stats | built (`screens/home.rs`) |
-| **Books list** | `books.html` | built — **anchor mockup** (`books.html`) |
+| Books list | `books.html` | built (`screens/books.rs`) |
 | Book detail + chapters | `books.html` / `roadmap.html` | built (`screens/book_detail.rs`) |
 | Log activity (form) | `Activities.html` + `Forms v2.html` | built (`screens/activity_new.rs`) |
 | Sign in | identity / auth | built (`screens/login.rs`) |
-| Activities table | `Activities.html` | next — the core domain surface |
+| Activities table | `Activities.html` | built (`screens/activities.rs`) |
+| Timer + header cell | `navigation-bar.html` §M + `timer-hygiene.html` | built v1 (`screens/timer.rs`) — redesign specified in `timer.dc.html`, gaps in `MISSING.md` |
+| Notes capture + browser | `notes.html` | built (`screens/notes.rs`) |
+| Review (dashboard / browse / sitting) | `review.html` | built (`screens/review.rs`) |
+| Progress (pace meters) | `progress.html` | built (`screens/progress.rs`) |
+| Command palette (`:`) | `Command Palette v2.html` | built — `:` grammar (`src/app/command.rs`) |
 | Roadmaps + book progress | `Roadmaps and Book Progress v2.html` | next |
-| Command palette (`:`) | `Command Palette v2.html` | next — maps naturally to a TUI command line |
 | Shard / environment indicator | `Tenancy, Shard & Environment Indicators v3.html` | next — belongs in the header chrome |
 
 ## Translate / don't-translate
@@ -121,5 +118,8 @@ Layout is three stacked rows (`../../src/ui/layout.rs::render_chrome`):
 | File | What |
 |---|---|
 | `README.md` | This brief — the kit's entry point |
-| `terminal-tokens.css` | The palette mapping made executable; mockups `@import` it |
-| `books.html` | Anchor mockup — the Books list, the style template for new screens |
+| `design-system.dc.html` | Palette & component legend — the canvas kit's style anchor |
+| `timer.dc.html` | Timer screens — hero, status-line, start picker, idle reclaim, focus, audit, headless |
+| `support.js` | Claude Design canvas runtime the `.dc.html` docs load |
+| `MISSING.md` | Gap worklist for Claude Design — mockups vs shipped engineer features |
+| `briefs/` | Problem-first design briefs (`proposed/` → `shipped/` lifecycle) |
