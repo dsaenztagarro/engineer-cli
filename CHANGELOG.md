@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Presence heartbeat — the idle guard no longer trips on real in-TUI work.** While a timer is running (and not paused), a key in the TUI now marks presence: a background `POST /api/v1/timer/heartbeat`, throttled to at most once a minute (matching the web pill). So a session spent reading, navigating, and typing *inside* the TUI without touching timer verbs keeps the clock alive instead of drifting into the idle guard. It's deliberately silent once the timer has already gone idle — the reclaim screen owns that decision (its **Keep** verb is the explicit "I was present"), so moving through the reclaim list never auto-resolves it. Needs the engineer API's new `POST /api/v1/timer/heartbeat` (dsaenztagarro/engineer#781), the last v1 gap versus the web timer — closing the follow-up left open when the idle guard shipped server-driven in #35.
+
 ## [0.4.0] - 2026-07-06
 
 ### Added
