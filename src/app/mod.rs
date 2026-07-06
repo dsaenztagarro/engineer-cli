@@ -65,6 +65,9 @@ pub struct App {
     /// The per-user timer knobs, fetched once after sign-in — the header cell
     /// reads them to spot a finished focus phase (the offer pill).
     pub settings: Option<crate::api::TimerSettings>,
+    /// Timer id already pinged for overrun — the ping fires once per timer,
+    /// never again on later polls of the same clock.
+    pub overrun_pinged: Option<i64>,
 }
 
 pub async fn run(config: Config) -> Result<()> {
@@ -108,6 +111,7 @@ async fn run_loop(
         timer_base: None,
         timer_last_poll: Instant::now(),
         settings: None,
+        overrun_pinged: None,
     };
 
     // Kick off initial loads (only meaningful once authenticated).
@@ -145,6 +149,15 @@ async fn run_loop(
     }
 
     Ok(())
+}
+
+fn format_minutes(minutes: u32) -> String {
+    let (h, m) = (minutes / 60, minutes % 60);
+    if h > 0 {
+        format!("{h}h {m:02}m")
+    } else {
+        format!("{m}m")
+    }
 }
 
 fn init_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
@@ -226,6 +239,19 @@ impl App {
                 });
             }
             Action::TimerLoaded(t) => {
+                // The overrun ping: once per timer, when a read first crosses
+                // the plan (the server gates `over` on the user's knob).
+                if t.over && t.id.is_some() && self.overrun_pinged != t.id {
+                    self.overrun_pinged = t.id;
+                    let planned = t.planned_minutes.unwrap_or(0);
+                    self.notify(
+                        Level::Warning,
+                        format!(
+                            "past the plan — planned {}, all-in over it now · s wraps up & saves",
+                            format_minutes(planned)
+                        ),
+                    );
+                }
                 self.timer = Some((*t).clone());
                 self.timer_base = Some(Instant::now());
                 // Forward to the Timer screen so its detailed view mirrors the
@@ -480,6 +506,7 @@ mod tests {
             timer_base: None,
             timer_last_poll: Instant::now(),
             settings: None,
+            overrun_pinged: None,
         };
         (app, rx)
     }

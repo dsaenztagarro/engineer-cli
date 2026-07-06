@@ -447,6 +447,7 @@ fn state_word(t: &Timer) -> &'static str {
     }
     match (t.mode.as_deref(), t.phase.as_deref()) {
         (Some("focus"), Some("break")) => "break",
+        _ if t.over => "over",
         (Some("focus"), _) => "work",
         _ => "running",
     }
@@ -486,6 +487,11 @@ fn plain_status(t: &Timer) -> String {
             line.push_str(&format!(" idle_s={idle_s}"));
         }
     }
+    if word == "over" {
+        if let Some(planned) = t.planned_minutes {
+            line.push_str(&format!(" planned_s={}", planned as i64 * 60));
+        }
+    }
     line
 }
 
@@ -515,6 +521,7 @@ fn human_line(t: &Timer, colored: bool) -> String {
         "running" => "tracking",
         "work" => "focus",
         "idle" => "idle — reclaim pending",
+        "over" => "over — past the plan",
         other => other,
     };
     let since = t
@@ -545,6 +552,9 @@ fn json_read(t: &Timer) -> serde_json::Value {
         "last_interacted_at": t.last_interacted_at.map(|ts| ts.to_string()),
         "elapsed_s": t.elapsed_seconds.unwrap_or(0),
         "idle": t.idle.unwrap_or(false),
+        "over": t.over,
+        "planned_minutes": t.planned_minutes,
+        "logged_minutes": t.logged_minutes,
     })
 }
 
@@ -558,6 +568,7 @@ fn glyph_for(word: &str) -> (&'static str, u8) {
     match word {
         "paused" => ("‖", COLOR_ATTENTION),
         "idle" => ("◐", COLOR_ATTENTION),
+        "over" => ("●", COLOR_ATTENTION),
         "work" => ("◆", COLOR_FOCUS),
         "break" | "none" => ("○", COLOR_MUTED),
         _ => ("●", COLOR_RUNNING),
@@ -648,6 +659,23 @@ mod tests {
             code(serde_json::json!({"running": true, "mode": "focus", "phase": "break"})),
             4
         );
+    }
+
+    #[test]
+    fn over_outranks_running_but_not_breaks() {
+        let over = timer(serde_json::json!({
+            "running": true, "bound": true, "over": true,
+            "planned_minutes": 120, "elapsed_seconds": 8320
+        }));
+        assert_eq!(state_word(&over), "over");
+        assert_eq!(exit_code(&over), 0, "over is still counting");
+        assert!(plain_status(&over).contains("planned_s=7200"));
+
+        // A break isn't counting — it wins over the amber alarm.
+        let on_break = timer(serde_json::json!({
+            "running": true, "mode": "focus", "phase": "break", "over": true
+        }));
+        assert_eq!(state_word(&on_break), "break");
     }
 
     #[test]

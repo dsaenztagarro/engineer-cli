@@ -853,6 +853,13 @@ impl Timer {
                     .fg(theme::MUTED)
                     .add_modifier(Modifier::BOLD),
             ))
+        } else if snap.over {
+            Line::from(Span::styled(
+                "●  PAST THE PLAN — STILL COUNTING",
+                Style::default()
+                    .fg(theme::WARN)
+                    .add_modifier(Modifier::BOLD),
+            ))
         } else if focus {
             Line::from(Span::styled(
                 format!("◆  WORK · INTERVAL {interval_now}"),
@@ -870,10 +877,15 @@ impl Timer {
         });
         lines.push(Line::from(""));
 
-        // The big number — muted while not counting, accent while counting.
+        // The big number — muted while not counting, amber past the plan,
+        // accent while counting.
         let digit_style = if paused || on_break {
             Style::default()
                 .fg(theme::MUTED)
+                .add_modifier(Modifier::BOLD)
+        } else if snap.over {
+            Style::default()
+                .fg(theme::WARN)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
@@ -921,6 +933,21 @@ impl Timer {
         } else if on_break {
             lines.push(Line::from(Span::styled(
                 "a break is never a segment — a rhythm, not logged data",
+                theme::muted(),
+            )));
+        } else if snap.over {
+            let planned = snap.planned_minutes.unwrap_or(0);
+            let logged = snap.logged_minutes.unwrap_or(0);
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "planned {} · logged {} — earlier segments + this timer",
+                    fmt_minutes(planned),
+                    fmt_minutes(logged)
+                ),
+                theme::muted(),
+            )));
+            lines.push(Line::from(Span::styled(
+                "s wrap up & save · SPC pause — it never stops anything for you",
                 theme::muted(),
             )));
         } else if let Some(since) = snap.started_at.map(|ts| {
@@ -2717,6 +2744,43 @@ mod tests {
         assert!(
             s.panel.is_none(),
             "b in focus is the phase toggle, not bind"
+        );
+    }
+
+    #[tokio::test]
+    async fn over_face_is_amber_and_names_the_plan() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "label": "Implement Raft",
+                "over": true, "planned_minutes": 120, "logged_minutes": 18,
+                "elapsed_seconds": 8320
+            })))),
+        )
+        .await;
+
+        let backend = TestBackend::new(100, 32);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| s.render(frame, frame.area()))
+            .unwrap();
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(content.contains("PAST THE PLAN"), "over label");
+        assert!(content.contains("planned 2h 00m"), "plan context");
+        assert!(
+            content.contains("never stops anything"),
+            "no auto-stop note"
         );
     }
 
