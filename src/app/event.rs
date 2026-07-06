@@ -116,6 +116,10 @@ fn screen_key(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action> 
         Timer => timer_key(key),
         Notes => notes_key(key),
         Review => review_key(app, key),
+        Settings => match key.code {
+            KeyCode::Char('h') | KeyCode::Esc => Some(Action::Goto(Home)),
+            _ => None,
+        },
     }
 }
 
@@ -313,6 +317,7 @@ fn refresh_for(kind: ScreenKind) -> Action {
         ScreenKind::Notes => Action::RefreshNotes,
         ScreenKind::Activities => Action::RefreshActivities,
         ScreenKind::Review => Action::RefreshReview,
+        ScreenKind::Settings => Action::SettingsReload,
         _ => Action::RefreshHome,
     }
 }

@@ -1,6 +1,6 @@
 use crate::api::{
     Activity, Book, BookChapter, Dashboard, Note, Progress, RateResult, Timer, TimerCandidate,
-    TimerStopped, Topic,
+    TimerSettings, TimerStopped, Topic,
 };
 use crate::app::screens::review::Rating;
 use crate::app::screens::ScreenKind;
@@ -120,6 +120,10 @@ pub enum Action {
     TimerUndo,
     /// The undo landed: the segment is gone, reload into the empty face.
     TimerUndone,
+
+    // Timer settings — the view-only knobs screen (`:settings`).
+    SettingsLoaded(Box<TimerSettings>),
+    SettingsReload,
     TimerBindInput(char),
     TimerBindBackspace,
     TimerBindMove(i32),

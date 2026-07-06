@@ -44,6 +44,7 @@ engineer timer toggle              # pause ⇄ resume (bind it in tmux/zellij)
 engineer timer pause|resume|stop   # stop refuses on an unbound timer — bind or discard first
 engineer timer bind <query>        # name a running unnamed timer
 engineer timer discard [--force]   # throw the timer away; past ~2 minutes requires --force
+engineer timer settings [--json]   # the per-user timer knobs, read-only (edit on the web)
 ```
 
 Timer exit codes answer "is the clock counting?": `0` counting (running / focus

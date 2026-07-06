@@ -19,6 +19,7 @@ pub mod login;
 pub mod notes;
 pub mod progress;
 pub mod review;
+pub mod settings;
 pub mod timer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +34,7 @@ pub enum ScreenKind {
     Timer,
     Notes,
     Review,
+    Settings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +56,7 @@ pub enum Screen {
     // Boxed: the review screen holds three stages' worth of state (dashboard,
     // sitting, browse), making it much larger than the other variants.
     Review(Box<review::Review>),
+    Settings(settings::Settings),
 }
 
 impl Screen {
@@ -69,6 +72,7 @@ impl Screen {
             ScreenKind::Timer => Self::Timer(timer::Timer::default()),
             ScreenKind::Notes => Self::Notes(notes::Notes::default()),
             ScreenKind::Review => Self::Review(Box::default()),
+            ScreenKind::Settings => Self::Settings(settings::Settings::default()),
         }
     }
 
@@ -84,6 +88,7 @@ impl Screen {
             Self::Timer(_) => ScreenKind::Timer,
             Self::Notes(_) => ScreenKind::Notes,
             Self::Review(_) => ScreenKind::Review,
+            Self::Settings(_) => ScreenKind::Settings,
         }
     }
 
@@ -99,6 +104,7 @@ impl Screen {
             Self::Timer(_) => "Timer",
             Self::Notes(_) => "Notes",
             Self::Review(_) => "Review",
+            Self::Settings(_) => "Settings · Timer",
         }
     }
 
@@ -121,6 +127,7 @@ impl Screen {
             Self::Timer(s) => s.on_enter(api, tx),
             Self::Notes(s) => s.on_enter(api, tx),
             Self::Review(s) => s.on_enter(api, tx),
+            Self::Settings(s) => s.on_enter(api, tx),
         }
     }
 
@@ -154,6 +161,7 @@ impl Screen {
             Self::Timer(s) => s.handle(action, api, tx).await,
             Self::Notes(s) => s.handle(action, api, tx).await,
             Self::Review(s) => s.handle(action, api, tx).await,
+            Self::Settings(s) => s.handle(action, api, tx).await,
         }
     }
 
@@ -169,6 +177,7 @@ impl Screen {
             Self::Timer(s) => s.render(frame, area),
             Self::Notes(s) => s.render(frame, area),
             Self::Review(s) => s.render(frame, area),
+            Self::Settings(s) => s.render(frame, area),
         }
     }
 
@@ -214,6 +223,7 @@ impl Screen {
             Self::Timer(s) => s.hints(),
             Self::Notes(s) => s.hints(),
             Self::Review(s) => s.hints(),
+            Self::Settings(s) => s.hints(),
         }
     }
 }

@@ -330,7 +330,7 @@ impl Timer {
             }
             Action::TimerUndo => {
                 if let Stage::Stopped { result, .. } = &self.stage {
-                    spawn_undo(api, tx, result.segment_id);
+                    spawn_undo(api, tx, result.activity_id, result.segment_id);
                 }
             }
             Action::TimerUndone => {
@@ -1447,10 +1447,10 @@ fn spawn_bind_then_stop(api: &ApiClient, tx: &UnboundedSender<Action>, target: B
 
 /// `u` on the stop confirmation: delete the just-written segment — the exact
 /// inverse of the save, while the confirmation still shows.
-fn spawn_undo(api: &ApiClient, tx: &UnboundedSender<Action>, segment_id: i64) {
+fn spawn_undo(api: &ApiClient, tx: &UnboundedSender<Action>, activity_id: i64, segment_id: i64) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
-        match api.delete_segment(segment_id).await {
+        match api.delete_segment(activity_id, segment_id).await {
             Ok(()) => {
                 let _ = tx.send(Action::TimerUndone);
                 let _ = tx.send(Action::Notify {

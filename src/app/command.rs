@@ -119,6 +119,14 @@ pub const ENTRIES: &[Entry] = &[
         target: Target::Nav(ScreenKind::Progress),
     },
     Entry {
+        verb: "settings",
+        aliases: &[],
+        kind: Kind::Nav,
+        arg: Arg::None,
+        help: "timer knobs (read-only)",
+        target: Target::Nav(ScreenKind::Settings),
+    },
+    Entry {
         verb: "timer",
         aliases: &[],
         kind: Kind::Nav,

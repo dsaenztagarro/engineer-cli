@@ -19,8 +19,9 @@ use crate::ui::widgets::fmt_elapsed;
 
 #[derive(Args)]
 pub struct TimerArgs {
-    /// Emit the full read as JSON instead of the human line.
-    #[arg(long)]
+    /// Emit JSON instead of the human line (valid on the bare read and on
+    /// `status`/`settings`).
+    #[arg(long, global = true)]
     json: bool,
 
     #[command(subcommand)]
@@ -58,6 +59,8 @@ enum TimerCmd {
         #[arg(long)]
         force: bool,
     },
+    /// The per-user timer knobs, read-only (edit on the web).
+    Settings,
 }
 
 pub async fn run(cfg: &Config, args: TimerArgs) -> Result<i32> {
@@ -116,7 +119,60 @@ async fn dispatch(
         Some(TimerCmd::Stop) => stop(api).await,
         Some(TimerCmd::Bind { query }) => bind(api, &query).await,
         Some(TimerCmd::Discard { force }) => discard(api, force).await,
+        Some(TimerCmd::Settings) => settings(api, json).await,
     }
+}
+
+/// The knobs read, mirroring the server payload 1:1 in `--json` and as an
+/// aligned table for humans.
+async fn settings(api: &ApiClient, json: bool) -> Result<Outcome, ApiError> {
+    let s = api.timer_settings().await?;
+    if json {
+        let value = serde_json::json!({
+            "timer_mode": s.timer_mode,
+            "focus_work_minutes": s.focus_work_minutes,
+            "focus_short_break_minutes": s.focus_short_break_minutes,
+            "focus_long_break_minutes": s.focus_long_break_minutes,
+            "focus_long_break_every": s.focus_long_break_every,
+            "idle_guard_enabled": s.idle_guard_enabled,
+            "idle_threshold_minutes": s.idle_threshold_minutes,
+            "idle_default_reclaim": s.idle_default_reclaim,
+            "audit_long_hours": s.audit_long_hours,
+            "audit_short_seconds": s.audit_short_seconds,
+            "audit_badge_enabled": s.audit_badge_enabled,
+            "overrun_ping_enabled": s.overrun_ping_enabled,
+        });
+        return Ok(Outcome::ok(value.to_string()));
+    }
+    let onoff = |b: bool| if b { "on" } else { "off" };
+    Ok(Outcome {
+        out: vec![
+            format!("default mode          {}", s.timer_mode),
+            format!(
+                "focus                 {}m work · {}m short · {}m long · long every {}th",
+                s.focus_work_minutes,
+                s.focus_short_break_minutes,
+                s.focus_long_break_minutes,
+                s.focus_long_break_every
+            ),
+            format!(
+                "idle guard            {} · {}m threshold · default reclaim {}",
+                onoff(s.idle_guard_enabled),
+                s.idle_threshold_minutes,
+                s.idle_default_reclaim
+            ),
+            format!(
+                "audit                 ≥ {}h · < {}s · badge {}",
+                s.audit_long_hours,
+                s.audit_short_seconds,
+                onoff(s.audit_badge_enabled)
+            ),
+            format!("overrun ping          {}", onoff(s.overrun_ping_enabled)),
+            "read-only here — edit at engineer › Settings on the web".to_string(),
+        ],
+        err: vec![],
+        code: 0,
+    })
 }
 
 // ---------------------------------------------------------------- reads
@@ -405,7 +461,7 @@ fn json_read(t: &Timer) -> serde_json::Value {
             "title": t.label,
         })),
         "started_at": t.started_at.map(|ts| ts.to_string()),
-        "last_input_at": t.last_input_at.map(|ts| ts.to_string()),
+        "last_interacted_at": t.last_interacted_at.map(|ts| ts.to_string()),
         "elapsed_s": t.elapsed_seconds.unwrap_or(0),
         "idle": t.idle.unwrap_or(false),
     })
@@ -724,6 +780,39 @@ mod tests {
         .unwrap();
         assert_eq!(outcome.code, 0);
         assert!(outcome.out[0].contains("discarded"));
+    }
+
+    #[tokio::test]
+    async fn settings_json_mirrors_the_server_payload() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/timer/settings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "timer_mode": "stopwatch",
+                "focus_work_minutes": 50,
+                "focus_short_break_minutes": 10,
+                "focus_long_break_minutes": 20,
+                "focus_long_break_every": 4,
+                "idle_guard_enabled": true,
+                "idle_threshold_minutes": 15,
+                "idle_default_reclaim": "trim",
+                "audit_long_hours": 6,
+                "audit_short_seconds": 60,
+                "audit_badge_enabled": true,
+                "overrun_ping_enabled": true
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let outcome = dispatch(&client(&server), Some(TimerCmd::Settings), true, false)
+            .await
+            .unwrap();
+        assert_eq!(outcome.code, 0);
+        let v: serde_json::Value = serde_json::from_str(&outcome.out[0]).unwrap();
+        assert_eq!(v["focus_work_minutes"], 50);
+        assert_eq!(v["idle_default_reclaim"], "trim");
+        assert_eq!(v["overrun_ping_enabled"], true);
     }
 
     #[tokio::test]
