@@ -5,6 +5,11 @@
 **Method:** `timer.dc.html` was diffed against engineer's shipped timer behavior — the live timer + idle guard + focus + segment audit (epic #717, `engineer/docs/features/timer-hygiene.md`), the canonical pill spec (`engineer/docs/designs/navigation-bar.html` §M), the overrun ping (`engineer/docs/designs/nudges.html` §B), the settings knobs (`engineer/docs/designs/settings.html`), and the `api/v1` timer/segments endpoints the CLI consumes.
 **Status of the current doc:** strong — the hero face, status-line collapse, start picker, idle reclaim, overnight/4 AM panel, focus rhythm, segment audit, and headless reads are all present. The items below are what's *not* there yet, plus a few places where the design's verbs drifted from the server's.
 
+> **Design pass of 2026-07-06 — sections A and B are closed.** Every item below now has a panel (or an explicit caption) in `timer.dc.html`:
+> M1 → §Start a timer (just-start row) + §Bind at stop + §Status line (unnamed row) · M2 → §Start conflict · M3 → §Paused + §Status line (paused row) · M4 → §Focus offers (offers, long break, mode switch) · M5 → §Overrun + §Status line (over row) · M6 → §Segment audit (Looks right action; Trim specced as a segment-edit PATCH preset) · M7 → §Timer settings (view-only in CLI, edit on web — decided) + settings-driven copy throughout · M8 → §Headless (write verbs) + §Headless contract (full status-string table, `--short`, exit codes 0/1/3/4) · M9 → §Saved & undo · M10 → caption on §Idle reclaim (presence = TUI keystrokes; detached/closed = absent; entered on next interaction or launch) ·
+> F1 → §Idle reclaim remapped to the server verbs (trim keeps running / keep / stop at last input, + discard escape) · F2 → see M6 · F3 → see M7 · F4 → hero rail relabelled THIS WEEK.
+> **Section C (backend API gaps) remains open** — it is the API request list for the implementation epic; nothing in the design silently narrows around it.
+
 The kit rules still bind (`README.md`, `design-system.dc.html`): character grid, keyboard-only, `j/k`/`⏎`/`Esc` grammar, the shipped chrome and widget idioms.
 
 ---
