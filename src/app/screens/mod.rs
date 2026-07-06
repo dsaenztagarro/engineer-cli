@@ -12,6 +12,7 @@ use crate::ui::notify::Level;
 
 pub mod activities;
 pub mod activity_new;
+pub mod audit;
 pub mod book_detail;
 pub mod books;
 pub mod home;
@@ -35,6 +36,7 @@ pub enum ScreenKind {
     Notes,
     Review,
     Settings,
+    Audit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +59,7 @@ pub enum Screen {
     // sitting, browse), making it much larger than the other variants.
     Review(Box<review::Review>),
     Settings(settings::Settings),
+    Audit(audit::Audit),
 }
 
 impl Screen {
@@ -73,6 +76,7 @@ impl Screen {
             ScreenKind::Notes => Self::Notes(notes::Notes::default()),
             ScreenKind::Review => Self::Review(Box::default()),
             ScreenKind::Settings => Self::Settings(settings::Settings::default()),
+            ScreenKind::Audit => Self::Audit(audit::Audit::default()),
         }
     }
 
@@ -89,6 +93,7 @@ impl Screen {
             Self::Notes(_) => ScreenKind::Notes,
             Self::Review(_) => ScreenKind::Review,
             Self::Settings(_) => ScreenKind::Settings,
+            Self::Audit(_) => ScreenKind::Audit,
         }
     }
 
@@ -105,6 +110,7 @@ impl Screen {
             Self::Notes(_) => "Notes",
             Self::Review(_) => "Review",
             Self::Settings(_) => "Settings · Timer",
+            Self::Audit(_) => "Progress · Segment audit",
         }
     }
 
@@ -128,6 +134,7 @@ impl Screen {
             Self::Notes(s) => s.on_enter(api, tx),
             Self::Review(s) => s.on_enter(api, tx),
             Self::Settings(s) => s.on_enter(api, tx),
+            Self::Audit(s) => s.on_enter(api, tx),
         }
     }
 
@@ -162,6 +169,7 @@ impl Screen {
             Self::Notes(s) => s.handle(action, api, tx).await,
             Self::Review(s) => s.handle(action, api, tx).await,
             Self::Settings(s) => s.handle(action, api, tx).await,
+            Self::Audit(s) => s.handle(action, api, tx).await,
         }
     }
 
@@ -178,6 +186,7 @@ impl Screen {
             Self::Notes(s) => s.render(frame, area),
             Self::Review(s) => s.render(frame, area),
             Self::Settings(s) => s.render(frame, area),
+            Self::Audit(s) => s.render(frame, area),
         }
     }
 
@@ -224,6 +233,7 @@ impl Screen {
             Self::Notes(s) => s.hints(),
             Self::Review(s) => s.hints(),
             Self::Settings(s) => s.hints(),
+            Self::Audit(s) => s.hints(),
         }
     }
 }

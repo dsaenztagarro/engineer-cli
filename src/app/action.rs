@@ -1,6 +1,6 @@
 use crate::api::{
-    Activity, Book, BookChapter, Dashboard, Note, Progress, RateResult, Timer, TimerCandidate,
-    TimerSettings, TimerStopped, Topic,
+    Activity, AuditAcknowledged, AuditRead, Book, BookChapter, Dashboard, Note, Progress,
+    RateResult, Timer, TimerCandidate, TimerSettings, TimerStopped, Topic,
 };
 use crate::app::screens::review::Rating;
 use crate::app::screens::ScreenKind;
@@ -126,6 +126,20 @@ pub enum Action {
     // Timer settings — the view-only knobs screen (`:settings`).
     SettingsLoaded(Box<TimerSettings>),
     SettingsReload,
+
+    // Segment audit (`Progress ▸ audit`, `:audit`).
+    AuditLoaded(Box<AuditRead>),
+    AuditReload,
+    AuditMove(i32),
+    /// `a` — looks right: acknowledge, clearing the duration flags for good.
+    AuditAcknowledge,
+    AuditAcknowledged(Box<AuditAcknowledged>),
+    /// `t` — the trim preset: PATCH the duration down to the long fence.
+    AuditTrim,
+    /// `d` — delete the segment (asks twice).
+    AuditDelete,
+    /// `f` — route to the activity edit.
+    AuditFix,
     TimerBindInput(char),
     TimerBindBackspace,
     TimerBindMove(i32),

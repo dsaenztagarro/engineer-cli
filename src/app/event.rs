@@ -120,6 +120,22 @@ fn screen_key(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action> 
             KeyCode::Char('h') | KeyCode::Esc => Some(Action::Goto(Home)),
             _ => None,
         },
+        Audit => audit_key(key),
+    }
+}
+
+/// Segment-audit keys (§Segment audit): the row actions, plus `h`/Esc back to
+/// Progress (the tab it belongs to).
+fn audit_key(key: crossterm::event::KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Some(Action::AuditMove(1)),
+        KeyCode::Char('k') | KeyCode::Up => Some(Action::AuditMove(-1)),
+        KeyCode::Char('a') => Some(Action::AuditAcknowledge),
+        KeyCode::Char('t') => Some(Action::AuditTrim),
+        KeyCode::Char('d') => Some(Action::AuditDelete),
+        KeyCode::Char('f') => Some(Action::AuditFix),
+        KeyCode::Char('h') | KeyCode::Esc => Some(Action::Goto(ScreenKind::Progress)),
+        _ => None,
     }
 }
 
@@ -225,6 +241,8 @@ fn timer_key(key: crossterm::event::KeyEvent) -> Option<Action> {
 
 fn progress_key(key: crossterm::event::KeyEvent) -> Option<Action> {
     match key.code {
+        // The audit subtab (§Segment audit).
+        KeyCode::Char('a') => Some(Action::Goto(ScreenKind::Audit)),
         // `[` / `]` step weeks (a vim-ish prev/next idiom that avoids the
         // `h`-means-back convention the other screens use); `t` jumps to today.
         KeyCode::Char('[') => Some(Action::ProgressWeekStep(-1)),
@@ -320,6 +338,7 @@ fn refresh_for(kind: ScreenKind) -> Action {
         ScreenKind::Activities => Action::RefreshActivities,
         ScreenKind::Review => Action::RefreshReview,
         ScreenKind::Settings => Action::SettingsReload,
+        ScreenKind::Audit => Action::AuditReload,
         _ => Action::RefreshHome,
     }
 }
