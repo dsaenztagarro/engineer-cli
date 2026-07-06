@@ -213,7 +213,9 @@ fn timer_key(key: crossterm::event::KeyEvent) -> Option<Action> {
         KeyCode::Char('i') => Some(Action::TimerToggleRail),
         KeyCode::Char('m') => Some(Action::TimerModeSwitch),
         KeyCode::Char('n') => Some(Action::TimerSkipInterval),
-        KeyCode::Char('/') | KeyCode::Char('b') => Some(Action::TimerBindBegin),
+        KeyCode::Char('/') => Some(Action::TimerBindBegin),
+        // Focus: the phase toggle. Stopwatch: the bind/picker alias.
+        KeyCode::Char('b') => Some(Action::TimerBreak),
         KeyCode::Char('u') => Some(Action::TimerUndo),
         KeyCode::Enter => Some(Action::TimerDismissStopped),
         KeyCode::Char('h') | KeyCode::Esc => Some(Action::Goto(ScreenKind::Home)),

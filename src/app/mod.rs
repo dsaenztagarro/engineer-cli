@@ -62,6 +62,9 @@ pub struct App {
     pub timer_base: Option<Instant>,
     /// When the last header poll was dispatched, to honour `TIMER_POLL_INTERVAL`.
     pub timer_last_poll: Instant,
+    /// The per-user timer knobs, fetched once after sign-in — the header cell
+    /// reads them to spot a finished focus phase (the offer pill).
+    pub settings: Option<crate::api::TimerSettings>,
 }
 
 pub async fn run(config: Config) -> Result<()> {
@@ -104,6 +107,7 @@ async fn run_loop(
         timer: None,
         timer_base: None,
         timer_last_poll: Instant::now(),
+        settings: None,
     };
 
     // Kick off initial loads (only meaningful once authenticated).
@@ -189,7 +193,20 @@ impl App {
                     }
                 });
             }
-            Action::SetUser(email) => self.user = Some(email),
+            Action::SetUser(email) => {
+                self.user = Some(email);
+                // The knobs are needed screen-agnostically (the header cell's
+                // offer pill); fetch once per session.
+                if self.settings.is_none() {
+                    let api = self.api.clone();
+                    let tx = self.tx.clone();
+                    tokio::spawn(async move {
+                        if let Ok(s) = api.timer_settings().await {
+                            let _ = tx.send(Action::SettingsLoaded(Box::new(s)));
+                        }
+                    });
+                }
+            }
             // Header timer cell. Plain polling: `GET /api/v1/timer` returns the
             // full snapshot on each request — the endpoint does not offer
             // conditional revalidation (If-None-Match / 304), so every poll
@@ -216,6 +233,15 @@ impl App {
                 let _ = self
                     .current
                     .handle(Action::TimerLoaded(t), &self.api, &self.tx)
+                    .await;
+            }
+            // Store-and-forward like TimerLoaded: the app keeps the knobs for
+            // the header cell, the current screen gets its own copy.
+            Action::SettingsLoaded(s) => {
+                self.settings = Some((*s).clone());
+                let _ = self
+                    .current
+                    .handle(Action::SettingsLoaded(s), &self.api, &self.tx)
                     .await;
             }
             // Wipe the header cell without touching the current screen (used
@@ -418,7 +444,13 @@ impl App {
     fn timer_cell_spans(&self, narrow: bool) -> Option<Vec<ratatui::text::Span<'static>>> {
         let t = self.timer.as_ref()?;
         let elapsed = screens::timer::live_elapsed(t, self.timer_base);
-        crate::ui::widgets::timer_cell(t, elapsed, narrow)
+        // A finished focus phase shows as the offer pill on every screen.
+        let offer = self
+            .settings
+            .as_ref()
+            .and_then(|s| screens::timer::offer_for(t, s, jiff::Timestamp::now()))
+            .is_some();
+        crate::ui::widgets::timer_cell(t, elapsed, narrow, offer)
     }
 }
 
@@ -447,6 +479,7 @@ mod tests {
             timer: None,
             timer_base: None,
             timer_last_poll: Instant::now(),
+            settings: None,
         };
         (app, rx)
     }

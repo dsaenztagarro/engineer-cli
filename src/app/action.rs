@@ -104,9 +104,11 @@ pub enum Action {
     /// `m` — stopwatch ⇄ focus on the running timer; warns until the focus
     /// API ships.
     TimerModeSwitch,
-    /// `n` — bank the interval and arm the next; warns until the focus API
-    /// ships.
+    /// `n` — bank the interval and arm the next work phase.
     TimerSkipInterval,
+    /// `b` — the focus phase toggle (break now / back to work); keeps its
+    /// bind meaning in stopwatch mode.
+    TimerBreak,
     /// Today's logged minutes for the rail (summed from today's activities).
     TimerTodayLoaded(u32),
     TimerStopped(Box<TimerStopped>),

@@ -134,6 +134,7 @@ pub fn timer_cell(
     t: &crate::api::Timer,
     elapsed_secs: i64,
     narrow: bool,
+    offer: bool,
 ) -> Option<Vec<Span<'static>>> {
     if !t.running {
         return None;
@@ -163,7 +164,13 @@ pub fn timer_cell(
     } else if on_break {
         spans.push(Span::styled("○ ", bold(theme::MUTED)));
         spans.push(Span::styled(format!("break {time}"), bold(theme::MUTED)));
-        if !narrow {
+        if offer && !narrow {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                " work? ",
+                Style::default().fg(Color::Black).bg(theme::ACCENT),
+            ));
+        } else if !narrow {
             spans.push(Span::styled(" not counting", theme::muted()));
         }
     } else if focus {
@@ -172,6 +179,14 @@ pub fn timer_cell(
             time,
             Style::default().add_modifier(Modifier::BOLD),
         ));
+        if offer && !narrow {
+            // A finished work interval waits for a decision (§Focus offers).
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                " break? ",
+                Style::default().fg(Color::Black).bg(theme::ACCENT),
+            ));
+        }
         if !narrow {
             // Pomodoro dots: banked intervals green, the live one accent. The
             // round length is a settings knob with no API yet, so no empty
@@ -276,6 +291,7 @@ mod tests {
             })),
             272,
             false,
+            false,
         )
         .expect("running renders a cell");
         assert_eq!(cell[0].style.fg, Some(theme::SUCCESS));
@@ -287,6 +303,7 @@ mod tests {
         let cell = timer_cell(
             &snap(serde_json::json!({ "running": true, "bound": false })),
             849,
+            false,
             false,
         )
         .unwrap();
@@ -301,6 +318,7 @@ mod tests {
             &snap(serde_json::json!({ "running": true, "paused": true })),
             3661,
             false,
+            false,
         )
         .unwrap();
         assert_eq!(cell[0].style.fg, Some(theme::WARN));
@@ -313,6 +331,7 @@ mod tests {
         let cell = timer_cell(
             &snap(serde_json::json!({ "running": true, "idle": true })),
             9660,
+            false,
             false,
         )
         .unwrap();
@@ -331,6 +350,7 @@ mod tests {
             })),
             1928,
             false,
+            false,
         )
         .unwrap();
         let text = cell_text(Some(cell));
@@ -340,12 +360,38 @@ mod tests {
     }
 
     #[test]
+    fn timer_cell_offer_pills_flag_the_finished_phase() {
+        let work = timer_cell(
+            &snap(serde_json::json!({
+                "running": true, "mode": "focus", "phase": "work"
+            })),
+            3000,
+            false,
+            true,
+        )
+        .unwrap();
+        assert!(cell_text(Some(work)).contains(" break? "));
+
+        let brk = timer_cell(
+            &snap(serde_json::json!({
+                "running": true, "mode": "focus", "phase": "break"
+            })),
+            600,
+            false,
+            true,
+        )
+        .unwrap();
+        assert!(cell_text(Some(brk)).contains(" work? "));
+    }
+
+    #[test]
     fn timer_cell_break_is_muted_and_not_counting() {
         let cell = timer_cell(
             &snap(serde_json::json!({
                 "running": true, "mode": "focus", "phase": "break"
             })),
             252,
+            false,
             false,
         )
         .unwrap();
@@ -360,6 +406,7 @@ mod tests {
             })),
             3134,
             true,
+            false,
         )
         .unwrap();
         assert_eq!(cell_text(Some(cell)), "● 52:14");
@@ -367,7 +414,13 @@ mod tests {
 
     #[test]
     fn timer_cell_absent_is_nothing() {
-        assert!(timer_cell(&snap(serde_json::json!({ "running": false })), 0, false).is_none());
+        assert!(timer_cell(
+            &snap(serde_json::json!({ "running": false })),
+            0,
+            false,
+            false
+        )
+        .is_none());
     }
 
     #[test]

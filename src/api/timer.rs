@@ -161,6 +161,22 @@ impl ApiClient {
         self.get("/api/v1/timer/settings", &[]).await
     }
 
+    /// Drive a focus phase transition — transitions never fire on their own;
+    /// the server validates and applies. `to` is `"work"` or `"break"`.
+    /// 422 when the transition isn't available from the current phase.
+    pub async fn timer_phase(&self, to: &str) -> Result<Timer, ApiError> {
+        self.post("/api/v1/timer/phase", &serde_json::json!({ "to": to }))
+            .await
+    }
+
+    /// Switch the running timer's mode in place — elapsed is preserved.
+    /// Entering focus opens a work phase; leaving clears it. 422 when the
+    /// timer is already in that mode.
+    pub async fn timer_mode(&self, mode: &str) -> Result<Timer, ApiError> {
+        self.post("/api/v1/timer/mode", &serde_json::json!({ "mode": mode }))
+            .await
+    }
+
     /// Apply an idle-tail reclaim decision. The response shape follows the
     /// verb: `trim`/`keep` return the running timer, `stop` the written
     /// segment. 422 on `stop` when the timer is unbound.
@@ -301,6 +317,44 @@ mod tests {
         assert_eq!(timer.planned_minutes, Some(120));
         assert_eq!(timer.logged_minutes, Some(18));
         assert!(timer.over);
+    }
+
+    #[tokio::test]
+    async fn phase_posts_the_target_and_returns_the_timer() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/phase"))
+            .and(body_json(serde_json::json!({ "to": "break" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "mode": "focus", "phase": "break",
+                "intervals_completed": 3
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let timer = client(&server).timer_phase("break").await.unwrap();
+        assert_eq!(timer.phase.as_deref(), Some("break"));
+        assert_eq!(timer.intervals_completed, Some(3));
+    }
+
+    #[tokio::test]
+    async fn mode_switch_posts_the_mode_in_place() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/mode"))
+            .and(body_json(serde_json::json!({ "mode": "focus" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "mode": "focus", "phase": "work",
+                "elapsed_seconds": 1928
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let timer = client(&server).timer_mode("focus").await.unwrap();
+        assert_eq!(timer.mode.as_deref(), Some("focus"));
+        assert_eq!(timer.elapsed_seconds, Some(1928), "elapsed preserved");
     }
 
     #[tokio::test]
