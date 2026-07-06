@@ -121,25 +121,102 @@ pub fn fmt_elapsed(total_secs: i64) -> String {
     }
 }
 
-/// The persistent header timer cell (web pill contract, translated to the grid):
-/// a fixed-width glyph + elapsed, no title, one accent colour, never
-/// shape-shifting. Running is a solid accent `●`; paused is an amber `‖` (the
-/// clock has stopped advancing). Absent returns `None` — the cell renders as
-/// nothing, so a screen with no live timer has a clean header.
-pub fn timer_cell(running: bool, paused: bool, elapsed_secs: i64) -> Option<Vec<Span<'static>>> {
-    if !running {
+/// The persistent header timer cell, speaking the full status-line grammar
+/// (timer.dc.html §Status line): one glyph carries the state, the bar keeps a
+/// fixed shape per state, and `narrow` drops the label down to glyph + clock.
+/// Absent returns `None` — a screen with no live timer has a clean header.
+///
+/// States: `●` running (green; muted title after the clock, italic *untitled*
+/// when unbound), `‖` paused (amber, frozen muted clock), `◐` idle + amber
+/// ` idle ` pill, `◆` focus work + pomodoro dots, `○ break` muted. The `over`
+/// form arrives with the overrun ticket.
+pub fn timer_cell(
+    t: &crate::api::Timer,
+    elapsed_secs: i64,
+    narrow: bool,
+) -> Option<Vec<Span<'static>>> {
+    if !t.running {
         return None;
     }
-    let (glyph, color) = if paused {
-        ("‖", theme::WARN)
+    let time = fmt_elapsed(elapsed_secs);
+    let focus = t.mode.as_deref() == Some("focus");
+    let on_break = focus && t.phase.as_deref() == Some("break");
+    let bold = |c| Style::default().fg(c).add_modifier(Modifier::BOLD);
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    if t.idle == Some(true) {
+        spans.push(Span::styled("◐ ", bold(theme::WARN)));
+        spans.push(Span::styled(time, bold(theme::WARN)));
+        if !narrow {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                " idle ",
+                Style::default().fg(Color::Black).bg(theme::WARN),
+            ));
+        }
+    } else if t.paused {
+        spans.push(Span::styled("‖ ", bold(theme::WARN)));
+        spans.push(Span::styled(time, bold(theme::MUTED)));
+        if !narrow {
+            spans.push(Span::styled(" paused", theme::muted()));
+        }
+    } else if on_break {
+        spans.push(Span::styled("○ ", bold(theme::MUTED)));
+        spans.push(Span::styled(format!("break {time}"), bold(theme::MUTED)));
+        if !narrow {
+            spans.push(Span::styled(" not counting", theme::muted()));
+        }
+    } else if focus {
+        spans.push(Span::styled("◆ ", bold(theme::ACCENT)));
+        spans.push(Span::styled(
+            time,
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        if !narrow {
+            // Pomodoro dots: banked intervals green, the live one accent. The
+            // round length is a settings knob with no API yet, so no empty
+            // remainder dots are drawn.
+            let done = t.intervals_completed.unwrap_or(0) as usize;
+            spans.push(Span::styled(
+                format!(" {}", "●".repeat(done)),
+                Style::default().fg(theme::SUCCESS),
+            ));
+            spans.push(Span::styled("●", Style::default().fg(theme::ACCENT)));
+        }
     } else {
-        ("●", theme::ACCENT)
-    };
-    let style = Style::default().fg(color).add_modifier(Modifier::BOLD);
-    Some(vec![Span::styled(
-        format!("{glyph} {}", fmt_elapsed(elapsed_secs)),
-        style,
-    )])
+        spans.push(Span::styled("● ", bold(theme::SUCCESS)));
+        spans.push(Span::styled(
+            time,
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        if !narrow {
+            if t.bound {
+                if let Some(label) = t.label.as_deref() {
+                    spans.push(Span::styled(
+                        format!(" {}", truncate_label(label, 24)),
+                        theme::muted(),
+                    ));
+                }
+            } else {
+                spans.push(Span::styled(
+                    " untitled",
+                    Style::default()
+                        .fg(theme::MUTED)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+            }
+        }
+    }
+    Some(spans)
+}
+
+fn truncate_label(label: &str, max: usize) -> String {
+    if label.chars().count() <= max {
+        label.to_string()
+    } else {
+        let cut: String = label.chars().take(max.saturating_sub(1)).collect();
+        format!("{cut}…")
+    }
 }
 
 pub fn footer_hints(hints: &[(&str, &str)]) -> Line<'static> {
@@ -187,22 +264,118 @@ mod tests {
             .unwrap_or_default()
     }
 
-    #[test]
-    fn timer_cell_running_shows_accent_dot_and_time() {
-        let cell = timer_cell(true, false, 272).expect("running renders a cell");
-        assert_eq!(cell[0].style.fg, Some(theme::ACCENT));
-        assert_eq!(cell_text(Some(cell)), "● 04:32");
+    fn snap(json: serde_json::Value) -> crate::api::Timer {
+        serde_json::from_value(json).unwrap()
     }
 
     #[test]
-    fn timer_cell_paused_shows_warn_pause_bar() {
-        let cell = timer_cell(true, true, 3661).expect("paused renders a cell");
+    fn timer_cell_running_shows_green_dot_time_and_title() {
+        let cell = timer_cell(
+            &snap(serde_json::json!({
+                "running": true, "bound": true, "label": "Read DDIA ch.7"
+            })),
+            272,
+            false,
+        )
+        .expect("running renders a cell");
+        assert_eq!(cell[0].style.fg, Some(theme::SUCCESS));
+        assert_eq!(cell_text(Some(cell)), "● 04:32 Read DDIA ch.7");
+    }
+
+    #[test]
+    fn timer_cell_unbound_reads_untitled_in_italics() {
+        let cell = timer_cell(
+            &snap(serde_json::json!({ "running": true, "bound": false })),
+            849,
+            false,
+        )
+        .unwrap();
+        let last = cell.last().unwrap();
+        assert_eq!(last.content, " untitled");
+        assert!(last.style.add_modifier.contains(Modifier::ITALIC));
+    }
+
+    #[test]
+    fn timer_cell_paused_freezes_the_clock_muted() {
+        let cell = timer_cell(
+            &snap(serde_json::json!({ "running": true, "paused": true })),
+            3661,
+            false,
+        )
+        .unwrap();
         assert_eq!(cell[0].style.fg, Some(theme::WARN));
-        assert_eq!(cell_text(Some(cell)), "‖ 1:01:01");
+        assert_eq!(cell[1].style.fg, Some(theme::MUTED));
+        assert_eq!(cell_text(Some(cell)), "‖ 1:01:01 paused");
+    }
+
+    #[test]
+    fn timer_cell_idle_wears_the_amber_pill() {
+        let cell = timer_cell(
+            &snap(serde_json::json!({ "running": true, "idle": true })),
+            9660,
+            false,
+        )
+        .unwrap();
+        let text = cell_text(Some(cell.clone()));
+        assert!(text.contains("◐"), "{text}");
+        assert!(text.contains(" idle "), "{text}");
+        assert_eq!(cell.last().unwrap().style.bg, Some(theme::WARN));
+    }
+
+    #[test]
+    fn timer_cell_focus_work_counts_pomodoro_dots() {
+        let cell = timer_cell(
+            &snap(serde_json::json!({
+                "running": true, "mode": "focus", "phase": "work",
+                "intervals_completed": 2
+            })),
+            1928,
+            false,
+        )
+        .unwrap();
+        let text = cell_text(Some(cell));
+        // ◆ + two banked dots + the live one.
+        assert!(text.starts_with("◆ "), "{text}");
+        assert!(text.ends_with("●●●"), "{text}");
+    }
+
+    #[test]
+    fn timer_cell_break_is_muted_and_not_counting() {
+        let cell = timer_cell(
+            &snap(serde_json::json!({
+                "running": true, "mode": "focus", "phase": "break"
+            })),
+            252,
+            false,
+        )
+        .unwrap();
+        assert_eq!(cell_text(Some(cell)), "○ break 04:12 not counting");
+    }
+
+    #[test]
+    fn timer_cell_narrow_is_glyph_and_clock_only() {
+        let cell = timer_cell(
+            &snap(serde_json::json!({
+                "running": true, "bound": true, "label": "Read DDIA ch.7"
+            })),
+            3134,
+            true,
+        )
+        .unwrap();
+        assert_eq!(cell_text(Some(cell)), "● 52:14");
     }
 
     #[test]
     fn timer_cell_absent_is_nothing() {
-        assert!(timer_cell(false, false, 0).is_none());
+        assert!(timer_cell(&snap(serde_json::json!({ "running": false })), 0, false).is_none());
+    }
+
+    #[test]
+    fn long_labels_truncate_with_an_ellipsis() {
+        assert_eq!(
+            truncate_label("Implement Raft leader election end to end", 24),
+            "Implement Raft leader e…"
+        );
+        assert_eq!(truncate_label("short", 24), "short");
     }
 }

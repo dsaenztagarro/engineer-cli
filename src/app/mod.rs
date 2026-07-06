@@ -391,7 +391,9 @@ impl App {
             user: self.user.as_deref(),
             identity_host: host,
             screen_title: self.current.title(),
-            timer: self.timer_cell_spans(),
+            // Narrow rail: below ~70 columns the cell drops its label down to
+            // glyph + clock so the breadcrumb keeps its room.
+            timer: self.timer_cell_spans(frame.area().width < 70),
             notification: self.notification.as_ref(),
             hints,
         };
@@ -413,10 +415,10 @@ impl App {
 
     /// The header timer cell spans, with the displayed elapsed ticked locally
     /// from the last snapshot. `None` when no timer is running.
-    fn timer_cell_spans(&self) -> Option<Vec<ratatui::text::Span<'static>>> {
+    fn timer_cell_spans(&self, narrow: bool) -> Option<Vec<ratatui::text::Span<'static>>> {
         let t = self.timer.as_ref()?;
         let elapsed = screens::timer::live_elapsed(t, self.timer_base);
-        crate::ui::widgets::timer_cell(t.running, t.paused, elapsed)
+        crate::ui::widgets::timer_cell(t, elapsed, narrow)
     }
 }
 
@@ -494,9 +496,10 @@ mod tests {
         app.timer = Some(running_timer(272));
         app.timer_base = Some(Instant::now());
         let text = rendered_text(&mut app);
-        // ● + mm:ss in the header, never the activity title/label.
+        // ● + mm:ss + the muted title (the v2 status-line grammar shows the
+        // label at full width — superseding the v1 "never a title" pill).
         assert!(text.contains("● 04:32"), "{text}");
-        assert!(!text.contains("consensus"), "{text}");
+        assert!(text.contains("consensus"), "{text}");
     }
 
     #[tokio::test]
