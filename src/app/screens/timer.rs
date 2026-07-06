@@ -296,6 +296,18 @@ impl Timer {
                         .into(),
                 ));
             }
+            Action::TimerSkipInterval => {
+                if self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.mode.as_deref() == Some("focus"))
+                {
+                    return Some((
+                        Level::Info,
+                        "skipping an interval needs the focus API — requested upstream".into(),
+                    ));
+                }
+            }
             Action::TimerTodayLoaded(minutes) => self.today_minutes = Some(minutes),
             Action::TimerPauseResume => {
                 if matches!(self.stage, Stage::Live) {
@@ -641,6 +653,11 @@ impl Timer {
         };
         let paused = snap.paused;
         let secs = live_elapsed(snap, self.base);
+        let focus = snap.mode.as_deref() == Some("focus");
+        let on_break = focus && snap.phase.as_deref() == Some("break");
+        // 1-based: the interval being worked now. The round length is a
+        // settings knob with no API, so no "of N" is claimed.
+        let interval_now = snap.intervals_completed.unwrap_or(0) + 1;
 
         let mut lines: Vec<Line<'static>> = Vec::new();
         // State label above the number.
@@ -649,6 +666,20 @@ impl Timer {
                 "‖  PAUSED — NOT COUNTING",
                 Style::default()
                     .fg(theme::WARN)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        } else if on_break {
+            Line::from(Span::styled(
+                "○  BREAK — NOT COUNTING",
+                Style::default()
+                    .fg(theme::MUTED)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        } else if focus {
+            Line::from(Span::styled(
+                format!("◆  WORK · INTERVAL {interval_now}"),
+                Style::default()
+                    .fg(theme::ACCENT)
                     .add_modifier(Modifier::BOLD),
             ))
         } else {
@@ -661,8 +692,8 @@ impl Timer {
         });
         lines.push(Line::from(""));
 
-        // The big number — muted while frozen, accent while counting.
-        let digit_style = if paused {
+        // The big number — muted while not counting, accent while counting.
+        let digit_style = if paused || on_break {
             Style::default()
                 .fg(theme::MUTED)
                 .add_modifier(Modifier::BOLD)
@@ -682,6 +713,11 @@ impl Timer {
             )));
             lines.push(Line::from(Span::styled(
                 "a paused timer never goes idle",
+                theme::muted(),
+            )));
+        } else if on_break {
+            lines.push(Line::from(Span::styled(
+                "a break is never a segment — a rhythm, not logged data",
                 theme::muted(),
             )));
         } else if let Some(since) = snap.started_at.map(|ts| {
@@ -737,7 +773,38 @@ impl Timer {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let mut lines = vec![Line::from(Span::styled("TODAY", theme::muted()))];
+        let mut lines: Vec<Line<'static>> = Vec::new();
+
+        // POMODORO — focus only: banked intervals green, the live one accent.
+        // No empty remainder dots: the round length is a settings knob with no
+        // API to read it from.
+        if let Some(snap) = self
+            .snapshot
+            .as_ref()
+            .filter(|s| s.mode.as_deref() == Some("focus"))
+        {
+            let done = snap.intervals_completed.unwrap_or(0) as usize;
+            let on_break = snap.phase.as_deref() == Some("break");
+            lines.push(Line::from(Span::styled("POMODORO", theme::muted())));
+            lines.push(Line::from(vec![
+                Span::styled("● ".repeat(done), Style::default().fg(theme::SUCCESS)),
+                if on_break {
+                    Span::styled("○", Style::default().fg(theme::MUTED))
+                } else {
+                    Span::styled("●", Style::default().fg(theme::ACCENT))
+                },
+            ]));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "{done} done · {} · break excluded",
+                    if on_break { "on break" } else { "1 now" }
+                ),
+                theme::muted(),
+            )));
+            lines.push(Line::from(""));
+        }
+
+        lines.push(Line::from(Span::styled("TODAY", theme::muted())));
         match self.today_minutes {
             Some(minutes) => {
                 lines.push(Line::from(Span::styled(
@@ -2026,6 +2093,107 @@ mod tests {
         assert!(content.contains("never goes idle"), "idle-guard caption");
         assert!(content.contains('█'), "big digits render");
         assert!(content.contains("TODAY"), "rail shows the today instrument");
+    }
+
+    #[tokio::test]
+    async fn focus_work_face_names_the_interval_and_dots() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "label": "Implement Raft",
+                "mode": "focus", "phase": "work", "intervals_completed": 2,
+                "elapsed_seconds": 1928
+            })))),
+        )
+        .await;
+
+        let backend = TestBackend::new(100, 32);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| s.render(frame, frame.area()))
+            .unwrap();
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(content.contains("WORK · INTERVAL 3"), "focus label");
+        assert!(content.contains("POMODORO"), "rail instrument");
+    }
+
+    #[tokio::test]
+    async fn break_face_is_muted_and_never_a_segment() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "label": "Implement Raft",
+                "mode": "focus", "phase": "break", "intervals_completed": 3,
+                "elapsed_seconds": 252
+            })))),
+        )
+        .await;
+
+        let backend = TestBackend::new(100, 32);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| s.render(frame, frame.area()))
+            .unwrap();
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(content.contains("BREAK — NOT COUNTING"), "break label");
+        assert!(content.contains("never a segment"), "break caption");
+    }
+
+    #[tokio::test]
+    async fn skip_interval_names_the_gap_only_in_focus() {
+        let (mut s, api, tx) = setup();
+        // Stopwatch: `n` is a quiet no-op.
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true
+            })))),
+        )
+        .await;
+        assert!(s
+            .handle(Action::TimerSkipInterval, &api, &tx)
+            .await
+            .is_none());
+
+        // Focus: `n` names the missing API.
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "mode": "focus", "phase": "work"
+            })))),
+        )
+        .await;
+        let note = s.handle(Action::TimerSkipInterval, &api, &tx).await;
+        match note {
+            Some((Level::Info, text)) => assert!(text.contains("focus API"), "{text}"),
+            other => panic!("expected the focus-API note, got {other:?}"),
+        }
     }
 
     #[test]
