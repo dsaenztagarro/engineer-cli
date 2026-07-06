@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-06
+
 ### Added
 
 - **The focus session has a face.** When the live timer is in focus mode (today: started from the web; the CLI start joins once the focus API ships), the watch face reads it faithfully: `◆ WORK · INTERVAL n` with the accent digits while counting, and a muted `○ BREAK — NOT COUNTING` face with the reminder that a break is never a segment. The instrument rail gains the POMODORO block — banked intervals as green dots, the live one accent (hollow on a break), no invented remainder since the round length is a settings knob the API doesn't serve yet. `n` (skip interval) joins `m` in naming the missing focus API instead of silently doing nothing; the header cell's `◆`/`○ break` forms light up from the same read. (`timer.dc.html` §Focus rhythm)
@@ -55,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Explicit environment selection** via the `--env` flag and `ENGINEER_ENV` variable (`production` default, or `development` for localhost), with built-in URL presets so a fresh run needs no config file. Layered configuration: environment preset < `~/.config/engineer-cli/config.toml` (XDG-honored on all platforms, including macOS) < `ENGINEER_*` env vars.
 - **GitHub Actions CI** running `cargo test` on pushes to `master` and on pull requests.
 
-[Unreleased]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dsaenztagarro/engineer-cli/releases/tag/v0.1.0
