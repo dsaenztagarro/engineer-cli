@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-06
+
 ### Added
 
 - **THIS WEEK on the instrument rail.** The watch face's rail completes its third instrument: a mon→sun sparkline over the progress read's new per-day series (`by_day`), today's bar in accent, scaled to the week's best day — above the TODAY total it complements. On servers without the series the rail quietly degrades to the today-only block. (`timer.dc.html` §Timer hero, the piece #29 shipped without)
@@ -75,7 +77,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Explicit environment selection** via the `--env` flag and `ENGINEER_ENV` variable (`production` default, or `development` for localhost), with built-in URL presets so a fresh run needs no config file. Layered configuration: environment preset < `~/.config/engineer-cli/config.toml` (XDG-honored on all platforms, including macOS) < `ENGINEER_*` env vars.
 - **GitHub Actions CI** running `cargo test` on pushes to `master` and on pull requests.
 
-[Unreleased]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dsaenztagarro/engineer-cli/releases/tag/v0.1.0
