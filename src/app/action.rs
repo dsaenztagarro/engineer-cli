@@ -94,9 +94,18 @@ pub enum Action {
     TimerLoaded(Box<Timer>),
     TimerCleared,
     TimerReload,
-    TimerStartBlank,
+    /// The `s` key — stage-dependent primary: starts the clock when absent,
+    /// ends & saves when live and bound, warns when live and unbound.
+    TimerSave,
     TimerPauseResume,
     TimerStop,
+    /// `i` — fold/unfold the instrument rail on the watch face.
+    TimerToggleRail,
+    /// `m` — stopwatch ⇄ focus on the running timer; warns until the focus
+    /// API ships.
+    TimerModeSwitch,
+    /// Today's logged minutes for the rail (summed from today's activities).
+    TimerTodayLoaded(u32),
     TimerStopped(Box<TimerStopped>),
     TimerDismissStopped,
     TimerDiscard,

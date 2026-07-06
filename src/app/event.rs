@@ -201,10 +201,13 @@ fn notes_key(key: crossterm::event::KeyEvent) -> Option<Action> {
 /// screen's reducer against the current stage, so the map is stage-agnostic.
 fn timer_key(key: crossterm::event::KeyEvent) -> Option<Action> {
     match key.code {
-        KeyCode::Char('s') => Some(Action::TimerStartBlank),
+        KeyCode::Char('s') => Some(Action::TimerSave),
         KeyCode::Char('p') => Some(Action::TimerPauseResume),
+        // Legacy alias of `s` end & save, kept for muscle memory.
         KeyCode::Char('x') => Some(Action::TimerStop),
         KeyCode::Char('d') => Some(Action::TimerDiscard),
+        KeyCode::Char('i') => Some(Action::TimerToggleRail),
+        KeyCode::Char('m') => Some(Action::TimerModeSwitch),
         KeyCode::Char('/') | KeyCode::Char('b') => Some(Action::TimerBindBegin),
         KeyCode::Enter => Some(Action::TimerDismissStopped),
         KeyCode::Char('h') | KeyCode::Esc => Some(Action::Goto(ScreenKind::Home)),
