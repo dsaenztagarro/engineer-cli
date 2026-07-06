@@ -3,7 +3,7 @@
 Design references for the **terminal** client, organized by app area (mirroring `engineer/docs/designs/`).
 Mockups are Claude Design **canvas docs** (`*.dc.html`, rendered by the bundled `support.js` runtime): each is a board of [ratatui](https://ratatui.rs)-faithful screens for one app area.
 `design-system.dc.html` is the shared palette and component legend they all follow;
-`MISSING.md` is the open worklist of gaps between the current mockups and the timer features engineer has already shipped.
+`briefs/shipped/timer-gaps.brief.md` is the timer gap analysis (mockups vs the timer engineer has shipped) that drove `timer.dc.html`'s design passes.
 
 This directory is also the **reference kit** to seed a *new* Claude Design project for the
 terminal app. The terminal is a sibling surface to the web app — it shares the brand and the
@@ -16,7 +16,7 @@ architecture, colour semantics, brand) rather than its pixel/CSS chrome.
 
 The **`engineer-cli`** Claude Design project is live (seeded from this kit's original `books.html` anchor + `terminal-tokens.css`, both since retired);
 its outputs land here as `*.dc.html` canvas docs — `design-system.dc.html` (the style anchor) and one doc per app area (`timer.dc.html`, …).
-To iterate on an area: give the project the area's current `.dc.html`, `design-system.dc.html`, this `README.md`, `MISSING.md`, and the relevant brief from `briefs/`, and ask for the gaps to be closed within the palette mapping, chrome conventions, and translate/don't-translate rules below.
+To iterate on an area: give the project the area's current `.dc.html`, `design-system.dc.html`, this `README.md`, and the relevant brief or gap analysis from `briefs/`, and ask for the gaps to be closed within the palette mapping, chrome conventions, and translate/don't-translate rules below.
 
 > Why a new project, not the web one: the web project carries ~50 files of web-CSS iteration.
 > For a TUI, most of that is the wrong medium and biases output toward shadows/rounded/pixel
@@ -66,7 +66,7 @@ seeded by the web designs.
 | Log activity (form) | `Activities.html` + `Forms v2.html` | built (`screens/activity_new.rs`) |
 | Sign in | identity / auth | built (`screens/login.rs`) |
 | Activities table | `Activities.html` | built (`screens/activities.rs`) |
-| Timer + header cell | `navigation-bar.html` §M + `timer-hygiene.html` | built v1 (`screens/timer.rs`) — redesign specified in `timer.dc.html`, gaps in `MISSING.md` |
+| Timer + header cell | `navigation-bar.html` §M + `timer-hygiene.html` | built v1 (`screens/timer.rs`) — redesign specified in `timer.dc.html`, gaps in `briefs/shipped/timer-gaps.brief.md` |
 | Notes capture + browser | `notes.html` | built (`screens/notes.rs`) |
 | Review (dashboard / browse / sitting) | `review.html` | built (`screens/review.rs`) |
 | Progress (pace meters) | `progress.html` | built (`screens/progress.rs`) |
@@ -121,5 +121,4 @@ Layout is three stacked rows (`../../src/ui/layout.rs::render_chrome`):
 | `design-system.dc.html` | Palette & component legend — the canvas kit's style anchor |
 | `timer.dc.html` | Timer screens — hero, status-line, start picker, idle reclaim, focus, audit, headless |
 | `support.js` | Claude Design canvas runtime the `.dc.html` docs load |
-| `MISSING.md` | Gap worklist for Claude Design — mockups vs shipped engineer features |
-| `briefs/` | Problem-first design briefs (`proposed/` → `shipped/` lifecycle) |
+| `briefs/` | Problem-first design briefs and gap analyses (`proposed/` → `shipped/` lifecycle) |

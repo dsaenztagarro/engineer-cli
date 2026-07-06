@@ -1,4 +1,4 @@
-# MISSING — what `timer.dc.html` still needs to be in sync with engineer's shipped timer
+# Timer gap analysis — `timer.dc.html` vs engineer's shipped timer
 
 **For:** Claude Design (the **engineer-cli** terminal project).
 **Purpose:** the next design pass on `timer.dc.html` should close the gaps below, so the CLI design covers the **full timer feature set the engineer app has already shipped** before we implement it.
