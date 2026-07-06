@@ -25,7 +25,11 @@ When a proposed brief ships, `git mv` it `proposed/ -> shipped/` and flip its ro
 
 ### Shipped
 
-*(none yet — the CLI's built screens predate the briefs workflow; see the kit README's screen inventory.)*
+| Brief | What it covers | Shipped in |
+|---|---|---|
+| [`shipped/timer-gaps.brief.md`](shipped/timer-gaps.brief.md) | Timer **gap analysis** — the mockups-vs-shipped-`engineer` diff that drove `timer.dc.html`'s design passes. Design Sections A/B are closed; Section C tracks the backend-API gaps for the implementation epic. | timer v2 (v0.3.0) |
+
+*(The CLI's earlier built screens predate the briefs workflow; see the kit README's screen inventory.)*
 
 ## Writing a brief
 

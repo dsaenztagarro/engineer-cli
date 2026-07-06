@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Timer settings, readable everywhere.** The per-user timer knobs the web app edits are now first-class in the CLI: a read-only **Settings · Timer** screen (`:settings`) lists all twelve — default mode, the focus durations and long-break cadence, the idle guard and its threshold, the default reclaim action, the audit fences and badge, the overrun ping — with the explicit "edit on the web" pointer (one writer, no divergence). Headless twin: `engineer timer settings` (aligned table) and `--json` (mirrors the server payload 1:1). (`timer.dc.html` §Timer settings)
+
+### Fixed
+
+- **API layer aligned to the shipped v0.75.0 timer contracts.** The timer read now decodes the server's actual field names — `last_interacted_at` (the presence mark; previously modeled as `last_input_at` and silently `null`), plus `paused_at`/`paused_seconds`/`phase_started_at` and the overrun trio `planned_minutes`/`logged_minutes`/`over` — and the segments client uses the real nested routes (`/api/v1/activities/:activity_id/segments/:id`); the post-save undo passes the activity id accordingly.
+
 ## [0.3.0] - 2026-07-06
 
 ### Added

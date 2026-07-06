@@ -65,14 +65,18 @@ modules, keeping transport generic and the domain calls local:
 - `src/api/activities.rs` — `list_activities`, `create_activity`.
 - `src/api/timer.rs` — the single live timer: `timer()` (`GET /api/v1/timer` —
   a bare object, not the `List` envelope; carries `mode`/`phase`/
-  `intervals_completed`/`idle` with serde defaults so older payloads decode),
-  `start_timer(activity_id, switch)` (`switch` stops & saves the running timer
-  first), `pause_timer`/`resume_timer`/`stop_timer` (member `POST`s;
-  stop refuses on an unbound timer), `bind_timer`, `timer_candidates(q)`
-  (bare `Vec`), `discard_timer` (`DELETE /api/v1/timer`).
-- `src/api/segments.rs` — completed segments: `update_segment(id, {minutes})`
-  (`PATCH /api/v1/segments/:id`, the trim preset) and `delete_segment(id)`
-  (the post-save undo / audit delete).
+  `intervals_completed`/`idle`/`last_interacted_at`/`phase_started_at` and the
+  overrun trio `planned_minutes`/`logged_minutes`/`over`, all serde-defaulted
+  so older payloads decode), `timer_settings()` (`GET /api/v1/timer/settings`
+  — the twelve read-only per-user knobs), `start_timer(activity_id, switch)`
+  (`switch` stops & saves the running timer first),
+  `pause_timer`/`resume_timer`/`stop_timer` (member `POST`s; stop refuses on
+  an unbound timer), `bind_timer`, `timer_candidates(q)` (bare `Vec`),
+  `discard_timer` (`DELETE /api/v1/timer`).
+- `src/api/segments.rs` — completed segments, nested under their activity:
+  `update_segment(activity_id, id, {minutes})`
+  (`PATCH /api/v1/activities/:activity_id/segments/:id`, the trim preset) and
+  `delete_segment(activity_id, id)` (the post-save undo / audit delete).
 - `me()` (`src/api/mod.rs`) — `GET /api/v1/me`, the canonical current-user
   endpoint shared with the identity server and the MCP tools.
 

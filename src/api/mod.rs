@@ -27,7 +27,7 @@ pub use error::{ApiError, FieldError};
 pub use notes::{Anchor, Note, NoteFilters, NoteInput};
 pub use progress::{PaceState, Progress, ProgressReading};
 pub use review::{Dashboard, RateResult, Topic, TopicFilters};
-pub use timer::{Timer, TimerCandidate, TimerStopped};
+pub use timer::{Timer, TimerCandidate, TimerSettings, TimerStopped};
 
 /// Current user from `GET /api/v1/me`. Fields mirror the API contract; not all
 /// are consumed by the UI yet.

@@ -30,18 +30,25 @@ pub struct SegmentUpdate {
 }
 
 impl ApiClient {
-    /// Edit a segment in place — the timer's only use is shortening `minutes`.
+    /// Edit a segment in place — shortening `minutes` is the trim preset.
+    /// Segments are nested under their activity on the wire.
     pub async fn update_segment(
         &self,
+        activity_id: i64,
         id: i64,
         update: &SegmentUpdate,
     ) -> Result<Segment, ApiError> {
-        self.patch(&format!("/api/v1/segments/{id}"), update).await
+        self.patch(
+            &format!("/api/v1/activities/{activity_id}/segments/{id}"),
+            update,
+        )
+        .await
     }
 
     /// Delete a segment — the exact inverse of the save a stopped timer wrote.
-    pub async fn delete_segment(&self, id: i64) -> Result<(), ApiError> {
-        self.delete(&format!("/api/v1/segments/{id}")).await
+    pub async fn delete_segment(&self, activity_id: i64, id: i64) -> Result<(), ApiError> {
+        self.delete(&format!("/api/v1/activities/{activity_id}/segments/{id}"))
+            .await
     }
 }
 
@@ -60,7 +67,7 @@ mod tests {
     async fn update_segment_patches_minutes() {
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/api/v1/segments/41"))
+            .and(path("/api/v1/activities/9/segments/41"))
             .and(body_json(serde_json::json!({ "minutes": 74 })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": 41, "activity_id": 9, "minutes": 74
@@ -70,7 +77,7 @@ mod tests {
             .await;
 
         let segment = client(&server)
-            .update_segment(41, &SegmentUpdate { minutes: Some(74) })
+            .update_segment(9, 41, &SegmentUpdate { minutes: Some(74) })
             .await
             .unwrap();
         assert_eq!(segment.minutes, Some(74));
@@ -80,12 +87,12 @@ mod tests {
     async fn delete_segment_hits_member_path() {
         let server = MockServer::start().await;
         Mock::given(method("DELETE"))
-            .and(path("/api/v1/segments/41"))
+            .and(path("/api/v1/activities/9/segments/41"))
             .respond_with(ResponseTemplate::new(204))
             .expect(1)
             .mount(&server)
             .await;
 
-        client(&server).delete_segment(41).await.unwrap();
+        client(&server).delete_segment(9, 41).await.unwrap();
     }
 }

@@ -35,8 +35,50 @@ pub struct Timer {
     /// decision is pending.
     #[serde(default)]
     pub idle: Option<bool>,
+    /// The server's presence mark — reclaim verbs anchor to it (a reclaimed
+    /// `stop` ends the segment here). The idle span is `now − this`.
     #[serde(default)]
-    pub last_input_at: Option<jiff::Timestamp>,
+    pub last_interacted_at: Option<jiff::Timestamp>,
+    #[serde(default)]
+    pub paused_at: Option<jiff::Timestamp>,
+    #[serde(default)]
+    pub paused_seconds: Option<i64>,
+    /// Focus only: when the current work/break phase began.
+    #[serde(default)]
+    pub phase_started_at: Option<jiff::Timestamp>,
+    /// Overrun contract — non-null only when the timer is bound, the activity
+    /// has a plan, and the overrun ping is enabled.
+    #[serde(default)]
+    pub planned_minutes: Option<u32>,
+    /// Minutes already logged on the bound activity before this session.
+    #[serde(default)]
+    pub logged_minutes: Option<u32>,
+    /// True once `elapsed + logged_minutes` crosses `planned_minutes`.
+    #[serde(default)]
+    pub over: bool,
+}
+
+/// The per-user timer knobs from `GET /api/v1/timer/settings` — read-only in
+/// the CLI (editing is web-only). The server always serves all twelve.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TimerSettings {
+    /// `"stopwatch"` or `"focus"`.
+    pub timer_mode: String,
+    pub focus_work_minutes: u32,
+    pub focus_short_break_minutes: u32,
+    pub focus_long_break_minutes: u32,
+    /// Every Nth work interval earns the long break.
+    pub focus_long_break_every: u32,
+    pub idle_guard_enabled: bool,
+    pub idle_threshold_minutes: u32,
+    /// `"trim"` | `"keep"` | `"stop"` — the reclaim list's default selection.
+    pub idle_default_reclaim: String,
+    /// Flag segments longer than this many hours.
+    pub audit_long_hours: u32,
+    /// Flag segments shorter than this many seconds.
+    pub audit_short_seconds: u32,
+    pub audit_badge_enabled: bool,
+    pub overrun_ping_enabled: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -72,6 +114,11 @@ struct BindBody {
 impl ApiClient {
     pub async fn timer(&self) -> Result<Timer, ApiError> {
         self.get("/api/v1/timer", &[]).await
+    }
+
+    /// The per-user timer knobs (view-only in the CLI; edit on the web).
+    pub async fn timer_settings(&self) -> Result<TimerSettings, ApiError> {
+        self.get("/api/v1/timer/settings", &[]).await
     }
 
     /// Start a timer, optionally bound to an activity. `switch` stops the running timer first.
@@ -165,7 +212,7 @@ mod tests {
                 "running": true, "bound": true, "activity_id": 9,
                 "elapsed_seconds": 1928,
                 "mode": "focus", "phase": "work", "intervals_completed": 2,
-                "idle": false, "last_input_at": "2026-07-05T13:22:58Z"
+                "idle": false, "last_interacted_at": "2026-07-05T13:22:58Z"
             })))
             .expect(1)
             .mount(&server)
@@ -176,7 +223,57 @@ mod tests {
         assert_eq!(timer.phase.as_deref(), Some("work"));
         assert_eq!(timer.intervals_completed, Some(2));
         assert_eq!(timer.idle, Some(false));
-        assert!(timer.last_input_at.is_some());
+        assert!(timer.last_interacted_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn timer_read_decodes_the_overrun_contract() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "bound": true, "activity_id": 9,
+                "elapsed_seconds": 8320,
+                "planned_minutes": 120, "logged_minutes": 18, "over": true
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let timer = client(&server).timer().await.unwrap();
+        assert_eq!(timer.planned_minutes, Some(120));
+        assert_eq!(timer.logged_minutes, Some(18));
+        assert!(timer.over);
+    }
+
+    #[tokio::test]
+    async fn timer_settings_decodes_all_twelve_knobs() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/timer/settings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "timer_mode": "stopwatch",
+                "focus_work_minutes": 50,
+                "focus_short_break_minutes": 10,
+                "focus_long_break_minutes": 20,
+                "focus_long_break_every": 4,
+                "idle_guard_enabled": true,
+                "idle_threshold_minutes": 15,
+                "idle_default_reclaim": "trim",
+                "audit_long_hours": 6,
+                "audit_short_seconds": 60,
+                "audit_badge_enabled": true,
+                "overrun_ping_enabled": true
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let settings = client(&server).timer_settings().await.unwrap();
+        assert_eq!(settings.focus_work_minutes, 50);
+        assert_eq!(settings.focus_long_break_every, 4);
+        assert_eq!(settings.idle_default_reclaim, "trim");
+        assert!(settings.overrun_ping_enabled);
     }
 
     #[tokio::test]

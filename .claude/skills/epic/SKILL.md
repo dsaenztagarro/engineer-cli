@@ -298,6 +298,7 @@ When every ticket is shipped or consciously skipped:
   gets its **own** log — don't edit the closed epic's.
 - **Design ↔ backend sync gate:** before decomposing, sanity-check the design against what
   the Engineer API actually serves (`docs/api-layer.md`, `src/api/`). If the design shows
-  workflows the backend can't power yet, surface that as a `docs/designs/MISSING.md` note for
-  Claude Design / the web repo instead of silently narrowing scope — designed-but-unbuildable
+  workflows the backend can't power yet, surface that as a gap-analysis note under
+  `docs/designs/briefs/` (e.g. `timer-gaps.brief.md`) for Claude Design / the web repo instead
+  of silently narrowing scope — designed-but-unbuildable
   surfaces become skip-rule tickets (step 3.2) so they stay visible on the epic.
