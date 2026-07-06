@@ -173,6 +173,22 @@ pub fn timer_cell(
         } else if !narrow {
             spans.push(Span::styled(" not counting", theme::muted()));
         }
+    } else if t.over {
+        spans.push(Span::styled("● ", bold(theme::WARN)));
+        spans.push(Span::styled(time, bold(theme::WARN)));
+        if !narrow {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                " over ",
+                Style::default().fg(Color::Black).bg(theme::WARN),
+            ));
+            if let Some(label) = t.label.as_deref() {
+                spans.push(Span::styled(
+                    format!(" {}", truncate_label(label, 24)),
+                    theme::muted(),
+                ));
+            }
+        }
     } else if focus {
         spans.push(Span::styled("◆ ", bold(theme::ACCENT)));
         spans.push(Span::styled(
@@ -382,6 +398,23 @@ mod tests {
         )
         .unwrap();
         assert!(cell_text(Some(brk)).contains(" work? "));
+    }
+
+    #[test]
+    fn timer_cell_over_wears_the_amber_pill() {
+        let cell = timer_cell(
+            &snap(serde_json::json!({
+                "running": true, "bound": true, "label": "Raft",
+                "over": true, "elapsed_seconds": 8320
+            })),
+            8320,
+            false,
+            false,
+        )
+        .unwrap();
+        let text = cell_text(Some(cell.clone()));
+        assert!(text.contains(" over "), "{text}");
+        assert_eq!(cell[0].style.fg, Some(theme::WARN));
     }
 
     #[test]
