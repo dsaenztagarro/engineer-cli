@@ -63,6 +63,16 @@ modules, keeping transport generic and the domain calls local:
 - `src/api/books.rs` — `list_books(status, q)`, `list_chapters`, `update_book`.
   Filters map to query params (`status=reading`, `q=…`).
 - `src/api/activities.rs` — `list_activities`, `create_activity`.
+- `src/api/timer.rs` — the single live timer: `timer()` (`GET /api/v1/timer` —
+  a bare object, not the `List` envelope; carries `mode`/`phase`/
+  `intervals_completed`/`idle` with serde defaults so older payloads decode),
+  `start_timer(activity_id, switch)` (`switch` stops & saves the running timer
+  first), `pause_timer`/`resume_timer`/`stop_timer` (member `POST`s;
+  stop refuses on an unbound timer), `bind_timer`, `timer_candidates(q)`
+  (bare `Vec`), `discard_timer` (`DELETE /api/v1/timer`).
+- `src/api/segments.rs` — completed segments: `update_segment(id, {minutes})`
+  (`PATCH /api/v1/segments/:id`, the trim preset) and `delete_segment(id)`
+  (the post-save undo / audit delete).
 - `me()` (`src/api/mod.rs`) — `GET /api/v1/me`, the canonical current-user
   endpoint shared with the identity server and the MCP tools.
 

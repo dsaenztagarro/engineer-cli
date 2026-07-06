@@ -22,6 +22,21 @@ pub struct Timer {
     pub started_at: Option<jiff::Timestamp>,
     #[serde(default)]
     pub elapsed_seconds: Option<i64>,
+    /// `"stopwatch"` or `"focus"`. Absent on older payloads.
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// Focus only: `"work"` or `"break"`. Stopwatch timers carry no phase.
+    #[serde(default)]
+    pub phase: Option<String>,
+    /// Focus only: work intervals banked so far this session.
+    #[serde(default)]
+    pub intervals_completed: Option<u32>,
+    /// Server-side idle guard verdict: the clock has gone quiet and a reclaim
+    /// decision is pending.
+    #[serde(default)]
+    pub idle: Option<bool>,
+    #[serde(default)]
+    pub last_input_at: Option<jiff::Timestamp>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -139,6 +154,47 @@ mod tests {
         let timer = client(&server).start_timer(Some(9), false).await.unwrap();
         assert!(timer.running);
         assert!(timer.bound);
+    }
+
+    #[tokio::test]
+    async fn timer_read_decodes_focus_and_idle_fields() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "bound": true, "activity_id": 9,
+                "elapsed_seconds": 1928,
+                "mode": "focus", "phase": "work", "intervals_completed": 2,
+                "idle": false, "last_input_at": "2026-07-05T13:22:58Z"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let timer = client(&server).timer().await.unwrap();
+        assert_eq!(timer.mode.as_deref(), Some("focus"));
+        assert_eq!(timer.phase.as_deref(), Some("work"));
+        assert_eq!(timer.intervals_completed, Some(2));
+        assert_eq!(timer.idle, Some(false));
+        assert!(timer.last_input_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn timer_read_tolerates_v1_payload_without_new_fields() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "bound": false
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let timer = client(&server).timer().await.unwrap();
+        assert!(timer.mode.is_none());
+        assert!(timer.phase.is_none());
+        assert!(timer.idle.is_none());
     }
 
     #[tokio::test]
