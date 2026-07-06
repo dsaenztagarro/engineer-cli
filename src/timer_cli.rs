@@ -12,7 +12,7 @@ use std::io::IsTerminal;
 use clap::{Args, Subcommand};
 use color_eyre::eyre::Result;
 
-use crate::api::{ApiClient, ApiError, Timer};
+use crate::api::{ApiClient, ApiError, ReclaimVerb, Reclaimed, Timer};
 use crate::auth::TokenProvider;
 use crate::config::Config;
 use crate::ui::widgets::fmt_elapsed;
@@ -51,7 +51,15 @@ enum TimerCmd {
     /// Resume the paused timer.
     Resume,
     /// Stop & save. Refuses on an unbound timer — bind or discard first.
-    Stop,
+    Stop {
+        /// With an idle tail pending: how to reclaim it first —
+        /// trim | keep | stop (stop ends the segment at the last input).
+        #[arg(long)]
+        reclaim: Option<String>,
+    },
+    /// Apply an idle-tail decision: trim (idle → paused time, keeps
+    /// running) · keep (the tail counts) · stop (save up to last input, ends).
+    Reclaim { verb: String },
     /// Bind the running unnamed timer to an existing activity.
     Bind { query: String },
     /// Throw the timer away, writing nothing. Past ~2 minutes requires --force.
@@ -116,10 +124,64 @@ async fn dispatch(
         Some(TimerCmd::Toggle) => toggle(api, colored).await,
         Some(TimerCmd::Pause) => pause(api, colored).await,
         Some(TimerCmd::Resume) => resume(api, colored).await,
-        Some(TimerCmd::Stop) => stop(api).await,
+        Some(TimerCmd::Stop { reclaim }) => stop(api, reclaim).await,
+        Some(TimerCmd::Reclaim { verb }) => reclaim(api, &verb, json).await,
         Some(TimerCmd::Bind { query }) => bind(api, &query).await,
         Some(TimerCmd::Discard { force }) => discard(api, force).await,
         Some(TimerCmd::Settings) => settings(api, json).await,
+    }
+}
+
+/// `reclaim <verb>` — the §Idle reclaim rows, piped. Also the engine behind
+/// `stop --reclaim=…`.
+async fn reclaim(api: &ApiClient, verb_name: &str, json: bool) -> Result<Outcome, ApiError> {
+    let Some(verb) = ReclaimVerb::from_name(verb_name) else {
+        return Ok(Outcome::refuse(format!(
+            "unknown reclaim verb \"{verb_name}\" — trim | keep | stop"
+        )));
+    };
+    match api.reclaim_timer(verb).await {
+        Ok(Reclaimed::Running(t)) => {
+            if json {
+                let value = serde_json::json!({
+                    "verb": verb.as_str(),
+                    "state": state_word(&t),
+                    "elapsed_s": t.elapsed_seconds.unwrap_or(0),
+                    "paused_s": t.paused_seconds.unwrap_or(0),
+                });
+                return Ok(Outcome::ok(value.to_string()));
+            }
+            Ok(Outcome::ok(match verb {
+                ReclaimVerb::Trim => format!(
+                    "● trimmed — idle moved to paused time · {} still running",
+                    fmt_elapsed(t.elapsed_seconds.unwrap_or(0))
+                ),
+                _ => format!(
+                    "● kept — the tail counts · {} still running",
+                    fmt_elapsed(t.elapsed_seconds.unwrap_or(0))
+                ),
+            }))
+        }
+        Ok(Reclaimed::Stopped(s)) => {
+            if json {
+                let value = serde_json::json!({
+                    "verb": "stop",
+                    "saved_segment_minutes": s.minutes,
+                    "segment_id": s.segment_id,
+                });
+                return Ok(Outcome::ok(value.to_string()));
+            }
+            Ok(Outcome::ok(format!(
+                "■ saved {}m (segment {}) — ended at the last input",
+                s.minutes, s.segment_id
+            )))
+        }
+        Err(ApiError::Problem { status: 404, .. }) => Ok(Outcome::refuse("nothing running")),
+        Err(ApiError::Problem { title, detail, .. }) => Ok(Outcome::refuse(format!(
+            "{} — bind or discard first",
+            problem_text(&title, &detail)
+        ))),
+        Err(e) => Err(e),
     }
 }
 
@@ -306,7 +368,20 @@ async fn resume(api: &ApiClient, colored: bool) -> Result<Outcome, ApiError> {
     }
 }
 
-async fn stop(api: &ApiClient) -> Result<Outcome, ApiError> {
+async fn stop(api: &ApiClient, reclaim_verb: Option<String>) -> Result<Outcome, ApiError> {
+    // `--reclaim` decides the idle tail first: `stop` maps straight to the
+    // reclaim endpoint (segment ends at last input); `trim`/`keep` settle the
+    // tail, then the plain stop below saves to now.
+    match reclaim_verb.as_deref() {
+        None => {}
+        Some("stop") => return reclaim(api, "stop", false).await,
+        Some(other) => {
+            let settled = reclaim(api, other, false).await?;
+            if settled.code != 0 {
+                return Ok(settled);
+            }
+        }
+    }
     match api.stop_timer().await {
         Ok(stopped) => Ok(Outcome::ok(format!(
             "■ saved {}m (segment {})",
@@ -404,6 +479,12 @@ fn plain_status(t: &Timer) -> String {
     );
     if let ("work" | "break", Some(n)) = (word, t.intervals_completed) {
         line.push_str(&format!(" intervals_completed={n}"));
+    }
+    if word == "idle" {
+        if let Some(mark) = t.last_interacted_at {
+            let idle_s = (jiff::Timestamp::now().as_second() - mark.as_second()).max(0);
+            line.push_str(&format!(" idle_s={idle_s}"));
+        }
     }
     line
 }
@@ -827,9 +908,14 @@ mod tests {
             .mount(&server)
             .await;
 
-        let outcome = dispatch(&client(&server), Some(TimerCmd::Stop), false, false)
-            .await
-            .unwrap();
+        let outcome = dispatch(
+            &client(&server),
+            Some(TimerCmd::Stop { reclaim: None }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome.code, 1);
         assert!(outcome.err[0].contains("bind or discard first"));
     }

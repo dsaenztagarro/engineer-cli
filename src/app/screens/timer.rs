@@ -22,7 +22,9 @@ use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::api::{ApiClient, Timer as TimerSnapshot, TimerCandidate, TimerStopped};
+use crate::api::{
+    ApiClient, ReclaimVerb, Reclaimed, Timer as TimerSnapshot, TimerCandidate, TimerStopped,
+};
 use crate::app::action::Action;
 use crate::ui::notify::Level;
 use crate::ui::{layout::bordered, theme, widgets};
@@ -161,7 +163,13 @@ enum Panel {
         mode: PickerMode,
         confirm: Option<TimerCandidate>,
     },
+    /// §Idle reclaim: the clock went quiet — one row per server verb plus the
+    /// discard escape. Nothing is written until a row is applied; Esc defers.
+    Reclaim { selected: usize },
 }
+
+/// The reclaim list rows, in display order: trim · keep · stop · discard.
+const RECLAIM_ROWS: usize = 4;
 
 /// What a start-picker submission would do, resolved from the selection.
 enum StartTarget {
@@ -199,6 +207,8 @@ pub struct Timer {
     /// A `d` past the confirm fence arms this; only the very next `d`
     /// confirms the discard.
     discard_armed: bool,
+    /// The per-user knobs — the reclaim default and the focus copy read them.
+    settings: Option<crate::api::TimerSettings>,
     query: String,
     candidates: Vec<TimerCandidate>,
     cand_state: ListState,
@@ -209,6 +219,21 @@ impl Timer {
         self.stage = Stage::Loading;
         spawn_load(api, tx);
         spawn_today(api, tx);
+        spawn_settings(api, tx);
+    }
+
+    /// The reclaim list's preselected row, from the `idle_default_reclaim`
+    /// knob. Trim (the safe pick) when settings haven't arrived.
+    fn default_reclaim_row(&self) -> usize {
+        match self
+            .settings
+            .as_ref()
+            .map(|s| s.idle_default_reclaim.as_str())
+        {
+            Some("keep") => 1,
+            Some("stop") => 2,
+            _ => 0,
+        }
     }
 
     /// While the bind panel is open, the screen owns every key (a live search):
@@ -225,6 +250,17 @@ impl Timer {
             }
             return None;
         };
+        // The reclaim list is a plain chooser, not a live search: j/k move,
+        // ⏎ applies, Esc defers — typing does nothing.
+        if matches!(panel, Panel::Reclaim { .. }) {
+            return match key.code {
+                KeyCode::Esc => Some(Action::TimerBindCancel),
+                KeyCode::Enter => Some(Action::TimerBindSubmit),
+                KeyCode::Char('j') | KeyCode::Down => Some(Action::TimerBindMove(1)),
+                KeyCode::Char('k') | KeyCode::Up => Some(Action::TimerBindMove(-1)),
+                _ => None,
+            };
+        }
         match key.code {
             KeyCode::Esc => Some(Action::TimerBindCancel),
             KeyCode::Enter => Some(Action::TimerBindSubmit),
@@ -269,6 +305,18 @@ impl Timer {
                 if matches!(self.panel, Some(Panel::Bind { .. })) && (t.bound || !t.running) {
                     self.close_panel();
                 }
+                // The idle guard: a quiet clock opens the reclaim list (the
+                // default verb from settings preselected); a read that is no
+                // longer idle closes it — the decision landed elsewhere.
+                match (t.idle == Some(true) && t.running, &self.panel) {
+                    (true, None) => {
+                        self.panel = Some(Panel::Reclaim {
+                            selected: self.default_reclaim_row(),
+                        });
+                    }
+                    (false, Some(Panel::Reclaim { .. })) => self.close_panel(),
+                    _ => {}
+                }
                 self.base = Some(Instant::now());
                 self.snapshot = Some(t);
             }
@@ -309,6 +357,7 @@ impl Timer {
                 }
             }
             Action::TimerTodayLoaded(minutes) => self.today_minutes = Some(minutes),
+            Action::SettingsLoaded(s) => self.settings = Some(*s),
             Action::TimerPauseResume => {
                 if matches!(self.stage, Stage::Live) {
                     if self.snapshot.as_ref().is_some_and(|s| s.paused) {
@@ -435,7 +484,14 @@ impl Timer {
                 self.cand_state.select(Some(0));
                 spawn_candidates(api, tx, self.query.clone());
             }
-            Action::TimerBindMove(delta) => self.move_selection(delta),
+            Action::TimerBindMove(delta) => {
+                if let Some(Panel::Reclaim { selected }) = self.panel.as_mut() {
+                    let next = (*selected as i32 + delta).clamp(0, RECLAIM_ROWS as i32 - 1);
+                    *selected = next as usize;
+                } else {
+                    self.move_selection(delta);
+                }
+            }
             Action::TimerCandidatesLoaded(list) => {
                 self.candidates = list;
                 let len = self.bind_rows_len();
@@ -506,6 +562,21 @@ impl Timer {
                 }
                 None
             }
+            Some(Panel::Reclaim { selected }) => {
+                let selected = *selected;
+                self.close_panel();
+                match selected {
+                    0 => spawn_reclaim(api, tx, ReclaimVerb::Trim),
+                    1 => spawn_reclaim(api, tx, ReclaimVerb::Keep),
+                    2 => spawn_reclaim(api, tx, ReclaimVerb::Stop),
+                    // The discard escape rides the normal discard flow —
+                    // including its two-press confirm past the fence.
+                    _ => {
+                        let _ = tx.send(Action::TimerDiscard);
+                    }
+                }
+                None
+            }
             None => None,
         }
     }
@@ -562,7 +633,7 @@ impl Timer {
         match self.panel {
             Some(Panel::Bind { .. }) => (has_query, false),
             Some(Panel::Start { .. }) if !running => (has_query, true),
-            Some(Panel::Start { .. }) => (false, false),
+            Some(Panel::Start { .. }) | Some(Panel::Reclaim { .. }) => (false, false),
             None => (false, false),
         }
     }
@@ -659,9 +730,20 @@ impl Timer {
         // settings knob with no API, so no "of N" is claimed.
         let interval_now = snap.intervals_completed.unwrap_or(0) + 1;
 
+        let idle = snap.idle == Some(true);
+
         let mut lines: Vec<Line<'static>> = Vec::new();
         // State label above the number.
-        lines.push(if paused {
+        lines.push(if idle {
+            // Reclaim was deferred with Esc — the face says the guard is
+            // still waiting (the list reopens on the next poll).
+            Line::from(Span::styled(
+                "◐  IDLE — RECLAIM PENDING",
+                Style::default()
+                    .fg(theme::WARN)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        } else if paused {
             Line::from(Span::styled(
                 "‖  PAUSED — NOT COUNTING",
                 Style::default()
@@ -832,6 +914,10 @@ impl Timer {
         // (Absent, or Live in switch context).
         if matches!(self.panel, Some(Panel::Start { .. })) {
             self.render_start_panel(frame, area);
+            return;
+        }
+        if matches!(self.panel, Some(Panel::Reclaim { .. })) {
+            self.render_reclaim_panel(frame, area);
             return;
         }
         match &self.stage {
@@ -1016,6 +1102,123 @@ impl Timer {
         frame.render_stateful_widget(list, rows[1], &mut self.cand_state);
     }
 
+    /// §Idle reclaim: what was the idle tail worth? One row per server verb,
+    /// captions computed from the read (`last_interacted_at` anchors the
+    /// span). Nothing is written until ⏎.
+    fn render_reclaim_panel(&mut self, frame: &mut Frame, area: Rect) {
+        let block = bordered("Welcome back — the clock went quiet");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let Some(Panel::Reclaim { selected }) = self.panel.as_ref() else {
+            return;
+        };
+        let selected = *selected;
+        let Some(snap) = self.snapshot.as_ref() else {
+            return;
+        };
+
+        let elapsed = live_elapsed(snap, self.base);
+        let idle_secs = snap
+            .last_interacted_at
+            .map(|mark| (jiff::Timestamp::now().as_second() - mark.as_second()).max(0))
+            .unwrap_or(0);
+        let worked = (elapsed - idle_secs).max(0);
+        let last_input = snap
+            .last_interacted_at
+            .map(|ts| {
+                ts.to_zoned(jiff::tz::TimeZone::system())
+                    .strftime("%H:%M")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "—".into());
+
+        let fmt = widgets::fmt_elapsed;
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled("running ", theme::muted()),
+                Span::styled(fmt(elapsed), Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!(" · last input {last_input} · idle "),
+                    theme::muted(),
+                ),
+                Span::styled(
+                    fmt(idle_secs),
+                    Style::default()
+                        .fg(theme::WARN)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" → worked ", theme::muted()),
+                Span::styled(
+                    fmt(worked),
+                    Style::default()
+                        .fg(theme::SUCCESS)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::from(Span::styled(
+                snap.label.clone().unwrap_or_else(|| "untitled".into()),
+                theme::muted(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "What was the idle tail worth?  (each row = one server verb)",
+                theme::muted(),
+            )),
+        ];
+
+        let rows: [(String, String, bool); RECLAIM_ROWS] = [
+            (
+                "✓ Trim — idle becomes paused time  (safe pick)".into(),
+                format!("keeps {} · timer keeps running", fmt(worked)),
+                false,
+            ),
+            (
+                "▸ Keep — the tail counts".into(),
+                format!("I really was working · {}", fmt(elapsed)),
+                false,
+            ),
+            (
+                "■ Stop at last input".into(),
+                format!("saves {} · ends {last_input} · timer ends", fmt(worked)),
+                false,
+            ),
+            (
+                "✗ Discard the timer".into(),
+                format!("nothing written · −{} · confirms", fmt(elapsed)),
+                true,
+            ),
+        ];
+        for (i, (label, caption, danger)) in rows.iter().enumerate() {
+            let style = if i == selected {
+                theme::selection()
+            } else if *danger {
+                Style::default().fg(theme::DANGER)
+            } else {
+                Style::default()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(if i == selected { "▌ " } else { "  " }.to_string(), style),
+                Span::styled(label.clone(), style.add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("   {caption}"),
+                    if i == selected { style } else { theme::muted() },
+                ),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Nothing is written until you choose; Esc defers. Idle time is never logged as a segment.",
+            theme::muted(),
+        )));
+        lines.push(Line::from(Span::styled(
+            "Attribution follows the start and the 4 AM boundary — reclaim runs before attribution.",
+            theme::muted(),
+        )));
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
+
     fn render_bind_panel(&mut self, frame: &mut Frame, area: Rect) {
         let save_on_bind = matches!(
             self.panel,
@@ -1090,6 +1293,13 @@ impl Timer {
                     "type to search · Tab mode · ↑/↓ pick · ⏎ start · Esc cancel",
                     theme::muted(),
                 ));
+            }
+            Some(Panel::Reclaim { .. }) => {
+                return widgets::footer_hints(&[
+                    ("j/k", "choose"),
+                    ("⏎", "apply"),
+                    ("Esc", "decide later"),
+                ]);
             }
             _ => {}
         }
@@ -1441,6 +1651,48 @@ fn spawn_bind_then_stop(api: &ApiClient, tx: &UnboundedSender<Action>, target: B
                     text: format!("bound, but the save failed: {e}"),
                 });
             }
+        }
+    });
+}
+
+/// Apply a reclaim verb. Trim/keep resolve to a fresh running snapshot; stop
+/// resolves to the written segment (the same confirmation + undo as a normal
+/// stop).
+fn spawn_reclaim(api: &ApiClient, tx: &UnboundedSender<Action>, verb: ReclaimVerb) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        match api.reclaim_timer(verb).await {
+            Ok(Reclaimed::Running(t)) => {
+                let _ = tx.send(Action::TimerLoaded(t));
+                let _ = tx.send(Action::Notify {
+                    level: Level::Success,
+                    text: match verb {
+                        ReclaimVerb::Trim => "trimmed — idle moved to paused time".into(),
+                        _ => "kept — the tail counts".into(),
+                    },
+                });
+            }
+            Ok(Reclaimed::Stopped(stopped)) => {
+                let _ = tx.send(Action::TimerStopped(Box::new(stopped)));
+                let _ = tx.send(Action::TimerCleared);
+            }
+            Err(e) => {
+                let _ = tx.send(Action::TimerReload);
+                let _ = tx.send(Action::Notify {
+                    level: Level::Error,
+                    text: format!("reclaim failed: {e}"),
+                });
+            }
+        }
+    });
+}
+
+/// The per-user knobs for this screen's copy and the reclaim default.
+fn spawn_settings(api: &ApiClient, tx: &UnboundedSender<Action>) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        if let Ok(s) = api.timer_settings().await {
+            let _ = tx.send(Action::SettingsLoaded(Box::new(s)));
         }
     });
 }
@@ -2194,6 +2446,119 @@ mod tests {
             Some((Level::Info, text)) => assert!(text.contains("focus API"), "{text}"),
             other => panic!("expected the focus-API note, got {other:?}"),
         }
+    }
+
+    fn knobs(default_reclaim: &str) -> crate::api::TimerSettings {
+        serde_json::from_value(serde_json::json!({
+            "timer_mode": "stopwatch",
+            "focus_work_minutes": 50,
+            "focus_short_break_minutes": 10,
+            "focus_long_break_minutes": 20,
+            "focus_long_break_every": 4,
+            "idle_guard_enabled": true,
+            "idle_threshold_minutes": 15,
+            "idle_default_reclaim": default_reclaim,
+            "audit_long_hours": 6,
+            "audit_short_seconds": 60,
+            "audit_badge_enabled": true,
+            "overrun_ping_enabled": true
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn idle_load_opens_reclaim_with_the_settings_default() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::SettingsLoaded(Box::new(knobs("keep"))),
+        )
+        .await;
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "idle": true,
+                "elapsed_seconds": 9660,
+                "last_interacted_at": "2026-07-05T15:12:00Z"
+            })))),
+        )
+        .await;
+        assert!(
+            matches!(s.panel, Some(Panel::Reclaim { selected: 1 })),
+            "keep is row 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn reclaim_esc_defers_and_the_next_idle_poll_reopens() {
+        let (mut s, api, tx) = setup();
+        let idle_load = || {
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "idle": true
+            }))))
+        };
+        feed(&mut s, &api, &tx, idle_load()).await;
+        assert!(matches!(s.panel, Some(Panel::Reclaim { .. })));
+
+        feed(&mut s, &api, &tx, Action::TimerBindCancel).await;
+        assert!(s.panel.is_none(), "Esc defers");
+
+        feed(&mut s, &api, &tx, idle_load()).await;
+        assert!(
+            matches!(s.panel, Some(Panel::Reclaim { .. })),
+            "the guard returns while the read stays idle"
+        );
+    }
+
+    #[tokio::test]
+    async fn reclaim_selection_moves_and_clamps() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "idle": true
+            })))),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::TimerBindMove(1)).await;
+        feed(&mut s, &api, &tx, Action::TimerBindMove(10)).await;
+        assert!(matches!(s.panel, Some(Panel::Reclaim { selected: 3 })));
+        feed(&mut s, &api, &tx, Action::TimerBindMove(-10)).await;
+        assert!(matches!(s.panel, Some(Panel::Reclaim { selected: 0 })));
+    }
+
+    #[tokio::test]
+    async fn reclaim_applies_and_a_settled_read_keeps_it_closed() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "idle": true
+            })))),
+        )
+        .await;
+        // ⏎ on the default row applies the verb and closes the list.
+        feed(&mut s, &api, &tx, Action::TimerBindSubmit).await;
+        assert!(s.panel.is_none());
+        // The settled (non-idle) read that follows keeps it closed.
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "idle": false
+            })))),
+        )
+        .await;
+        assert!(s.panel.is_none());
     }
 
     #[test]
