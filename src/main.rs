@@ -5,6 +5,7 @@ mod api;
 mod app;
 mod auth;
 mod config;
+mod timer_cli;
 mod ui;
 
 #[derive(Parser)]
@@ -37,6 +38,9 @@ enum Cmd {
     Logout,
     /// Print the currently-authenticated user.
     Whoami,
+    /// Read or drive the live timer headlessly (status/start/stop/…);
+    /// exit codes: 0 counting · 1 nothing running · 3 idle · 4 paused.
+    Timer(timer_cli::TimerArgs),
     /// Launch the TUI (default).
     Tui,
 }
@@ -59,14 +63,19 @@ fn main() -> Result<()> {
         .enable_all()
         .build()?;
 
-    runtime.block_on(async move {
+    let exit = runtime.block_on(async move {
         match cli.command.unwrap_or(Cmd::Tui) {
-            Cmd::Login => auth::login_cli(&cfg).await,
-            Cmd::Logout => auth::logout_cli(&cfg).await,
-            Cmd::Whoami => auth::whoami_cli(&cfg).await,
-            Cmd::Tui => app::run(cfg).await,
+            Cmd::Login => auth::login_cli(&cfg).await.map(|()| 0),
+            Cmd::Logout => auth::logout_cli(&cfg).await.map(|()| 0),
+            Cmd::Whoami => auth::whoami_cli(&cfg).await.map(|()| 0),
+            Cmd::Timer(args) => timer_cli::run(&cfg, args).await,
+            Cmd::Tui => app::run(cfg).await.map(|()| 0),
         }
-    })
+    })?;
+    if exit != 0 {
+        std::process::exit(exit);
+    }
+    Ok(())
 }
 
 fn init_tracing() -> Result<()> {
