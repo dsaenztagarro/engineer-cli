@@ -113,6 +113,10 @@ pub enum Action {
     TimerBindCancel,
     /// `Tab` in the start picker — stopwatch ⇄ focus for the fresh start.
     TimerPickerToggleMode,
+    /// `u` on the stop confirmation — delete the just-written segment.
+    TimerUndo,
+    /// The undo landed: the segment is gone, reload into the empty face.
+    TimerUndone,
     TimerBindInput(char),
     TimerBindBackspace,
     TimerBindMove(i32),

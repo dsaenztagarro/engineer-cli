@@ -209,6 +209,7 @@ fn timer_key(key: crossterm::event::KeyEvent) -> Option<Action> {
         KeyCode::Char('i') => Some(Action::TimerToggleRail),
         KeyCode::Char('m') => Some(Action::TimerModeSwitch),
         KeyCode::Char('/') | KeyCode::Char('b') => Some(Action::TimerBindBegin),
+        KeyCode::Char('u') => Some(Action::TimerUndo),
         KeyCode::Enter => Some(Action::TimerDismissStopped),
         KeyCode::Char('h') | KeyCode::Esc => Some(Action::Goto(ScreenKind::Home)),
         _ => None,
