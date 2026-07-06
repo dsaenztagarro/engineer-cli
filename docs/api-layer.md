@@ -73,6 +73,12 @@ modules, keeping transport generic and the domain calls local:
   `pause_timer`/`resume_timer`/`stop_timer` (member `POST`s; stop refuses on
   an unbound timer), `bind_timer`, `timer_candidates(q)` (bare `Vec`),
   `discard_timer` (`DELETE /api/v1/timer`).
+- `src/api/audit.rs` — the segment audit: `progress_audit()`
+  (`GET /api/v1/progress/audit` — flagged rows + `audit_count`, flags derived
+  on read) and `acknowledge_audit_segment(id)`
+  (`PATCH /api/v1/progress/audit/segments/:id/acknowledge` — clears the
+  duration-shape flags permanently; missing-metadata flags survive until
+  fixed).
 - `src/api/segments.rs` — completed segments, nested under their activity:
   `update_segment(activity_id, id, {minutes})`
   (`PATCH /api/v1/activities/:activity_id/segments/:id`, the trim preset) and

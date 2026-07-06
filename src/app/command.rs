@@ -127,6 +127,14 @@ pub const ENTRIES: &[Entry] = &[
         target: Target::Nav(ScreenKind::Settings),
     },
     Entry {
+        verb: "audit",
+        aliases: &[],
+        kind: Kind::Nav,
+        arg: Arg::None,
+        help: "flagged segments (Progress ▸ audit)",
+        target: Target::Nav(ScreenKind::Audit),
+    },
+    Entry {
         verb: "timer",
         aliases: &[],
         kind: Kind::Nav,
@@ -534,10 +542,12 @@ mod tests {
 
     #[test]
     fn unambiguous_prefixes_resolve() {
-        // The ticket's worked example: :act and :a both reach activities now
-        // that the unpinned :activity verb is gone.
+        // `:audit` moved in beside `:activities`, so the bare `:a` now lists
+        // its candidates like any ambiguous prefix; `:ac`/`:au` resolve.
         assert_eq!(cmd("act"), Command::Nav(ScreenKind::Activities));
-        assert_eq!(cmd("a"), Command::Nav(ScreenKind::Activities));
+        assert_eq!(cmd("ac"), Command::Nav(ScreenKind::Activities));
+        assert_eq!(cmd("au"), Command::Nav(ScreenKind::Audit));
+        assert!(matches!(parse("a"), Parse::Ambiguous(_)));
         assert_eq!(cmd("b"), Command::Nav(ScreenKind::Books));
         assert_eq!(cmd("r"), Command::Nav(ScreenKind::Review));
         assert_eq!(cmd("p"), Command::Nav(ScreenKind::Progress));

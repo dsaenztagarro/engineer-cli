@@ -11,6 +11,7 @@ use url::Url;
 use crate::auth::TokenProvider;
 
 mod activities;
+mod audit;
 mod books;
 mod envelope;
 mod error;
@@ -21,12 +22,14 @@ mod segments;
 mod timer;
 
 pub use activities::{Activity, ActivityCreate, ActivityFilters};
+pub use audit::{AuditAcknowledged, AuditRead, AuditSegment};
 pub use books::{Book, BookChapter, BookStatus, BookUpdate};
 pub use envelope::List;
 pub use error::{ApiError, FieldError};
 pub use notes::{Anchor, Note, NoteFilters, NoteInput};
 pub use progress::{PaceState, Progress, ProgressReading};
 pub use review::{Dashboard, RateResult, Topic, TopicFilters};
+pub use segments::SegmentUpdate;
 pub use timer::{ReclaimVerb, Reclaimed, Timer, TimerCandidate, TimerSettings, TimerStopped};
 
 /// Current user from `GET /api/v1/me`. Fields mirror the API contract; not all
