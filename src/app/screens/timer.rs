@@ -1,14 +1,14 @@
-//! Timer screen — the bind / pause / stop moments plus the "clock first, name
-//! it later" blank-start flow (daily-loop.brief.md §5, timer.html). The
-//! persistent header cell is rendered by the chrome from the app-owned
-//! snapshot; this screen owns the interactions.
+//! Timer screen — the watch face (timer.dc.html §Timer hero / §Paused): one
+//! big number, a state label, and a foldable instrument rail. The persistent
+//! header cell is rendered by the chrome from the app-owned snapshot; this
+//! screen owns the interactions.
 //!
 //! States, driven by the live snapshot:
 //! - **Absent** — no live timer. `s` starts a blank clock ("name it later").
-//! - **Live, unbound** — a running blank timer. `/` opens a candidate search to
-//!   bind it (select an activity, or type a title to mint a new one); `p`
-//!   pauses/resumes; `d` discards (an unbound timer has no segment to write).
-//! - **Live, bound** — an activity + elapsed; `p` pauses/resumes, `x` stops.
+//! - **Live** — the watch face. `SPC` (or `p`) pauses/resumes; `i` folds the
+//!   rail; bound: `s` ends & saves; unbound: `/`/`b` open the bind search,
+//!   `d` discards. Paused draws the frozen amber face — a paused timer never
+//!   goes idle.
 //! - **Stopped** — the written segment (minutes + activity) so the ledger is
 //!   trusted; `↵` dismisses.
 
@@ -150,6 +150,11 @@ pub struct Timer {
     snapshot: Option<TimerSnapshot>,
     /// Monotonic baseline for ticking the displayed elapsed between snapshots.
     base: Option<Instant>,
+    /// `i` folds the instrument rail away; the number recenters into the calm
+    /// watch face. Default is the cockpit (rail shown).
+    rail_hidden: bool,
+    /// Today's logged minutes (summed from today's activities) for the rail.
+    today_minutes: Option<u32>,
     // Bind panel (running-unbound → search candidates or mint a new activity).
     binding: bool,
     query: String,
@@ -161,13 +166,21 @@ impl Timer {
     pub fn on_enter(&mut self, api: &ApiClient, tx: &UnboundedSender<Action>) {
         self.stage = Stage::Loading;
         spawn_load(api, tx);
+        spawn_today(api, tx);
     }
 
     /// While the bind panel is open, the screen owns every key (a live search):
     /// characters filter, arrows pick, Enter binds/creates, Esc closes. This
     /// runs before the global keymap, so the timer keeps running untouched.
+    ///
+    /// On the live face the screen also claims `Space` as pause ⇄ resume (the
+    /// design's `SPC`), so the leader is unavailable only while a clock runs on
+    /// this screen — navigation still has `h`, `t`, and the `:` verbs.
     pub fn intercept_key(&mut self, key: KeyEvent) -> Option<Action> {
         if !self.binding {
+            if key.code == KeyCode::Char(' ') && matches!(self.stage, Stage::Live) {
+                return Some(Action::TimerPauseResume);
+            }
             return None;
         }
         match key.code {
@@ -208,11 +221,32 @@ impl Timer {
                 self.snapshot = Some(t);
             }
             Action::TimerReload => spawn_load(api, tx),
-            Action::TimerStartBlank => {
-                if matches!(self.stage, Stage::Absent) {
-                    spawn_start_blank(api, tx);
+            // `s` — stage-dependent primary: start when absent, end & save when
+            // bound, and the bind-first warning when unbound (the full
+            // bind-at-stop flow is its own ticket).
+            Action::TimerSave => match self.stage {
+                Stage::Absent => spawn_start_blank(api, tx),
+                Stage::Live => {
+                    if self.snapshot.as_ref().is_some_and(|s| s.bound) {
+                        spawn_stop(api, tx);
+                    } else {
+                        return Some((
+                            Level::Warning,
+                            "bind the timer before saving (`/` bind · `d` discard)".into(),
+                        ));
+                    }
                 }
+                _ => {}
+            },
+            Action::TimerToggleRail => self.rail_hidden = !self.rail_hidden,
+            Action::TimerModeSwitch => {
+                return Some((
+                    Level::Info,
+                    "mode switch (stopwatch ⇄ focus) needs the focus API — requested upstream"
+                        .into(),
+                ));
             }
+            Action::TimerTodayLoaded(minutes) => self.today_minutes = Some(minutes),
             Action::TimerPauseResume => {
                 if matches!(self.stage, Stage::Live) {
                     if self.snapshot.as_ref().is_some_and(|s| s.paused) {
@@ -349,6 +383,149 @@ impl Timer {
         ])
     }
 
+    /// The watch face (§Timer hero / §Paused): state label, the big number,
+    /// context, activity — vertically centered, with the instrument rail on
+    /// the right unless folded away with `i`.
+    fn render_watch_face(&self, frame: &mut Frame, area: Rect) {
+        let block = bordered("Timer");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        // Rail only when there's room for both the face and the instruments.
+        let (face_area, rail_area) = if !self.rail_hidden && inner.width >= 64 {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(0), Constraint::Length(26)])
+                .split(inner);
+            (cols[0], Some(cols[1]))
+        } else {
+            (inner, None)
+        };
+
+        let Some(snap) = self.snapshot.as_ref() else {
+            return;
+        };
+        let paused = snap.paused;
+        let secs = live_elapsed(snap, self.base);
+
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        // State label above the number.
+        lines.push(if paused {
+            Line::from(Span::styled(
+                "‖  PAUSED — NOT COUNTING",
+                Style::default()
+                    .fg(theme::WARN)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        } else {
+            Line::from(Span::styled(
+                "●  TRACKING",
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        });
+        lines.push(Line::from(""));
+
+        // The big number — muted while frozen, accent while counting.
+        let digit_style = if paused {
+            Style::default()
+                .fg(theme::MUTED)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD)
+        };
+        lines.extend(big_time_lines(&widgets::fmt_elapsed(secs), digit_style));
+        lines.push(Line::from(""));
+
+        // Context under the number.
+        if paused {
+            lines.push(Line::from(Span::styled(
+                "frozen · the paused gap is excluded from the total",
+                theme::muted(),
+            )));
+            lines.push(Line::from(Span::styled(
+                "a paused timer never goes idle",
+                theme::muted(),
+            )));
+        } else if let Some(since) = snap.started_at.map(|ts| {
+            let local = ts.to_zoned(jiff::tz::TimeZone::system());
+            format!("since {}", local.strftime("%H:%M"))
+        }) {
+            lines.push(Line::from(Span::styled(since, theme::muted())));
+        }
+        lines.push(Line::from(""));
+
+        // The activity line.
+        if snap.bound {
+            let label = snap.label.clone().unwrap_or_default();
+            lines.push(Line::from(Span::styled(
+                label,
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "untitled",
+                Style::default()
+                    .fg(theme::MUTED)
+                    .add_modifier(Modifier::ITALIC),
+            )));
+            lines.push(Line::from(Span::styled(
+                "bind when you stop — / bind now · d discard",
+                theme::muted(),
+            )));
+        }
+
+        // Vertical centering: pad above with empty rows.
+        let content_h = lines.len() as u16;
+        let pad = face_area.height.saturating_sub(content_h) / 2;
+        let mut padded: Vec<Line<'static>> = (0..pad).map(|_| Line::from("")).collect();
+        padded.extend(lines);
+        frame.render_widget(
+            Paragraph::new(padded).alignment(ratatui::layout::Alignment::Center),
+            face_area,
+        );
+
+        if let Some(rail) = rail_area {
+            self.render_rail(frame, rail);
+        }
+    }
+
+    /// The instrument rail. Focus instruments (interval gauge, pomodoro ticks)
+    /// arrive with the focus display ticket; today's total is the one
+    /// instrument the stopwatch face has data for.
+    fn render_rail(&self, frame: &mut Frame, area: Rect) {
+        let block = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::LEFT)
+            .border_style(Style::default().fg(theme::BORDER));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let mut lines = vec![Line::from(Span::styled("TODAY", theme::muted()))];
+        match self.today_minutes {
+            Some(minutes) => {
+                lines.push(Line::from(Span::styled(
+                    fmt_minutes(minutes),
+                    Style::default()
+                        .fg(theme::SUCCESS)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(Span::styled("logged today", theme::muted())));
+            }
+            None => lines.push(Line::from(Span::styled("…", theme::muted()))),
+        }
+
+        let pad = inner.height.saturating_sub(lines.len() as u16) / 2;
+        let mut padded: Vec<Line<'static>> = (0..pad).map(|_| Line::from("")).collect();
+        padded.extend(lines);
+        frame.render_widget(
+            Paragraph::new(padded).alignment(ratatui::layout::Alignment::Center),
+            inner,
+        );
+    }
+
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
         match &self.stage {
             Stage::Loading => {
@@ -405,31 +582,7 @@ impl Timer {
                 );
             }
             Stage::Live if self.binding => self.render_bind_panel(frame, area),
-            Stage::Live => {
-                let bound = self.snapshot.as_ref().is_some_and(|s| s.bound);
-                let mut lines = vec![self.elapsed_line(), Line::from("")];
-                if bound {
-                    let label = self
-                        .snapshot
-                        .as_ref()
-                        .and_then(|s| s.label.clone())
-                        .unwrap_or_default();
-                    lines.push(Line::from(Span::styled(
-                        label,
-                        Style::default().add_modifier(Modifier::BOLD),
-                    )));
-                } else {
-                    lines.push(Line::from(Span::styled(
-                        "Not bound to an activity yet.",
-                        theme::muted(),
-                    )));
-                    lines.push(Line::from(Span::styled(
-                        "Press / to bind it, or d to discard.",
-                        theme::muted(),
-                    )));
-                }
-                frame.render_widget(Paragraph::new(lines).block(bordered("Timer")), area);
-            }
+            Stage::Live => self.render_watch_face(frame, area),
         }
     }
 
@@ -491,17 +644,70 @@ impl Timer {
                 let paused = snap.is_some_and(|s| s.paused);
                 let bound = snap.is_some_and(|s| s.bound);
                 let pp = if paused {
-                    ("p", "resume")
+                    ("SPC", "resume")
                 } else {
-                    ("p", "pause")
+                    ("SPC", "pause")
                 };
                 if bound {
-                    widgets::footer_hints(&[pp, ("x", "stop"), ("h", "home")])
+                    widgets::footer_hints(&[
+                        pp,
+                        ("i", "instruments"),
+                        ("s", "end & save"),
+                        ("h", "home"),
+                    ])
                 } else {
-                    widgets::footer_hints(&[("/", "bind"), pp, ("d", "discard"), ("h", "home")])
+                    widgets::footer_hints(&[
+                        ("/", "bind"),
+                        pp,
+                        ("i", "instruments"),
+                        ("d", "discard"),
+                        ("h", "home"),
+                    ])
                 }
             }
         }
+    }
+}
+
+/// The watch-face digit font: 5 rows tall, `█`-on-space, one column of gap
+/// between glyphs (the kit's block-digit idiom — weight and colour only, one
+/// font size).
+fn big_glyph(c: char) -> [&'static str; 5] {
+    match c {
+        '0' => ["█████", "█   █", "█   █", "█   █", "█████"],
+        '1' => ["    █", "    █", "    █", "    █", "    █"],
+        '2' => ["█████", "    █", "█████", "█    ", "█████"],
+        '3' => ["█████", "    █", "█████", "    █", "█████"],
+        '4' => ["█   █", "█   █", "█████", "    █", "    █"],
+        '5' => ["█████", "█    ", "█████", "    █", "█████"],
+        '6' => ["█████", "█    ", "█████", "█   █", "█████"],
+        '7' => ["█████", "    █", "    █", "    █", "    █"],
+        '8' => ["█████", "█   █", "█████", "█   █", "█████"],
+        '9' => ["█████", "█   █", "█████", "    █", "█████"],
+        ':' => [" ", "█", " ", "█", " "],
+        _ => [" ", " ", " ", " ", " "],
+    }
+}
+
+fn big_time_lines(time: &str, style: Style) -> Vec<Line<'static>> {
+    (0..5)
+        .map(|row| {
+            let text = time
+                .chars()
+                .map(|c| big_glyph(c)[row])
+                .collect::<Vec<_>>()
+                .join(" ");
+            Line::from(Span::styled(text, style))
+        })
+        .collect()
+}
+
+fn fmt_minutes(minutes: u32) -> String {
+    let (h, m) = (minutes / 60, minutes % 60);
+    if h > 0 {
+        format!("{h}h {m:02}m")
+    } else {
+        format!("{m}m")
     }
 }
 
@@ -509,6 +715,32 @@ impl Timer {
 enum TimerOp {
     Pause,
     Resume,
+}
+
+/// Today's logged minutes for the rail — the same today-window read the Home
+/// screen uses, reduced to one number.
+fn spawn_today(api: &ApiClient, tx: &UnboundedSender<Action>) {
+    use jiff::{civil::Date, ToSpan, Zoned};
+
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        let now = Zoned::now();
+        let date: Date = now.date();
+        let start = date
+            .to_zoned(now.time_zone().clone())
+            .ok()
+            .map(|z| z.timestamp());
+        let end = start.and_then(|s| s.checked_add(1.day()).ok());
+        let filters = crate::api::ActivityFilters {
+            started_after: start,
+            started_before: end,
+            ..Default::default()
+        };
+        if let Ok(list) = api.list_activities(&filters).await {
+            let total: u32 = list.data.iter().filter_map(|a| a.duration_minutes).sum();
+            let _ = tx.send(Action::TimerTodayLoaded(total));
+        }
+    });
 }
 
 fn spawn_load(api: &ApiClient, tx: &UnboundedSender<Action>) {
@@ -893,6 +1125,133 @@ mod tests {
             Some(serde_json::json!({ "running": true, "bound": true })),
         )
         .is_none());
+    }
+
+    #[tokio::test]
+    async fn save_key_is_stage_dependent() {
+        let (mut s, api, tx) = setup();
+        // Live + unbound → the bind-first warning, no stop.
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": false
+            })))),
+        )
+        .await;
+        let warn = s.handle(Action::TimerSave, &api, &tx).await;
+        match warn {
+            Some((Level::Warning, text)) => assert!(text.contains("bind"), "{text}"),
+            other => panic!("expected the bind-first warning, got {other:?}"),
+        }
+
+        // Live + bound → accepted (spawns the stop op, no warning).
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true
+            })))),
+        )
+        .await;
+        assert!(s.handle(Action::TimerSave, &api, &tx).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn rail_folds_and_unfolds_with_i() {
+        let (mut s, api, tx) = setup();
+        assert!(!s.rail_hidden, "cockpit by default");
+        feed(&mut s, &api, &tx, Action::TimerToggleRail).await;
+        assert!(s.rail_hidden);
+        feed(&mut s, &api, &tx, Action::TimerToggleRail).await;
+        assert!(!s.rail_hidden);
+    }
+
+    #[tokio::test]
+    async fn mode_switch_names_the_missing_api() {
+        let (mut s, api, tx) = setup();
+        let note = s.handle(Action::TimerModeSwitch, &api, &tx).await;
+        match note {
+            Some((Level::Info, text)) => assert!(text.contains("focus API"), "{text}"),
+            other => panic!("expected the focus-API note, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn today_total_lands_in_the_rail() {
+        let (mut s, api, tx) = setup();
+        feed(&mut s, &api, &tx, Action::TimerTodayLoaded(227)).await;
+        assert_eq!(s.today_minutes, Some(227));
+    }
+
+    #[tokio::test]
+    async fn space_pauses_only_on_the_live_face() {
+        use crossterm::event::{KeyCode, KeyEvent};
+        let (mut s, api, tx) = setup();
+        // Absent: Space stays with the global leader.
+        assert!(s
+            .intercept_key(KeyEvent::from(KeyCode::Char(' ')))
+            .is_none());
+
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true
+            })))),
+        )
+        .await;
+        assert!(matches!(
+            s.intercept_key(KeyEvent::from(KeyCode::Char(' '))),
+            Some(Action::TimerPauseResume)
+        ));
+    }
+
+    #[tokio::test]
+    async fn paused_face_is_frozen_and_labelled() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "paused": true,
+                "label": "Read DDIA ch.7", "elapsed_seconds": 3134
+            })))),
+        )
+        .await;
+
+        let backend = TestBackend::new(100, 32);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| s.render(frame, frame.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("PAUSED — NOT COUNTING"), "paused label");
+        assert!(content.contains("never goes idle"), "idle-guard caption");
+        assert!(content.contains('█'), "big digits render");
+        assert!(content.contains("TODAY"), "rail shows the today instrument");
+    }
+
+    #[test]
+    fn big_time_lines_render_every_clock_char() {
+        let lines = big_time_lines("10:59", Style::default());
+        assert_eq!(lines.len(), 5);
+        // Every row spans the same five glyphs joined by single gaps.
+        let row0 = &lines[0].spans[0].content;
+        assert!(row0.contains("█████"), "{row0}");
+    }
+
+    #[test]
+    fn fmt_minutes_reads_like_the_design() {
+        assert_eq!(fmt_minutes(227), "3h 47m");
+        assert_eq!(fmt_minutes(45), "45m");
     }
 
     #[test]
