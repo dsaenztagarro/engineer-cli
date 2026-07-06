@@ -208,6 +208,7 @@ fn timer_key(key: crossterm::event::KeyEvent) -> Option<Action> {
         KeyCode::Char('d') => Some(Action::TimerDiscard),
         KeyCode::Char('i') => Some(Action::TimerToggleRail),
         KeyCode::Char('m') => Some(Action::TimerModeSwitch),
+        KeyCode::Char('n') => Some(Action::TimerSkipInterval),
         KeyCode::Char('/') | KeyCode::Char('b') => Some(Action::TimerBindBegin),
         KeyCode::Char('u') => Some(Action::TimerUndo),
         KeyCode::Enter => Some(Action::TimerDismissStopped),
