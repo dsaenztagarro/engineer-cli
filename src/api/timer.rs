@@ -89,6 +89,46 @@ pub struct TimerStopped {
     pub minutes: u32,
 }
 
+/// The idle-tail reclaim verbs — one server verb per §Idle reclaim row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReclaimVerb {
+    /// Idle span becomes paused time; the timer keeps running.
+    Trim,
+    /// The tail counts as work; presence is re-marked, the timer keeps running.
+    Keep,
+    /// Save a segment ending at `last_interacted_at`; the timer ends.
+    Stop,
+}
+
+impl ReclaimVerb {
+    pub const NAMES: &'static [&'static str] = &["trim", "keep", "stop"];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Trim => "trim",
+            Self::Keep => "keep",
+            Self::Stop => "stop",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "trim" => Some(Self::Trim),
+            "keep" => Some(Self::Keep),
+            "stop" => Some(Self::Stop),
+            _ => None,
+        }
+    }
+}
+
+/// What a reclaim left behind: trim/keep return the still-running timer,
+/// stop returns the written segment.
+#[derive(Debug, Clone)]
+pub enum Reclaimed {
+    Running(Box<Timer>),
+    Stopped(TimerStopped),
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct TimerCandidate {
     pub id: i64,
@@ -119,6 +159,23 @@ impl ApiClient {
     /// The per-user timer knobs (view-only in the CLI; edit on the web).
     pub async fn timer_settings(&self) -> Result<TimerSettings, ApiError> {
         self.get("/api/v1/timer/settings", &[]).await
+    }
+
+    /// Apply an idle-tail reclaim decision. The response shape follows the
+    /// verb: `trim`/`keep` return the running timer, `stop` the written
+    /// segment. 422 on `stop` when the timer is unbound.
+    pub async fn reclaim_timer(&self, verb: ReclaimVerb) -> Result<Reclaimed, ApiError> {
+        let body = serde_json::json!({ "verb": verb.as_str() });
+        match verb {
+            ReclaimVerb::Stop => {
+                let stopped: TimerStopped = self.post("/api/v1/timer/reclaim", &body).await?;
+                Ok(Reclaimed::Stopped(stopped))
+            }
+            _ => {
+                let timer: Timer = self.post("/api/v1/timer/reclaim", &body).await?;
+                Ok(Reclaimed::Running(Box::new(timer)))
+            }
+        }
     }
 
     /// Start a timer, optionally bound to an activity. `switch` stops the running timer first.
@@ -244,6 +301,55 @@ mod tests {
         assert_eq!(timer.planned_minutes, Some(120));
         assert_eq!(timer.logged_minutes, Some(18));
         assert!(timer.over);
+    }
+
+    #[tokio::test]
+    async fn reclaim_trim_posts_the_verb_and_keeps_running() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/reclaim"))
+            .and(body_json(serde_json::json!({ "verb": "trim" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "bound": true, "paused_seconds": 5220, "idle": false
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        match client(&server)
+            .reclaim_timer(ReclaimVerb::Trim)
+            .await
+            .unwrap()
+        {
+            Reclaimed::Running(t) => {
+                assert!(t.running);
+                assert_eq!(t.paused_seconds, Some(5220));
+            }
+            other => panic!("expected a running timer, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn reclaim_stop_returns_the_written_segment() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/reclaim"))
+            .and(body_json(serde_json::json!({ "verb": "stop" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "stopped": true, "activity_id": 9, "segment_id": 41, "minutes": 74
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        match client(&server)
+            .reclaim_timer(ReclaimVerb::Stop)
+            .await
+            .unwrap()
+        {
+            Reclaimed::Stopped(s) => assert_eq!(s.minutes, 74),
+            other => panic!("expected a written segment, got {other:?}"),
+        }
     }
 
     #[tokio::test]

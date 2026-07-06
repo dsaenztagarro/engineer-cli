@@ -42,6 +42,8 @@ engineer timer start [query]       # start — fuzzy-binds to an activity, or un
 engineer timer start <q> --switch  # stop & save the running timer, then start
 engineer timer toggle              # pause ⇄ resume (bind it in tmux/zellij)
 engineer timer pause|resume|stop   # stop refuses on an unbound timer — bind or discard first
+engineer timer stop --reclaim=<v>  # settle a pending idle tail first: trim | keep | stop
+engineer timer reclaim <verb>      # idle tail: trim (→ paused time, keeps running) · keep · stop (ends at last input)
 engineer timer bind <query>        # name a running unnamed timer
 engineer timer discard [--force]   # throw the timer away; past ~2 minutes requires --force
 engineer timer settings [--json]   # the per-user timer knobs, read-only (edit on the web)

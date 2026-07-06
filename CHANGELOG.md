@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The idle guard — welcome back, the clock went quiet.** When the server flags the timer idle, the timer screen opens the reclaim list: *what was the idle tail worth?* One row per server verb — **Trim** (idle becomes paused time, the timer keeps running — the safe pick), **Keep** (the tail counts), **Stop at last input** (saves the worked span, ends the timer, lands on the normal stop confirmation with undo) — plus the **Discard** escape, which rides the usual two-press confirm. The list preselects your `idle default reclaim` setting, `j/k` chooses, `⏎` applies, `Esc` defers (the guard returns while the read stays idle; the watch face meanwhile reads `◐ IDLE — RECLAIM PENDING`). Captions are computed from the read (`last_interacted_at`): running total, idle span, what each verb keeps. Nothing is written until you choose, and idle time is never logged as a segment. Headless: `engineer timer reclaim <trim|keep|stop>` and `engineer timer stop --reclaim=<verb>`; `timer status` now appends `idle_s=N` in the idle state. (`timer.dc.html` §Idle reclaim / §Overnight boundary)
+
 - **Timer settings, readable everywhere.** The per-user timer knobs the web app edits are now first-class in the CLI: a read-only **Settings · Timer** screen (`:settings`) lists all twelve — default mode, the focus durations and long-break cadence, the idle guard and its threshold, the default reclaim action, the audit fences and badge, the overrun ping — with the explicit "edit on the web" pointer (one writer, no divergence). Headless twin: `engineer timer settings` (aligned table) and `--json` (mirrors the server payload 1:1). (`timer.dc.html` §Timer settings)
 
 ### Fixed
