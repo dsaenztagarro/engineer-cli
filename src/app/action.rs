@@ -111,6 +111,8 @@ pub enum Action {
     TimerDiscard,
     TimerBindBegin,
     TimerBindCancel,
+    /// `Tab` in the start picker — stopwatch ⇄ focus for the fresh start.
+    TimerPickerToggleMode,
     TimerBindInput(char),
     TimerBindBackspace,
     TimerBindMove(i32),
