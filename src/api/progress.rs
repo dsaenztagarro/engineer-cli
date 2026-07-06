@@ -26,6 +26,19 @@ pub struct Progress {
     #[serde(default)]
     pub bloom: Vec<BloomLevel>,
     pub totals: Totals,
+    /// Exactly 7 entries Monday→Sunday when the server serves it (0-minute
+    /// days included); empty on older payloads — the rail degrades to the
+    /// today-only block.
+    #[serde(default)]
+    pub by_day: Vec<DayMinutes>,
+}
+
+/// One day of the week's logged minutes, bucketed by completed segments on
+/// the 4 AM day boundary.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DayMinutes {
+    pub date: jiff::civil::Date,
+    pub minutes: u32,
 }
 
 /// The ISO study week frame. `now_fraction` (0.0..=1.0) is where the gray
@@ -293,6 +306,31 @@ mod tests {
             .get_progress(Some("2026-W26"))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn by_day_decodes_and_defaults_empty() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/progress"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "week": { "id": "2026-W28", "monday": "2026-07-06", "sunday": "2026-07-12",
+                          "elapsed_days": 1, "now_fraction": 0.14 },
+                "targets": [], "kind_mix": [], "bloom": [],
+                "totals": { "actual_minutes": 227, "activity_count": 4 },
+                "by_day": [
+                    { "date": "2026-07-06", "minutes": 227 },
+                    { "date": "2026-07-07", "minutes": 0 }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let progress = client(&server).get_progress(None).await.unwrap();
+        assert_eq!(progress.by_day.len(), 2);
+        assert_eq!(progress.by_day[0].minutes, 227);
+        assert_eq!(progress.by_day[0].date, jiff::civil::date(2026, 7, 6));
     }
 
     #[tokio::test]
