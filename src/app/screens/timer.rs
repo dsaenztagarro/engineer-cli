@@ -132,6 +132,32 @@ enum BindTarget {
     Create(String),
 }
 
+/// The start picker's stopwatch ⇄ focus toggle (`Tab`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PickerMode {
+    Stopwatch,
+    Focus,
+}
+
+/// Which live-search panel owns the keys. `Bind` names the running unnamed
+/// timer in place; `Start` is the §Start-a-timer picker — one list, every way
+/// in (bound / new activity / just start), plus the stop-&-switch confirm
+/// when a timer is already running.
+enum Panel {
+    Bind,
+    Start {
+        mode: PickerMode,
+        confirm: Option<TimerCandidate>,
+    },
+}
+
+/// What a start-picker submission would do, resolved from the selection.
+enum StartTarget {
+    Candidate(TimerCandidate),
+    Create(String),
+    JustStart,
+}
+
 #[derive(Default)]
 enum Stage {
     #[default]
@@ -155,8 +181,9 @@ pub struct Timer {
     rail_hidden: bool,
     /// Today's logged minutes (summed from today's activities) for the rail.
     today_minutes: Option<u32>,
-    // Bind panel (running-unbound → search candidates or mint a new activity).
-    binding: bool,
+    /// The open live-search panel (bind or start picker), if any. The panel
+    /// owns the keys while open; the clock underneath runs untouched.
+    panel: Option<Panel>,
     query: String,
     candidates: Vec<TimerCandidate>,
     cand_state: ListState,
@@ -177,15 +204,18 @@ impl Timer {
     /// design's `SPC`), so the leader is unavailable only while a clock runs on
     /// this screen — navigation still has `h`, `t`, and the `:` verbs.
     pub fn intercept_key(&mut self, key: KeyEvent) -> Option<Action> {
-        if !self.binding {
+        let Some(panel) = self.panel.as_ref() else {
             if key.code == KeyCode::Char(' ') && matches!(self.stage, Stage::Live) {
                 return Some(Action::TimerPauseResume);
             }
             return None;
-        }
+        };
         match key.code {
             KeyCode::Esc => Some(Action::TimerBindCancel),
             KeyCode::Enter => Some(Action::TimerBindSubmit),
+            KeyCode::Tab if matches!(panel, Panel::Start { .. }) => {
+                Some(Action::TimerPickerToggleMode)
+            }
             KeyCode::Backspace => Some(Action::TimerBindBackspace),
             KeyCode::Up => Some(Action::TimerBindMove(-1)),
             KeyCode::Down => Some(Action::TimerBindMove(1)),
@@ -214,18 +244,20 @@ impl Timer {
                 } else {
                     Stage::Absent
                 };
-                if t.bound || !t.running {
-                    self.close_bind_panel();
+                // A background poll must not close the start picker mid-browse;
+                // the bind panel closes once its job is done (bound or gone).
+                if matches!(self.panel, Some(Panel::Bind)) && (t.bound || !t.running) {
+                    self.close_panel();
                 }
                 self.base = Some(Instant::now());
                 self.snapshot = Some(t);
             }
             Action::TimerReload => spawn_load(api, tx),
-            // `s` — stage-dependent primary: start when absent, end & save when
-            // bound, and the bind-first warning when unbound (the full
-            // bind-at-stop flow is its own ticket).
+            // `s` — stage-dependent primary: open the start picker when
+            // absent, end & save when bound, and the bind-first warning when
+            // unbound (the full bind-at-stop flow is its own ticket).
             Action::TimerSave => match self.stage {
-                Stage::Absent => spawn_start_blank(api, tx),
+                Stage::Absent => self.open_start_panel(api, tx),
                 Stage::Live => {
                     if self.snapshot.as_ref().is_some_and(|s| s.bound) {
                         spawn_stop(api, tx);
@@ -271,7 +303,7 @@ impl Timer {
             }
             Action::TimerStopped(result) => {
                 let label = self.snapshot.as_ref().and_then(|s| s.label.clone());
-                self.close_bind_panel();
+                self.close_panel();
                 self.stage = Stage::Stopped {
                     result: *result,
                     label,
@@ -289,17 +321,39 @@ impl Timer {
                     spawn_discard(api, tx);
                 }
             }
-            Action::TimerBindBegin => {
-                let unbound = self.snapshot.as_ref().is_some_and(|s| !s.bound);
-                if matches!(self.stage, Stage::Live) && unbound {
-                    self.binding = true;
-                    self.query.clear();
-                    self.candidates.clear();
-                    self.cand_state.select(Some(0));
-                    spawn_candidates(api, tx, String::new());
+            Action::TimerBindBegin => match self.stage {
+                // Unbound: name the running timer in place. Bound: open the
+                // start picker in switch context (§Start conflict). Absent:
+                // the same picker `s` opens.
+                Stage::Live => {
+                    if self.snapshot.as_ref().is_some_and(|s| !s.bound) {
+                        self.open_panel(Panel::Bind, api, tx);
+                    } else {
+                        self.open_start_panel(api, tx);
+                    }
+                }
+                Stage::Absent => self.open_start_panel(api, tx),
+                _ => {}
+            },
+            Action::TimerBindCancel => {
+                // Esc steps back one level: a pending switch-confirm first,
+                // then the panel itself — the clock is never touched.
+                if let Some(Panel::Start { confirm, .. }) = self.panel.as_mut() {
+                    if confirm.is_some() {
+                        *confirm = None;
+                        return None;
+                    }
+                }
+                self.close_panel();
+            }
+            Action::TimerPickerToggleMode => {
+                if let Some(Panel::Start { mode, .. }) = self.panel.as_mut() {
+                    *mode = match mode {
+                        PickerMode::Stopwatch => PickerMode::Focus,
+                        PickerMode::Focus => PickerMode::Stopwatch,
+                    };
                 }
             }
-            Action::TimerBindCancel => self.close_bind_panel(),
             Action::TimerBindInput(c) => {
                 self.query.push(c);
                 self.cand_state.select(Some(0));
@@ -320,26 +374,109 @@ impl Timer {
                     self.cand_state.select(Some(len - 1));
                 }
             }
-            Action::TimerBindSubmit => {
-                if let Some(target) = self.bind_target() {
-                    self.close_bind_panel();
-                    spawn_bind(api, tx, target);
-                }
-            }
+            Action::TimerBindSubmit => return self.submit_panel(api, tx),
             _ => {}
         }
         None
     }
 
-    fn close_bind_panel(&mut self) {
-        self.binding = false;
+    fn submit_panel(
+        &mut self,
+        api: &ApiClient,
+        tx: &UnboundedSender<Action>,
+    ) -> Option<(Level, String)> {
+        match self.panel.as_mut() {
+            Some(Panel::Bind) => {
+                if let Some(target) = self.bind_target() {
+                    self.close_panel();
+                    spawn_bind(api, tx, target);
+                }
+                None
+            }
+            Some(Panel::Start { mode, confirm }) => {
+                if *mode == PickerMode::Focus {
+                    return Some((
+                        Level::Info,
+                        "starting in focus needs the focus API — requested upstream (Tab back to stopwatch)".into(),
+                    ));
+                }
+                // Second ⏎ on the conflict banner: stop & save, then start.
+                if let Some(picked) = confirm.take() {
+                    self.close_panel();
+                    spawn_start_switch(api, tx, picked.id);
+                    return None;
+                }
+                let running = self.snapshot.as_ref().is_some_and(|s| s.running);
+                match self.start_target() {
+                    Some(StartTarget::Candidate(picked)) if running => {
+                        // One timer at a time — surface the conflict banner.
+                        if let Some(Panel::Start { confirm, .. }) = self.panel.as_mut() {
+                            *confirm = Some(picked);
+                        }
+                    }
+                    Some(StartTarget::Candidate(picked)) => {
+                        self.close_panel();
+                        spawn_start_bound(api, tx, picked.id);
+                    }
+                    Some(StartTarget::Create(title)) => {
+                        self.close_panel();
+                        spawn_create_and_start(api, tx, title);
+                    }
+                    Some(StartTarget::JustStart) => {
+                        self.close_panel();
+                        spawn_start_blank(api, tx);
+                    }
+                    None => {}
+                }
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn open_panel(&mut self, panel: Panel, api: &ApiClient, tx: &UnboundedSender<Action>) {
+        self.panel = Some(panel);
+        self.query.clear();
+        self.candidates.clear();
+        self.cand_state.select(Some(0));
+        spawn_candidates(api, tx, String::new());
+    }
+
+    fn open_start_panel(&mut self, api: &ApiClient, tx: &UnboundedSender<Action>) {
+        self.open_panel(
+            Panel::Start {
+                mode: PickerMode::Stopwatch,
+                confirm: None,
+            },
+            api,
+            tx,
+        );
+    }
+
+    fn close_panel(&mut self) {
+        self.panel = None;
         self.query.clear();
         self.candidates.clear();
     }
 
-    /// Candidate rows plus a trailing "create" row when the query is non-empty.
+    /// Extra synthetic rows after the candidates, by panel: the bind panel
+    /// offers "create" when a title is typed; the start picker adds "create"
+    /// and "just start" only while nothing runs (in switch context the list
+    /// is candidates-only).
+    fn extra_rows(&self) -> (bool, bool) {
+        let has_query = !self.query.trim().is_empty();
+        let running = self.snapshot.as_ref().is_some_and(|s| s.running);
+        match self.panel {
+            Some(Panel::Bind) => (has_query, false),
+            Some(Panel::Start { .. }) if !running => (has_query, true),
+            Some(Panel::Start { .. }) => (false, false),
+            None => (false, false),
+        }
+    }
+
     fn bind_rows_len(&self) -> usize {
-        self.candidates.len() + usize::from(!self.query.trim().is_empty())
+        let (create, just_start) = self.extra_rows();
+        self.candidates.len() + usize::from(create) + usize::from(just_start)
     }
 
     fn move_selection(&mut self, delta: i32) {
@@ -362,6 +499,22 @@ impl Timer {
         } else {
             None
         }
+    }
+
+    fn start_target(&self) -> Option<StartTarget> {
+        let sel = self.cand_state.selected()?;
+        let (create, just_start) = self.extra_rows();
+        if sel < self.candidates.len() {
+            return Some(StartTarget::Candidate(self.candidates[sel].clone()));
+        }
+        let mut next = self.candidates.len();
+        if create {
+            if sel == next {
+                return Some(StartTarget::Create(self.query.trim().to_string()));
+            }
+            next += 1;
+        }
+        (just_start && sel == next).then_some(StartTarget::JustStart)
     }
 
     fn elapsed_line(&self) -> Line<'static> {
@@ -527,6 +680,12 @@ impl Timer {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
+        // The start picker overlays whichever stage it was opened from
+        // (Absent, or Live in switch context).
+        if matches!(self.panel, Some(Panel::Start { .. })) {
+            self.render_start_panel(frame, area);
+            return;
+        }
         match &self.stage {
             Stage::Loading => {
                 frame.render_widget(Paragraph::new("loading…").block(bordered("Timer")), area);
@@ -539,7 +698,7 @@ impl Timer {
                     Line::from(vec![
                         Span::raw("Press "),
                         Span::styled("s", theme::focused()),
-                        Span::raw(" to start the clock — name it later."),
+                        Span::raw(" to start — pick an activity, or just start and name it later."),
                     ]),
                 ];
                 frame.render_widget(Paragraph::new(lines).block(bordered("Timer")), area);
@@ -581,9 +740,130 @@ impl Timer {
                     area,
                 );
             }
-            Stage::Live if self.binding => self.render_bind_panel(frame, area),
+            Stage::Live if matches!(self.panel, Some(Panel::Bind)) => {
+                self.render_bind_panel(frame, area)
+            }
             Stage::Live => self.render_watch_face(frame, area),
         }
+    }
+
+    /// The §Start-a-timer picker: mode toggle, live search, the synthetic
+    /// create / just-start rows — and the §Start-conflict banner when a timer
+    /// is already running.
+    fn render_start_panel(&mut self, frame: &mut Frame, area: Rect) {
+        let block = bordered("Start a timer");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let (mode, confirm) = match self.panel.as_ref() {
+            Some(Panel::Start { mode, confirm }) => (*mode, confirm.clone()),
+            _ => return,
+        };
+
+        // The conflict banner replaces the list: one decision, two keys.
+        if let Some(picked) = confirm {
+            let current = self
+                .snapshot
+                .as_ref()
+                .and_then(|s| s.label.clone())
+                .unwrap_or_else(|| "untitled".into());
+            let elapsed = self
+                .snapshot
+                .as_ref()
+                .map(|s| widgets::fmt_elapsed(live_elapsed(s, self.base)))
+                .unwrap_or_default();
+            let lines = vec![
+                Line::from(Span::styled(
+                    "⚠ One timer at a time",
+                    Style::default()
+                        .fg(theme::WARN)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("already tracking  ", theme::muted()),
+                    Span::styled(current, Style::default().add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("  · {elapsed}"), theme::muted()),
+                ]),
+                Line::from(vec![
+                    Span::styled("you picked       ", theme::muted()),
+                    Span::styled(picked.title, Style::default().add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "⏎ stops & saves the current timer, then starts the new one",
+                    theme::muted(),
+                )),
+            ];
+            frame.render_widget(Paragraph::new(lines), inner);
+            return;
+        }
+
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(4), Constraint::Min(0)])
+            .split(inner);
+
+        let (sw_style, focus_style) = match mode {
+            PickerMode::Stopwatch => (theme::selection(), theme::muted()),
+            PickerMode::Focus => (theme::muted(), theme::selection()),
+        };
+        let running = self.snapshot.as_ref().is_some_and(|s| s.running);
+        let context = if running {
+            Line::from(Span::styled(
+                "a timer is running — picking a row offers stop & switch",
+                Style::default().fg(theme::WARN),
+            ))
+        } else {
+            Line::from(Span::styled("nothing running", theme::muted()))
+        };
+        let header = vec![
+            Line::from(vec![
+                Span::styled(" ● Stopwatch ", sw_style),
+                Span::raw("  "),
+                Span::styled(" ○ Focus ", focus_style),
+                Span::styled("   Tab switches mode", theme::muted()),
+            ]),
+            context,
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("bind to  "),
+                Span::styled(format!("{}_", self.query), theme::focused()),
+            ]),
+        ];
+        frame.render_widget(Paragraph::new(header), rows[0]);
+
+        let (create, just_start) = self.extra_rows();
+        let mut items: Vec<ListItem> = self
+            .candidates
+            .iter()
+            .map(|c| ListItem::new(Line::from(c.title.clone())))
+            .collect();
+        if create {
+            items.push(ListItem::new(Line::from(Span::styled(
+                format!(
+                    "＋ new activity: \"{}\" — create & start",
+                    self.query.trim()
+                ),
+                Style::default().fg(theme::ACCENT),
+            ))));
+        }
+        if just_start {
+            items.push(ListItem::new(Line::from(Span::styled(
+                "▶ just start — no activity · untitled, bind when you stop",
+                Style::default().fg(theme::SUCCESS),
+            ))));
+        }
+        if items.is_empty() {
+            items.push(ListItem::new(Line::from(Span::styled(
+                "type to search your activities…",
+                theme::muted(),
+            ))));
+        }
+        let list = List::new(items)
+            .highlight_style(theme::selection())
+            .highlight_symbol("▌ ");
+        frame.render_stateful_widget(list, rows[1], &mut self.cand_state);
     }
 
     fn render_bind_panel(&mut self, frame: &mut Frame, area: Rect) {
@@ -631,11 +911,23 @@ impl Timer {
     }
 
     pub fn hints(&self) -> Line<'static> {
+        match self.panel.as_ref() {
+            Some(Panel::Start { confirm, .. }) if confirm.is_some() => {
+                return widgets::footer_hints(&[("⏎", "stop & switch"), ("Esc", "keep running")]);
+            }
+            Some(Panel::Start { .. }) => {
+                return Line::from(Span::styled(
+                    "type to search · Tab mode · ↑/↓ pick · ⏎ start · Esc cancel",
+                    theme::muted(),
+                ));
+            }
+            _ => {}
+        }
         match &self.stage {
             Stage::Loading => widgets::footer_hints(&[("h", "home")]),
             Stage::Absent => widgets::footer_hints(&[("s", "start"), ("h", "home")]),
             Stage::Stopped { .. } => widgets::footer_hints(&[("↵", "dismiss"), ("h", "home")]),
-            Stage::Live if self.binding => Line::from(Span::styled(
+            Stage::Live if matches!(self.panel, Some(Panel::Bind)) => Line::from(Span::styled(
                 "type to search · ↑/↓ pick · ↵ bind/create · Esc cancel",
                 theme::muted(),
             )),
@@ -771,6 +1063,72 @@ fn spawn_start_blank(api: &ApiClient, tx: &UnboundedSender<Action>) {
                 let _ = tx.send(Action::Notify {
                     level: Level::Error,
                     text: format!("start failed: {e}"),
+                });
+            }
+        }
+    });
+}
+
+/// Start bound to an existing activity (no switch — a running timer should
+/// have routed through the conflict banner first; a racing 409 still surfaces).
+fn spawn_start_bound(api: &ApiClient, tx: &UnboundedSender<Action>, activity_id: i64) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        match api.start_timer(Some(activity_id), false).await {
+            Ok(t) => {
+                let _ = tx.send(Action::TimerLoaded(Box::new(t)));
+            }
+            Err(e) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Error,
+                    text: format!("start failed: {e}"),
+                });
+            }
+        }
+    });
+}
+
+/// The conflict banner's second ⏎: stop & save the running timer server-side,
+/// then start the picked one.
+fn spawn_start_switch(api: &ApiClient, tx: &UnboundedSender<Action>, activity_id: i64) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        match api.start_timer(Some(activity_id), true).await {
+            Ok(t) => {
+                let _ = tx.send(Action::TimerLoaded(Box::new(t)));
+            }
+            Err(e) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Error,
+                    text: format!("stop & switch failed: {e}"),
+                });
+            }
+        }
+    });
+}
+
+/// The "＋ new activity" row: a blank start followed by a bind-with-title —
+/// the same call pair the bind panel uses, so the server mints the activity.
+fn spawn_create_and_start(api: &ApiClient, tx: &UnboundedSender<Action>, title: String) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        if let Err(e) = api.start_timer(None, false).await {
+            let _ = tx.send(Action::Notify {
+                level: Level::Error,
+                text: format!("start failed: {e}"),
+            });
+            return;
+        }
+        match api.bind_timer(None, Some(title)).await {
+            Ok(t) => {
+                let _ = tx.send(Action::TimerLoaded(Box::new(t)));
+            }
+            Err(e) => {
+                // The clock is running but unnamed — say so instead of hiding it.
+                let _ = tx.send(Action::TimerReload);
+                let _ = tx.send(Action::Notify {
+                    level: Level::Warning,
+                    text: format!("started, but naming it failed: {e} — bind with `/`"),
                 });
             }
         }
@@ -948,7 +1306,7 @@ mod tests {
         )
         .await;
         feed(&mut s, &api, &tx, Action::TimerBindBegin).await;
-        assert!(s.binding);
+        assert!(matches!(s.panel, Some(Panel::Bind)));
 
         // Type a query, then candidates arrive.
         feed(&mut s, &api, &tx, Action::TimerBindInput('s')).await;
@@ -994,9 +1352,149 @@ mod tests {
         .await;
         feed(&mut s, &api, &tx, Action::TimerBindBegin).await;
         feed(&mut s, &api, &tx, Action::TimerBindCancel).await;
-        assert!(!s.binding);
+        assert!(s.panel.is_none());
         // Still Live — cancelling the panel never touches the clock.
         assert!(matches!(s.stage, Stage::Live));
+    }
+
+    #[tokio::test]
+    async fn save_on_absent_opens_the_start_picker() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({ "running": false })))),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::TimerSave).await;
+        assert!(matches!(
+            s.panel,
+            Some(Panel::Start {
+                mode: PickerMode::Stopwatch,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn tab_toggles_picker_mode_and_focus_submit_names_the_gap() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({ "running": false })))),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::TimerSave).await;
+        feed(&mut s, &api, &tx, Action::TimerPickerToggleMode).await;
+        assert!(matches!(
+            s.panel,
+            Some(Panel::Start {
+                mode: PickerMode::Focus,
+                ..
+            })
+        ));
+        // Submitting in focus mode surfaces the API gap instead of faking it.
+        let note = s.handle(Action::TimerBindSubmit, &api, &tx).await;
+        match note {
+            Some((Level::Info, text)) => assert!(text.contains("focus API"), "{text}"),
+            other => panic!("expected the focus-API note, got {other:?}"),
+        }
+        assert!(s.panel.is_some(), "the picker stays open to Tab back");
+    }
+
+    #[tokio::test]
+    async fn just_start_row_starts_unnamed_and_closes_the_picker() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({ "running": false })))),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::TimerSave).await;
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerCandidatesLoaded(vec![TimerCandidate {
+                id: 7,
+                title: "SICP reading".into(),
+            }]),
+        )
+        .await;
+        // candidates(1) + just-start (no query → no create row).
+        feed(&mut s, &api, &tx, Action::TimerBindMove(1)).await;
+        assert!(matches!(s.start_target(), Some(StartTarget::JustStart)));
+        feed(&mut s, &api, &tx, Action::TimerBindSubmit).await;
+        assert!(s.panel.is_none(), "submit closes the picker");
+    }
+
+    #[tokio::test]
+    async fn switch_flow_requires_a_second_enter_and_esc_steps_back() {
+        let (mut s, api, tx) = setup();
+        // A bound timer is running; `/` opens the picker in switch context.
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "label": "Read DDIA ch.7",
+                "elapsed_seconds": 3134
+            })))),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::TimerBindBegin).await;
+        assert!(matches!(s.panel, Some(Panel::Start { .. })));
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerCandidatesLoaded(vec![TimerCandidate {
+                id: 42,
+                title: "Implement Raft".into(),
+            }]),
+        )
+        .await;
+
+        // First ⏎ arms the conflict banner instead of switching.
+        feed(&mut s, &api, &tx, Action::TimerBindSubmit).await;
+        match &s.panel {
+            Some(Panel::Start {
+                confirm: Some(c), ..
+            }) => assert_eq!(c.id, 42),
+            other => panic!("expected the conflict banner, got {}", other.is_some()),
+        }
+
+        // Esc steps back to the list, keeping the current timer running.
+        feed(&mut s, &api, &tx, Action::TimerBindCancel).await;
+        assert!(matches!(s.panel, Some(Panel::Start { confirm: None, .. })));
+
+        // Re-arm and confirm: the second ⏎ closes the picker (stop & switch).
+        feed(&mut s, &api, &tx, Action::TimerBindSubmit).await;
+        feed(&mut s, &api, &tx, Action::TimerBindSubmit).await;
+        assert!(s.panel.is_none());
+    }
+
+    #[tokio::test]
+    async fn switch_context_hides_create_and_just_start_rows() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true
+            })))),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::TimerBindBegin).await;
+        feed(&mut s, &api, &tx, Action::TimerBindInput('x')).await;
+        // Query typed, but switch context offers existing activities only.
+        assert_eq!(s.extra_rows(), (false, false));
     }
 
     #[tokio::test]
