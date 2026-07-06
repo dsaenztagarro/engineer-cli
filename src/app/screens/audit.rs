@@ -143,20 +143,18 @@ impl Audit {
                 self.delete_armed = None;
                 spawn_delete(api, tx, activity_id, row_id);
             }
-            Action::AuditFix => {
-                if self.selected_row().is_some() {
-                    // The activity edit lives on the Activities table — a soft
-                    // handoff until cross-screen deep-links exist.
-                    let title = self
-                        .selected_row()
-                        .and_then(|r| r.activity_title.clone())
-                        .unwrap_or_else(|| "the activity".into());
-                    let _ = tx.send(Action::Goto(super::ScreenKind::Activities));
-                    return Some((
-                        Level::Info,
-                        format!("fix routes to Activities — find \"{title}\" and press e"),
-                    ));
-                }
+            // The activity edit lives on the Activities table — a soft
+            // handoff until cross-screen deep-links exist.
+            Action::AuditFix if self.selected_row().is_some() => {
+                let title = self
+                    .selected_row()
+                    .and_then(|r| r.activity_title.clone())
+                    .unwrap_or_else(|| "the activity".into());
+                let _ = tx.send(Action::Goto(super::ScreenKind::Activities));
+                return Some((
+                    Level::Info,
+                    format!("fix routes to Activities — find \"{title}\" and press e"),
+                ));
             }
             _ => {}
         }
