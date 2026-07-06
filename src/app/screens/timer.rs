@@ -76,7 +76,7 @@ pub(crate) fn palette_dispatch(
             if running {
                 Some((Level::Warning, "a timer is already running".into()))
             } else {
-                spawn_start_blank(api, tx);
+                spawn_start_blank(api, tx, false);
                 None
             }
         }
@@ -125,6 +125,59 @@ pub(crate) fn live_elapsed(snap: &TimerSnapshot, base: Option<Instant>) -> i64 {
         base_secs + base.map(|b| b.elapsed().as_secs() as i64).unwrap_or(0)
     } else {
         base_secs
+    }
+}
+
+/// Which offer the focus rhythm is holding open, if any (§Focus offers).
+/// Transitions never fire on their own — a finished phase waits for a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Offer {
+    /// The work interval is complete: offer the break (long every Nth).
+    Break { long: bool },
+    /// The break is done: offer the next work interval.
+    BackToWork,
+}
+
+/// A finished focus phase, judged from `phase_started_at` against the
+/// configured durations. Paused and idle clocks never hold an offer open
+/// (their moments come first). Phase time ignores mid-phase pauses — the
+/// offer may arrive early after one; the server still validates.
+pub(crate) fn offer_for(
+    snap: &TimerSnapshot,
+    settings: &crate::api::TimerSettings,
+    now: jiff::Timestamp,
+) -> Option<Offer> {
+    if !snap.running
+        || snap.paused
+        || snap.idle == Some(true)
+        || snap.mode.as_deref() != Some("focus")
+    {
+        return None;
+    }
+    let started = snap.phase_started_at?;
+    let phase_secs = (now.as_second() - started.as_second()).max(0);
+    let every = settings.focus_long_break_every;
+    match snap.phase.as_deref() {
+        Some("work") => {
+            let target = settings.focus_work_minutes as i64 * 60;
+            (phase_secs >= target).then(|| {
+                let next_break = snap.intervals_completed.unwrap_or(0) + 1;
+                Offer::Break {
+                    long: every != 0 && next_break % every == 0,
+                }
+            })
+        }
+        Some("break") => {
+            let banked = snap.intervals_completed.unwrap_or(0);
+            let long = every != 0 && banked != 0 && banked % every == 0;
+            let minutes = if long {
+                settings.focus_long_break_minutes
+            } else {
+                settings.focus_short_break_minutes
+            };
+            (phase_secs >= minutes as i64 * 60).then_some(Offer::BackToWork)
+        }
+        _ => None,
     }
 }
 
@@ -220,6 +273,20 @@ impl Timer {
         spawn_load(api, tx);
         spawn_today(api, tx);
         spawn_settings(api, tx);
+    }
+
+    /// The live focus phase (`work`/`break`), or `None` outside focus.
+    fn focus_phase(&self) -> Option<&str> {
+        let snap = self.snapshot.as_ref()?;
+        (snap.running && snap.mode.as_deref() == Some("focus"))
+            .then(|| snap.phase.as_deref().unwrap_or("work"))
+    }
+
+    /// The offer the face is holding open, if settings have arrived.
+    fn current_offer(&self) -> Option<Offer> {
+        let snap = self.snapshot.as_ref()?;
+        let settings = self.settings.as_ref()?;
+        offer_for(snap, settings, jiff::Timestamp::now())
     }
 
     /// The reclaim list's preselected row, from the `idle_default_reclaim`
@@ -337,25 +404,41 @@ impl Timer {
                 _ => {}
             },
             Action::TimerToggleRail => self.rail_hidden = !self.rail_hidden,
-            Action::TimerModeSwitch => {
-                return Some((
-                    Level::Info,
-                    "mode switch (stopwatch ⇄ focus) needs the focus API — requested upstream"
-                        .into(),
-                ));
-            }
-            Action::TimerSkipInterval => {
-                if self
-                    .snapshot
-                    .as_ref()
-                    .is_some_and(|s| s.mode.as_deref() == Some("focus"))
-                {
+            // `m` — stopwatch ⇄ focus in place; elapsed is preserved.
+            Action::TimerModeSwitch => match self.snapshot.as_ref() {
+                Some(snap) if snap.running => {
+                    let target = if snap.mode.as_deref() == Some("focus") {
+                        "stopwatch"
+                    } else {
+                        "focus"
+                    };
+                    spawn_mode(api, tx, target);
+                }
+                _ => {
                     return Some((
-                        Level::Info,
-                        "skipping an interval needs the focus API — requested upstream".into(),
+                        Level::Warning,
+                        "no running timer to switch — mode is picked at start".into(),
                     ));
                 }
-            }
+            },
+            // `n` — bank the interval and arm the next: work → break → work
+            // (interval credit is the work→break edge). On a break it simply
+            // returns to work early.
+            Action::TimerSkipInterval => match self.focus_phase() {
+                Some("work") => spawn_skip_interval(api, tx),
+                Some("break") => spawn_phase(api, tx, "work"),
+                _ => {}
+            },
+            // `b` — the phase toggle in focus (break now / back to work); in
+            // stopwatch it keeps its bind meaning: the bind panel when
+            // unbound, the start picker when bound.
+            Action::TimerBreak => match self.focus_phase() {
+                Some("work") => spawn_phase(api, tx, "break"),
+                Some("break") => spawn_phase(api, tx, "work"),
+                _ => {
+                    return Box::pin(self.handle(Action::TimerBindBegin, api, tx)).await;
+                }
+            },
             Action::TimerTodayLoaded(minutes) => self.today_minutes = Some(minutes),
             Action::SettingsLoaded(s) => self.settings = Some(*s),
             Action::TimerPauseResume => {
@@ -526,16 +609,11 @@ impl Timer {
                 None
             }
             Some(Panel::Start { mode, confirm }) => {
-                if *mode == PickerMode::Focus {
-                    return Some((
-                        Level::Info,
-                        "starting in focus needs the focus API — requested upstream (Tab back to stopwatch)".into(),
-                    ));
-                }
+                let focus = *mode == PickerMode::Focus;
                 // Second ⏎ on the conflict banner: stop & save, then start.
                 if let Some(picked) = confirm.take() {
                     self.close_panel();
-                    spawn_start_switch(api, tx, picked.id);
+                    spawn_start_switch(api, tx, picked.id, focus);
                     return None;
                 }
                 let running = self.snapshot.as_ref().is_some_and(|s| s.running);
@@ -548,15 +626,15 @@ impl Timer {
                     }
                     Some(StartTarget::Candidate(picked)) => {
                         self.close_panel();
-                        spawn_start_bound(api, tx, picked.id);
+                        spawn_start_bound(api, tx, picked.id, focus);
                     }
                     Some(StartTarget::Create(title)) => {
                         self.close_panel();
-                        spawn_create_and_start(api, tx, title);
+                        spawn_create_and_start(api, tx, title, focus);
                     }
                     Some(StartTarget::JustStart) => {
                         self.close_panel();
-                        spawn_start_blank(api, tx);
+                        spawn_start_blank(api, tx, focus);
                     }
                     None => {}
                 }
@@ -731,6 +809,7 @@ impl Timer {
         let interval_now = snap.intervals_completed.unwrap_or(0) + 1;
 
         let idle = snap.idle == Some(true);
+        let offer = self.current_offer();
 
         let mut lines: Vec<Line<'static>> = Vec::new();
         // State label above the number.
@@ -748,6 +827,23 @@ impl Timer {
                 "‖  PAUSED — NOT COUNTING",
                 Style::default()
                     .fg(theme::WARN)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        } else if offer == Some(Offer::BackToWork) {
+            Line::from(Span::styled(
+                "○  BREAK'S OVER",
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        } else if matches!(offer, Some(Offer::Break { .. })) {
+            Line::from(Span::styled(
+                format!(
+                    "◆  INTERVAL {} COMPLETE",
+                    snap.intervals_completed.unwrap_or(0) + 1
+                ),
+                Style::default()
+                    .fg(theme::ACCENT)
                     .add_modifier(Modifier::BOLD),
             ))
         } else if on_break {
@@ -795,6 +891,31 @@ impl Timer {
             )));
             lines.push(Line::from(Span::styled(
                 "a paused timer never goes idle",
+                theme::muted(),
+            )));
+        } else if let Some(Offer::Break { long }) = offer {
+            let (mins, kind) = self
+                .settings
+                .as_ref()
+                .map(|s| {
+                    if long {
+                        (s.focus_long_break_minutes, "long break")
+                    } else {
+                        (s.focus_short_break_minutes, "break")
+                    }
+                })
+                .unwrap_or((0, "break"));
+            lines.push(Line::from(Span::styled(
+                format!("b start {mins}m {kind} · n skip — arm interval {interval_now}"),
+                theme::muted(),
+            )));
+            lines.push(Line::from(Span::styled(
+                "nothing fires on its own — the clock waits for you",
+                theme::muted(),
+            )));
+        } else if offer == Some(Offer::BackToWork) {
+            lines.push(Line::from(Span::styled(
+                format!("b back to work — interval {interval_now} arms only when you say so"),
                 theme::muted(),
             )));
         } else if on_break {
@@ -1053,12 +1174,22 @@ impl Timer {
         } else {
             Line::from(Span::styled("nothing running", theme::muted()))
         };
+        let focus_note = self
+            .settings
+            .as_ref()
+            .map(|s| {
+                format!(
+                    " · focus = your {}m work · {}m break · ×{}",
+                    s.focus_work_minutes, s.focus_short_break_minutes, s.focus_long_break_every
+                )
+            })
+            .unwrap_or_default();
         let header = vec![
             Line::from(vec![
                 Span::styled(" ● Stopwatch ", sw_style),
                 Span::raw("  "),
                 Span::styled(" ○ Focus ", focus_style),
-                Span::styled("   Tab switches mode", theme::muted()),
+                Span::styled(format!("   Tab switches mode{focus_note}"), theme::muted()),
             ]),
             context,
             Line::from(""),
@@ -1338,10 +1469,21 @@ impl Timer {
                 } else {
                     ("SPC", "pause")
                 };
-                if bound {
+                let in_focus = snap.is_some_and(|s| s.mode.as_deref() == Some("focus"));
+                if bound && in_focus {
+                    widgets::footer_hints(&[
+                        pp,
+                        ("b", "break"),
+                        ("n", "skip"),
+                        ("m", "mode"),
+                        ("s", "end & save"),
+                        ("h", "home"),
+                    ])
+                } else if bound {
                     widgets::footer_hints(&[
                         pp,
                         ("i", "instruments"),
+                        ("m", "mode"),
                         ("s", "end & save"),
                         ("h", "home"),
                     ])
@@ -1450,11 +1592,36 @@ fn spawn_load(api: &ApiClient, tx: &UnboundedSender<Action>) {
     });
 }
 
-fn spawn_start_blank(api: &ApiClient, tx: &UnboundedSender<Action>) {
+/// The picker's Focus choice: `start_timer` has no mode param, so a focus
+/// start is start + mode switch. A refused hop keeps the stopwatch start and
+/// says so.
+async fn into_mode(
+    api: &ApiClient,
+    tx: &UnboundedSender<Action>,
+    started: TimerSnapshot,
+    focus: bool,
+) -> TimerSnapshot {
+    if !focus {
+        return started;
+    }
+    match api.timer_mode("focus").await {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = tx.send(Action::Notify {
+                level: Level::Warning,
+                text: format!("started, but focus mode refused: {e}"),
+            });
+            started
+        }
+    }
+}
+
+fn spawn_start_blank(api: &ApiClient, tx: &UnboundedSender<Action>, focus: bool) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
         match api.start_timer(None, false).await {
             Ok(t) => {
+                let t = into_mode(&api, &tx, t, focus).await;
                 let _ = tx.send(Action::TimerLoaded(Box::new(t)));
             }
             Err(e) => {
@@ -1469,11 +1636,12 @@ fn spawn_start_blank(api: &ApiClient, tx: &UnboundedSender<Action>) {
 
 /// Start bound to an existing activity (no switch — a running timer should
 /// have routed through the conflict banner first; a racing 409 still surfaces).
-fn spawn_start_bound(api: &ApiClient, tx: &UnboundedSender<Action>, activity_id: i64) {
+fn spawn_start_bound(api: &ApiClient, tx: &UnboundedSender<Action>, activity_id: i64, focus: bool) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
         match api.start_timer(Some(activity_id), false).await {
             Ok(t) => {
+                let t = into_mode(&api, &tx, t, focus).await;
                 let _ = tx.send(Action::TimerLoaded(Box::new(t)));
             }
             Err(e) => {
@@ -1488,11 +1656,17 @@ fn spawn_start_bound(api: &ApiClient, tx: &UnboundedSender<Action>, activity_id:
 
 /// The conflict banner's second ⏎: stop & save the running timer server-side,
 /// then start the picked one.
-fn spawn_start_switch(api: &ApiClient, tx: &UnboundedSender<Action>, activity_id: i64) {
+fn spawn_start_switch(
+    api: &ApiClient,
+    tx: &UnboundedSender<Action>,
+    activity_id: i64,
+    focus: bool,
+) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
         match api.start_timer(Some(activity_id), true).await {
             Ok(t) => {
+                let t = into_mode(&api, &tx, t, focus).await;
                 let _ = tx.send(Action::TimerLoaded(Box::new(t)));
             }
             Err(e) => {
@@ -1507,7 +1681,12 @@ fn spawn_start_switch(api: &ApiClient, tx: &UnboundedSender<Action>, activity_id
 
 /// The "＋ new activity" row: a blank start followed by a bind-with-title —
 /// the same call pair the bind panel uses, so the server mints the activity.
-fn spawn_create_and_start(api: &ApiClient, tx: &UnboundedSender<Action>, title: String) {
+fn spawn_create_and_start(
+    api: &ApiClient,
+    tx: &UnboundedSender<Action>,
+    title: String,
+    focus: bool,
+) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
         if let Err(e) = api.start_timer(None, false).await {
@@ -1519,6 +1698,7 @@ fn spawn_create_and_start(api: &ApiClient, tx: &UnboundedSender<Action>, title: 
         }
         match api.bind_timer(None, Some(title)).await {
             Ok(t) => {
+                let t = into_mode(&api, &tx, t, focus).await;
                 let _ = tx.send(Action::TimerLoaded(Box::new(t)));
             }
             Err(e) => {
@@ -1681,6 +1861,73 @@ fn spawn_reclaim(api: &ApiClient, tx: &UnboundedSender<Action>, verb: ReclaimVer
                 let _ = tx.send(Action::Notify {
                     level: Level::Error,
                     text: format!("reclaim failed: {e}"),
+                });
+            }
+        }
+    });
+}
+
+/// Drive a focus phase transition; the fresh snapshot lands as TimerLoaded.
+fn spawn_phase(api: &ApiClient, tx: &UnboundedSender<Action>, to: &'static str) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        match api.timer_phase(to).await {
+            Ok(t) => {
+                let _ = tx.send(Action::TimerLoaded(Box::new(t)));
+            }
+            Err(e) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Warning,
+                    text: format!("phase change refused: {e}"),
+                });
+            }
+        }
+    });
+}
+
+/// `n` mid-work: bank the interval (work → break credits it) and immediately
+/// arm the next work phase — the skip is the pair, not a server verb.
+fn spawn_skip_interval(api: &ApiClient, tx: &UnboundedSender<Action>) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        if let Err(e) = api.timer_phase("break").await {
+            let _ = tx.send(Action::Notify {
+                level: Level::Warning,
+                text: format!("skip refused: {e}"),
+            });
+            return;
+        }
+        match api.timer_phase("work").await {
+            Ok(t) => {
+                let _ = tx.send(Action::TimerLoaded(Box::new(t)));
+                let _ = tx.send(Action::Notify {
+                    level: Level::Success,
+                    text: "interval banked — next one armed".into(),
+                });
+            }
+            Err(e) => {
+                let _ = tx.send(Action::TimerReload);
+                let _ = tx.send(Action::Notify {
+                    level: Level::Warning,
+                    text: format!("interval banked, but re-arming refused: {e}"),
+                });
+            }
+        }
+    });
+}
+
+/// Switch the running timer's mode in place (elapsed preserved).
+fn spawn_mode(api: &ApiClient, tx: &UnboundedSender<Action>, mode: &'static str) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        match api.timer_mode(mode).await {
+            Ok(t) => {
+                let _ = tx.send(Action::TimerLoaded(Box::new(t)));
+            }
+            Err(e) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Warning,
+                    text: format!("mode switch refused: {e}"),
                 });
             }
         }
@@ -1897,13 +2144,20 @@ mod tests {
                 ..
             })
         ));
-        // Submitting in focus mode surfaces the API gap instead of faking it.
-        let note = s.handle(Action::TimerBindSubmit, &api, &tx).await;
-        match note {
-            Some((Level::Info, text)) => assert!(text.contains("focus API"), "{text}"),
-            other => panic!("expected the focus-API note, got {other:?}"),
-        }
-        assert!(s.panel.is_some(), "the picker stays open to Tab back");
+        // Submitting in focus mode starts for real now (start + mode hop) —
+        // the picker closes like any accepted start.
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerCandidatesLoaded(vec![TimerCandidate {
+                id: 7,
+                title: "SICP reading".into(),
+            }]),
+        )
+        .await;
+        assert!(s.handle(Action::TimerBindSubmit, &api, &tx).await.is_none());
+        assert!(s.panel.is_none(), "a focus start closes the picker");
     }
 
     #[tokio::test]
@@ -2278,13 +2532,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mode_switch_names_the_missing_api() {
+    async fn mode_switch_needs_a_running_timer() {
         let (mut s, api, tx) = setup();
-        let note = s.handle(Action::TimerModeSwitch, &api, &tx).await;
-        match note {
-            Some((Level::Info, text)) => assert!(text.contains("focus API"), "{text}"),
-            other => panic!("expected the focus-API note, got {other:?}"),
-        }
+        // Nothing running → the warning; mode is picked at start.
+        let warn = s.handle(Action::TimerModeSwitch, &api, &tx).await;
+        assert!(matches!(warn, Some((Level::Warning, _))));
+
+        // Running → accepted (dispatches the in-place mode switch).
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true
+            })))),
+        )
+        .await;
+        assert!(s.handle(Action::TimerModeSwitch, &api, &tx).await.is_none());
     }
 
     #[tokio::test]
@@ -2414,15 +2678,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn skip_interval_names_the_gap_only_in_focus() {
+    async fn skip_and_break_route_by_phase() {
         let (mut s, api, tx) = setup();
-        // Stopwatch: `n` is a quiet no-op.
+        // Stopwatch: `n` stays quiet; `b` keeps its bind meaning (unbound →
+        // the bind panel).
         feed(
             &mut s,
             &api,
             &tx,
             Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
-                "running": true, "bound": true
+                "running": true, "bound": false
             })))),
         )
         .await;
@@ -2430,8 +2695,11 @@ mod tests {
             .handle(Action::TimerSkipInterval, &api, &tx)
             .await
             .is_none());
+        feed(&mut s, &api, &tx, Action::TimerBreak).await;
+        assert!(matches!(s.panel, Some(Panel::Bind { .. })));
+        feed(&mut s, &api, &tx, Action::TimerBindCancel).await;
 
-        // Focus: `n` names the missing API.
+        // Focus work: `n` and `b` dispatch phase calls (no warnings).
         feed(
             &mut s,
             &api,
@@ -2441,11 +2709,78 @@ mod tests {
             })))),
         )
         .await;
-        let note = s.handle(Action::TimerSkipInterval, &api, &tx).await;
-        match note {
-            Some((Level::Info, text)) => assert!(text.contains("focus API"), "{text}"),
-            other => panic!("expected the focus-API note, got {other:?}"),
-        }
+        assert!(s
+            .handle(Action::TimerSkipInterval, &api, &tx)
+            .await
+            .is_none());
+        assert!(s.handle(Action::TimerBreak, &api, &tx).await.is_none());
+        assert!(
+            s.panel.is_none(),
+            "b in focus is the phase toggle, not bind"
+        );
+    }
+
+    #[test]
+    fn offer_for_judges_the_finished_phase() {
+        let settings = knobs("trim");
+        let now = jiff::Timestamp::from_second(10_000).unwrap();
+        let at = |secs_ago: i64| {
+            jiff::Timestamp::from_second(10_000 - secs_ago)
+                .unwrap()
+                .to_string()
+        };
+
+        // Work interval past 50m → the break offer; the 4th is long.
+        let work_done = snapshot(serde_json::json!({
+            "running": true, "mode": "focus", "phase": "work",
+            "intervals_completed": 2, "phase_started_at": at(50 * 60)
+        }));
+        assert_eq!(
+            offer_for(&work_done, &settings, now),
+            Some(Offer::Break { long: false })
+        );
+        let fourth = snapshot(serde_json::json!({
+            "running": true, "mode": "focus", "phase": "work",
+            "intervals_completed": 3, "phase_started_at": at(50 * 60)
+        }));
+        assert_eq!(
+            offer_for(&fourth, &settings, now),
+            Some(Offer::Break { long: true })
+        );
+
+        // Mid-interval → no offer; paused → never an offer.
+        let mid = snapshot(serde_json::json!({
+            "running": true, "mode": "focus", "phase": "work",
+            "phase_started_at": at(10 * 60)
+        }));
+        assert_eq!(offer_for(&mid, &settings, now), None);
+        let paused = snapshot(serde_json::json!({
+            "running": true, "paused": true, "mode": "focus", "phase": "work",
+            "phase_started_at": at(90 * 60)
+        }));
+        assert_eq!(offer_for(&paused, &settings, now), None);
+
+        // A short break past 10m → back to work.
+        let break_done = snapshot(serde_json::json!({
+            "running": true, "mode": "focus", "phase": "break",
+            "intervals_completed": 3, "phase_started_at": at(10 * 60)
+        }));
+        assert_eq!(
+            offer_for(&break_done, &settings, now),
+            Some(Offer::BackToWork)
+        );
+        // The 4th (long) break still has 10 of its 20 minutes left.
+        let long_break_running = snapshot(serde_json::json!({
+            "running": true, "mode": "focus", "phase": "break",
+            "intervals_completed": 4, "phase_started_at": at(10 * 60)
+        }));
+        assert_eq!(offer_for(&long_break_running, &settings, now), None);
+
+        // Stopwatch never offers.
+        let stopwatch = snapshot(serde_json::json!({
+            "running": true, "phase_started_at": at(90 * 60)
+        }));
+        assert_eq!(offer_for(&stopwatch, &settings, now), None);
     }
 
     fn knobs(default_reclaim: &str) -> crate::api::TimerSettings {
