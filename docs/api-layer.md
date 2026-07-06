@@ -68,7 +68,9 @@ modules, keeping transport generic and the domain calls local:
   `intervals_completed`/`idle`/`last_interacted_at`/`phase_started_at` and the
   overrun trio `planned_minutes`/`logged_minutes`/`over`, all serde-defaulted
   so older payloads decode), `timer_settings()` (`GET /api/v1/timer/settings`
-  — the twelve read-only per-user knobs), `start_timer(activity_id, switch)`
+  — the twelve read-only per-user knobs), `heartbeat_timer()`
+  (`POST /api/v1/timer/heartbeat` — the presence beat that keeps the idle
+  guard from tripping on real in-TUI work), `start_timer(activity_id, switch)`
   (`switch` stops & saves the running timer first),
   `pause_timer`/`resume_timer`/`stop_timer` (member `POST`s; stop refuses on
   an unbound timer), `bind_timer`, `timer_candidates(q)` (bare `Vec`),

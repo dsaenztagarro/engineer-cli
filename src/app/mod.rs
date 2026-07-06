@@ -41,6 +41,11 @@ const TICK: Duration = Duration::from_millis(250);
 /// baseline, so the cell advances smoothly without a request per second.
 const TIMER_POLL_INTERVAL: Duration = Duration::from_secs(15);
 
+/// The most often a key in the TUI marks presence (the idle-guard heartbeat).
+/// Matches the web pill's once-a-minute throttle — the server beat is
+/// presence-only, so the rate limit is the client's job.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+
 pub struct App {
     pub config: Config,
     pub api: ApiClient,
@@ -68,6 +73,8 @@ pub struct App {
     /// Timer id already pinged for overrun — the ping fires once per timer,
     /// never again on later polls of the same clock.
     pub overrun_pinged: Option<i64>,
+    /// When the last presence heartbeat was sent, to honour `HEARTBEAT_INTERVAL`.
+    pub heartbeat_last: Instant,
 }
 
 pub async fn run(config: Config) -> Result<()> {
@@ -112,6 +119,7 @@ async fn run_loop(
         timer_last_poll: Instant::now(),
         settings: None,
         overrun_pinged: None,
+        heartbeat_last: Instant::now(),
     };
 
     // Kick off initial loads (only meaningful once authenticated).
@@ -134,6 +142,11 @@ async fn run_loop(
             }
             maybe_event = events.next() => {
                 if let Some(Ok(ev)) = maybe_event {
+                    // A key in the TUI is the CLI's honest "still working"
+                    // signal — beat presence before the event is interpreted.
+                    if matches!(ev, crossterm::event::Event::Key(_)) {
+                        app.beat_presence_if_active();
+                    }
                     if let Some(action) = event::translate(&mut app, ev) {
                         app.handle(action).await;
                     }
@@ -457,6 +470,30 @@ impl App {
         }
     }
 
+    /// A key in the TUI marks presence: while a timer is running, unpaused,
+    /// and not already idle, POST a heartbeat so the idle guard reflects real
+    /// in-TUI work. Throttled to `HEARTBEAT_INTERVAL` (the server beat is
+    /// presence-only). Deliberately silent once the timer has gone idle — the
+    /// reclaim screen owns that decision (its `keep` verb is the explicit "I
+    /// was present"), so navigating the reclaim list never auto-resolves it.
+    fn beat_presence_if_active(&mut self) {
+        let active = self.user.is_some()
+            && self
+                .timer
+                .as_ref()
+                .is_some_and(|t| t.running && !t.paused && t.idle != Some(true));
+        if !active || self.heartbeat_last.elapsed() < HEARTBEAT_INTERVAL {
+            return;
+        }
+        self.heartbeat_last = Instant::now();
+        let api = self.api.clone();
+        tokio::spawn(async move {
+            if let Err(e) = api.heartbeat_timer().await {
+                tracing::debug!(target: "engineer_cli::api", error = %e, "heartbeat failed");
+            }
+        });
+    }
+
     /// Re-poll the header timer snapshot when a poll is due and we're signed in.
     fn poll_timer_if_due(&mut self) {
         if self.user.is_some() && self.timer_last_poll.elapsed() >= TIMER_POLL_INTERVAL {
@@ -507,6 +544,7 @@ mod tests {
             timer_last_poll: Instant::now(),
             settings: None,
             overrun_pinged: None,
+            heartbeat_last: Instant::now(),
         };
         (app, rx)
     }
@@ -548,6 +586,67 @@ mod tests {
         let (mut app, _rx) = test_app(None);
         app.handle(Action::SetUser("bob@example.com".into())).await;
         assert_eq!(app.user.as_deref(), Some("bob@example.com"));
+    }
+
+    fn idle_snapshot() -> Timer {
+        serde_json::from_value(serde_json::json!({
+            "running": true, "bound": true, "paused": false, "idle": true,
+            "elapsed_seconds": 9660,
+        }))
+        .unwrap()
+    }
+
+    /// A beat resets `heartbeat_last` to ~now; skipping it leaves the old
+    /// instant, so `elapsed()` distinguishes the two.
+    fn beat_fired(app: &App) -> bool {
+        app.heartbeat_last.elapsed() < HEARTBEAT_INTERVAL
+    }
+
+    #[tokio::test]
+    async fn presence_beats_for_a_running_timer_past_the_throttle() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.timer = Some(running_timer(300));
+        app.heartbeat_last = Instant::now() - HEARTBEAT_INTERVAL - Duration::from_secs(1);
+        app.beat_presence_if_active();
+        assert!(beat_fired(&app), "a key past the throttle marks presence");
+    }
+
+    #[tokio::test]
+    async fn presence_is_throttled_within_the_window() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.timer = Some(running_timer(300));
+        let recent = Instant::now() - Duration::from_secs(5);
+        app.heartbeat_last = recent;
+        app.beat_presence_if_active();
+        assert_eq!(app.heartbeat_last, recent, "within the window, no beat");
+    }
+
+    #[tokio::test]
+    async fn presence_never_beats_once_idle_so_reclaim_owns_the_decision() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.timer = Some(idle_snapshot());
+        app.heartbeat_last = Instant::now() - HEARTBEAT_INTERVAL - Duration::from_secs(1);
+        app.beat_presence_if_active();
+        assert!(
+            !beat_fired(&app),
+            "an idle timer's reclaim decision is not auto-resolved by a keypress"
+        );
+    }
+
+    #[tokio::test]
+    async fn presence_never_beats_without_a_running_timer_or_a_user() {
+        // No timer.
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.heartbeat_last = Instant::now() - HEARTBEAT_INTERVAL - Duration::from_secs(1);
+        app.beat_presence_if_active();
+        assert!(!beat_fired(&app), "nothing running → no presence beat");
+
+        // Running timer but signed out.
+        let (mut app, _rx) = test_app(None);
+        app.timer = Some(running_timer(300));
+        app.heartbeat_last = Instant::now() - HEARTBEAT_INTERVAL - Duration::from_secs(1);
+        app.beat_presence_if_active();
+        assert!(!beat_fired(&app), "signed out → no presence beat");
     }
 
     #[tokio::test]

@@ -161,6 +161,14 @@ impl ApiClient {
         self.get("/api/v1/timer/settings", &[]).await
     }
 
+    /// Mark presence — the CLI's honest "the user is working in the TUI" beat,
+    /// the twin of the web pill's heartbeat. Keeps the idle guard from tripping
+    /// on real in-TUI work; the caller throttles to at most once a minute.
+    /// 404 when nothing is running.
+    pub async fn heartbeat_timer(&self) -> Result<(), ApiError> {
+        self.post_empty("/api/v1/timer/heartbeat").await
+    }
+
     /// Drive a focus phase transition — transitions never fire on their own;
     /// the server validates and applies. `to` is `"work"` or `"break"`.
     /// 422 when the transition isn't available from the current phase.
@@ -404,6 +412,19 @@ mod tests {
             Reclaimed::Stopped(s) => assert_eq!(s.minutes, 74),
             other => panic!("expected a written segment, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn heartbeat_posts_to_the_presence_endpoint() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/heartbeat"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        client(&server).heartbeat_timer().await.unwrap();
     }
 
     #[tokio::test]
