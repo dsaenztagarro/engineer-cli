@@ -35,7 +35,21 @@ engineer            # launch TUI (default); prompts for login if needed
 engineer login      # run the OAuth flow from the shell, store refresh token in OS keyring
 engineer logout     # revoke + delete keyring entry
 engineer whoami     # print the authenticated user
+
+engineer timer                     # one-line read of the live timer (--json for the full read)
+engineer timer status [--short]    # fixed-order status string; --short = glyph + clock for status bars
+engineer timer start [query]       # start — fuzzy-binds to an activity, or unnamed when bare
+engineer timer start <q> --switch  # stop & save the running timer, then start
+engineer timer toggle              # pause ⇄ resume (bind it in tmux/zellij)
+engineer timer pause|resume|stop   # stop refuses on an unbound timer — bind or discard first
+engineer timer bind <query>        # name a running unnamed timer
+engineer timer discard [--force]   # throw the timer away; past ~2 minutes requires --force
 ```
+
+Timer exit codes answer "is the clock counting?": `0` counting (running / focus
+work) · `1` nothing running (and verb refusals) · `3` idle, reclaim pending ·
+`4` not counting (paused / focus break). Output is plain when piped — ANSI
+colour only on a TTY, and never when `NO_COLOR` is set.
 
 ## How authentication works
 
