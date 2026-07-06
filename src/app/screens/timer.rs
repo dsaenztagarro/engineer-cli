@@ -126,6 +126,10 @@ pub(crate) fn live_elapsed(snap: &TimerSnapshot, base: Option<Instant>) -> i64 {
     }
 }
 
+/// Past this much elapsed work, discarding asks twice — in the TUI a second
+/// `d`, headless `--force`. Under it, a mis-tap discards instantly.
+pub(crate) const DISCARD_CONFIRM_SECS: i64 = 120;
+
 /// What a bind submission would act on, resolved from the current selection.
 enum BindTarget {
     Existing(i64),
@@ -144,7 +148,15 @@ enum PickerMode {
 /// in (bound / new activity / just start), plus the stop-&-switch confirm
 /// when a timer is already running.
 enum Panel {
-    Bind,
+    Bind {
+        /// Bind-at-stop (§Bind at stop): a successful bind immediately saves —
+        /// the server's bound-only stop, with the picker in between.
+        save_on_bind: bool,
+        /// Whether opening the panel paused the clock (the design's frozen
+        /// moment). Esc resumes only what this panel froze — a manually
+        /// paused timer stays paused.
+        froze: bool,
+    },
     Start {
         mode: PickerMode,
         confirm: Option<TimerCandidate>,
@@ -184,6 +196,9 @@ pub struct Timer {
     /// The open live-search panel (bind or start picker), if any. The panel
     /// owns the keys while open; the clock underneath runs untouched.
     panel: Option<Panel>,
+    /// A `d` past the confirm fence arms this; only the very next `d`
+    /// confirms the discard.
+    discard_armed: bool,
     query: String,
     candidates: Vec<TimerCandidate>,
     cand_state: ListState,
@@ -230,6 +245,11 @@ impl Timer {
         api: &ApiClient,
         tx: &UnboundedSender<Action>,
     ) -> Option<(Level, String)> {
+        // A discard confirm is strictly two consecutive `d`s — anything else
+        // disarms it.
+        if self.discard_armed && !matches!(action, Action::TimerDiscard) {
+            self.discard_armed = false;
+        }
         match action {
             // Snapshot update (from on_enter, the header poll, or a completed
             // op). A pending stop confirmation is preserved — the user hasn't
@@ -246,7 +266,7 @@ impl Timer {
                 };
                 // A background poll must not close the start picker mid-browse;
                 // the bind panel closes once its job is done (bound or gone).
-                if matches!(self.panel, Some(Panel::Bind)) && (t.bound || !t.running) {
+                if matches!(self.panel, Some(Panel::Bind { .. })) && (t.bound || !t.running) {
                     self.close_panel();
                 }
                 self.base = Some(Instant::now());
@@ -262,10 +282,8 @@ impl Timer {
                     if self.snapshot.as_ref().is_some_and(|s| s.bound) {
                         spawn_stop(api, tx);
                     } else {
-                        return Some((
-                            Level::Warning,
-                            "bind the timer before saving (`/` bind · `d` discard)".into(),
-                        ));
+                        // §Bind at stop: freeze the clock and name it to save it.
+                        self.open_bind_at_stop(api, tx);
                     }
                 }
                 _ => {}
@@ -295,11 +313,17 @@ impl Timer {
                 if self.snapshot.as_ref().is_some_and(|s| s.bound) {
                     spawn_stop(api, tx);
                 } else {
-                    return Some((
-                        Level::Warning,
-                        "bind the timer before stopping (or `d` to discard)".into(),
-                    ));
+                    self.open_bind_at_stop(api, tx);
                 }
+            }
+            Action::TimerUndo => {
+                if let Stage::Stopped { result, .. } = &self.stage {
+                    spawn_undo(api, tx, result.segment_id);
+                }
+            }
+            Action::TimerUndone => {
+                self.stage = Stage::Loading;
+                spawn_load(api, tx);
             }
             Action::TimerStopped(result) => {
                 let label = self.snapshot.as_ref().and_then(|s| s.label.clone());
@@ -316,10 +340,28 @@ impl Timer {
                 }
             }
             Action::TimerDiscard => {
-                let unbound = self.snapshot.as_ref().is_some_and(|s| !s.bound);
-                if matches!(self.stage, Stage::Live) && unbound {
-                    spawn_discard(api, tx);
+                if !matches!(self.stage, Stage::Live) {
+                    return None;
                 }
+                let elapsed = self
+                    .snapshot
+                    .as_ref()
+                    .map(|s| live_elapsed(s, self.base))
+                    .unwrap_or(0);
+                // Past ~2 minutes real work is at stake: ask twice (§Saved &
+                // undo). A mis-tap discards instantly.
+                if elapsed > DISCARD_CONFIRM_SECS && !self.discard_armed {
+                    self.discard_armed = true;
+                    return Some((
+                        Level::Warning,
+                        format!(
+                            "discard {} of work? `d` again to confirm",
+                            widgets::fmt_elapsed(elapsed)
+                        ),
+                    ));
+                }
+                self.discard_armed = false;
+                spawn_discard(api, tx);
             }
             Action::TimerBindBegin => match self.stage {
                 // Unbound: name the running timer in place. Bound: open the
@@ -327,7 +369,14 @@ impl Timer {
                 // the same picker `s` opens.
                 Stage::Live => {
                     if self.snapshot.as_ref().is_some_and(|s| !s.bound) {
-                        self.open_panel(Panel::Bind, api, tx);
+                        self.open_panel(
+                            Panel::Bind {
+                                save_on_bind: false,
+                                froze: false,
+                            },
+                            api,
+                            tx,
+                        );
                     } else {
                         self.open_start_panel(api, tx);
                     }
@@ -337,14 +386,24 @@ impl Timer {
             },
             Action::TimerBindCancel => {
                 // Esc steps back one level: a pending switch-confirm first,
-                // then the panel itself — the clock is never touched.
-                if let Some(Panel::Start { confirm, .. }) = self.panel.as_mut() {
-                    if confirm.is_some() {
+                // then the panel itself. Leaving bind-at-stop resumes only
+                // what the panel froze.
+                match self.panel.as_mut() {
+                    Some(Panel::Start { confirm, .. }) if confirm.is_some() => {
                         *confirm = None;
                         return None;
                     }
+                    Some(Panel::Bind {
+                        save_on_bind: true,
+                        froze,
+                    }) => {
+                        if *froze {
+                            spawn_op(api, tx, TimerOp::Resume);
+                        }
+                        self.close_panel();
+                    }
+                    _ => self.close_panel(),
                 }
-                self.close_panel();
             }
             Action::TimerPickerToggleMode => {
                 if let Some(Panel::Start { mode, .. }) = self.panel.as_mut() {
@@ -386,10 +445,15 @@ impl Timer {
         tx: &UnboundedSender<Action>,
     ) -> Option<(Level, String)> {
         match self.panel.as_mut() {
-            Some(Panel::Bind) => {
+            Some(Panel::Bind { save_on_bind, .. }) => {
+                let save = *save_on_bind;
                 if let Some(target) = self.bind_target() {
                     self.close_panel();
-                    spawn_bind(api, tx, target);
+                    if save {
+                        spawn_bind_then_stop(api, tx, target);
+                    } else {
+                        spawn_bind(api, tx, target);
+                    }
                 }
                 None
             }
@@ -453,6 +517,23 @@ impl Timer {
         );
     }
 
+    /// §Bind at stop: freeze the clock (pause, unless already paused) and open
+    /// the bind picker with save-on-bind armed. Esc resumes what was frozen.
+    fn open_bind_at_stop(&mut self, api: &ApiClient, tx: &UnboundedSender<Action>) {
+        let already_paused = self.snapshot.as_ref().is_some_and(|s| s.paused);
+        if !already_paused {
+            spawn_op(api, tx, TimerOp::Pause);
+        }
+        self.open_panel(
+            Panel::Bind {
+                save_on_bind: true,
+                froze: !already_paused,
+            },
+            api,
+            tx,
+        );
+    }
+
     fn close_panel(&mut self) {
         self.panel = None;
         self.query.clear();
@@ -467,7 +548,7 @@ impl Timer {
         let has_query = !self.query.trim().is_empty();
         let running = self.snapshot.as_ref().is_some_and(|s| s.running);
         match self.panel {
-            Some(Panel::Bind) => (has_query, false),
+            Some(Panel::Bind { .. }) => (has_query, false),
             Some(Panel::Start { .. }) if !running => (has_query, true),
             Some(Panel::Start { .. }) => (false, false),
             None => (false, false),
@@ -732,7 +813,9 @@ impl Timer {
                     Line::from(vec![
                         Span::raw("Press "),
                         Span::styled("↵", theme::focused()),
-                        Span::raw(" to dismiss."),
+                        Span::raw(" to dismiss, or "),
+                        Span::styled("u", theme::focused()),
+                        Span::raw(" to undo — deletes this segment."),
                     ]),
                 ];
                 frame.render_widget(
@@ -740,7 +823,7 @@ impl Timer {
                     area,
                 );
             }
-            Stage::Live if matches!(self.panel, Some(Panel::Bind)) => {
+            Stage::Live if matches!(self.panel, Some(Panel::Bind { .. })) => {
                 self.render_bind_panel(frame, area)
             }
             Stage::Live => self.render_watch_face(frame, area),
@@ -867,17 +950,37 @@ impl Timer {
     }
 
     fn render_bind_panel(&mut self, frame: &mut Frame, area: Rect) {
-        let block = bordered("Timer · bind");
+        let save_on_bind = matches!(
+            self.panel,
+            Some(Panel::Bind {
+                save_on_bind: true,
+                ..
+            })
+        );
+        let block = bordered(if save_on_bind {
+            "Timer · name it to save it"
+        } else {
+            "Timer · bind"
+        });
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(0)])
+            .constraints([Constraint::Length(4), Constraint::Min(0)])
             .split(inner);
 
+        let context = if save_on_bind {
+            Line::from(Span::styled(
+                "clock frozen — an unbound timer can't be saved: bind it, or Esc to keep running",
+                Style::default().fg(theme::WARN),
+            ))
+        } else {
+            Line::from("")
+        };
         let header = vec![
             self.elapsed_line(),
+            context,
             Line::from(""),
             Line::from(vec![
                 Span::raw("bind to  "),
@@ -926,11 +1029,29 @@ impl Timer {
         match &self.stage {
             Stage::Loading => widgets::footer_hints(&[("h", "home")]),
             Stage::Absent => widgets::footer_hints(&[("s", "start"), ("h", "home")]),
-            Stage::Stopped { .. } => widgets::footer_hints(&[("↵", "dismiss"), ("h", "home")]),
-            Stage::Live if matches!(self.panel, Some(Panel::Bind)) => Line::from(Span::styled(
-                "type to search · ↑/↓ pick · ↵ bind/create · Esc cancel",
-                theme::muted(),
-            )),
+            Stage::Stopped { .. } => {
+                widgets::footer_hints(&[("u", "undo"), ("↵", "dismiss"), ("h", "home")])
+            }
+            Stage::Live
+                if matches!(
+                    self.panel,
+                    Some(Panel::Bind {
+                        save_on_bind: true,
+                        ..
+                    })
+                ) =>
+            {
+                Line::from(Span::styled(
+                    "type to search · ↑/↓ pick · ⏎ bind & save · Esc keep running",
+                    theme::muted(),
+                ))
+            }
+            Stage::Live if matches!(self.panel, Some(Panel::Bind { .. })) => {
+                Line::from(Span::styled(
+                    "type to search · ↑/↓ pick · ↵ bind/create · Esc cancel",
+                    theme::muted(),
+                ))
+            }
             Stage::Live => {
                 let snap = self.snapshot.as_ref();
                 let paused = snap.is_some_and(|s| s.paused);
@@ -1219,6 +1340,67 @@ fn spawn_bind(api: &ApiClient, tx: &UnboundedSender<Action>, target: BindTarget)
     });
 }
 
+/// §Bind at stop's ⏎: bind (existing or minted-from-title), then stop — the
+/// server's bound-only save with the picker in between. The bind result is
+/// forwarded first so the stop confirmation can name the activity.
+fn spawn_bind_then_stop(api: &ApiClient, tx: &UnboundedSender<Action>, target: BindTarget) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        let bound = match target {
+            BindTarget::Existing(id) => api.bind_timer(Some(id), None).await,
+            BindTarget::Create(title) => api.bind_timer(None, Some(title)).await,
+        };
+        match bound {
+            Ok(t) => {
+                let _ = tx.send(Action::TimerLoaded(Box::new(t)));
+            }
+            Err(e) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Error,
+                    text: format!("bind failed: {e}"),
+                });
+                return;
+            }
+        }
+        match api.stop_timer().await {
+            Ok(stopped) => {
+                let _ = tx.send(Action::TimerStopped(Box::new(stopped)));
+                let _ = tx.send(Action::TimerCleared);
+            }
+            Err(e) => {
+                let _ = tx.send(Action::TimerReload);
+                let _ = tx.send(Action::Notify {
+                    level: Level::Error,
+                    text: format!("bound, but the save failed: {e}"),
+                });
+            }
+        }
+    });
+}
+
+/// `u` on the stop confirmation: delete the just-written segment — the exact
+/// inverse of the save, while the confirmation still shows.
+fn spawn_undo(api: &ApiClient, tx: &UnboundedSender<Action>, segment_id: i64) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        match api.delete_segment(segment_id).await {
+            Ok(()) => {
+                let _ = tx.send(Action::TimerUndone);
+                let _ = tx.send(Action::Notify {
+                    level: Level::Success,
+                    text: "segment removed — nothing written".into(),
+                });
+            }
+            Err(e) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Error,
+                    text: format!("undo failed: {e}"),
+                });
+            }
+        }
+    });
+}
+
 fn spawn_candidates(api: &ApiClient, tx: &UnboundedSender<Action>, query: String) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
@@ -1306,7 +1488,7 @@ mod tests {
         )
         .await;
         feed(&mut s, &api, &tx, Action::TimerBindBegin).await;
-        assert!(matches!(s.panel, Some(Panel::Bind)));
+        assert!(matches!(s.panel, Some(Panel::Bind { .. })));
 
         // Type a query, then candidates arrive.
         feed(&mut s, &api, &tx, Action::TimerBindInput('s')).await;
@@ -1628,7 +1810,7 @@ mod tests {
     #[tokio::test]
     async fn save_key_is_stage_dependent() {
         let (mut s, api, tx) = setup();
-        // Live + unbound → the bind-first warning, no stop.
+        // Live + unbound → bind-at-stop: the frozen bind picker, save-armed.
         feed(
             &mut s,
             &api,
@@ -1638,11 +1820,18 @@ mod tests {
             })))),
         )
         .await;
-        let warn = s.handle(Action::TimerSave, &api, &tx).await;
-        match warn {
-            Some((Level::Warning, text)) => assert!(text.contains("bind"), "{text}"),
-            other => panic!("expected the bind-first warning, got {other:?}"),
-        }
+        assert!(s.handle(Action::TimerSave, &api, &tx).await.is_none());
+        assert!(matches!(
+            s.panel,
+            Some(Panel::Bind {
+                save_on_bind: true,
+                froze: true,
+            })
+        ));
+
+        // Esc keeps it running: the panel closes (and resume is spawned).
+        feed(&mut s, &api, &tx, Action::TimerBindCancel).await;
+        assert!(s.panel.is_none());
 
         // Live + bound → accepted (spawns the stop op, no warning).
         feed(
@@ -1655,6 +1844,108 @@ mod tests {
         )
         .await;
         assert!(s.handle(Action::TimerSave, &api, &tx).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn bind_at_stop_does_not_refreeze_a_paused_clock() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": false, "paused": true
+            })))),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::TimerSave).await;
+        // Already paused → the panel did not freeze, so Esc must not resume.
+        assert!(matches!(
+            s.panel,
+            Some(Panel::Bind {
+                save_on_bind: true,
+                froze: false,
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn discard_past_the_fence_asks_twice() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "elapsed_seconds": 2460
+            })))),
+        )
+        .await;
+        // First `d` arms the confirm and warns; nothing is discarded.
+        let warn = s.handle(Action::TimerDiscard, &api, &tx).await;
+        match warn {
+            Some((Level::Warning, text)) => assert!(text.contains("again to confirm"), "{text}"),
+            other => panic!("expected the discard confirm, got {other:?}"),
+        }
+        assert!(s.discard_armed);
+        // The second consecutive `d` goes through (no further warning).
+        assert!(s.handle(Action::TimerDiscard, &api, &tx).await.is_none());
+        assert!(!s.discard_armed);
+    }
+
+    #[tokio::test]
+    async fn any_other_key_disarms_the_discard_confirm() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "elapsed_seconds": 2460
+            })))),
+        )
+        .await;
+        s.handle(Action::TimerDiscard, &api, &tx).await;
+        assert!(s.discard_armed);
+        feed(&mut s, &api, &tx, Action::TimerToggleRail).await;
+        assert!(!s.discard_armed, "another action disarms");
+        // The next `d` warns again instead of discarding.
+        assert!(s.handle(Action::TimerDiscard, &api, &tx).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn short_timers_discard_instantly() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": false, "elapsed_seconds": 45
+            })))),
+        )
+        .await;
+        assert!(s.handle(Action::TimerDiscard, &api, &tx).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn undo_reloads_into_the_empty_face() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerStopped(Box::new(TimerStopped {
+                stopped: true,
+                activity_id: 9,
+                segment_id: 41,
+                minutes: 25,
+            })),
+        )
+        .await;
+        assert!(matches!(s.stage, Stage::Stopped { .. }));
+        feed(&mut s, &api, &tx, Action::TimerUndone).await;
+        assert!(matches!(s.stage, Stage::Loading));
     }
 
     #[tokio::test]

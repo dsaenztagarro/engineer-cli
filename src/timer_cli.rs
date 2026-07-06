@@ -278,8 +278,8 @@ async fn bind(api: &ApiClient, query: &str) -> Result<Outcome, ApiError> {
 }
 
 /// Discards ask twice in the TUI past ~2 minutes; headless, the second ask is
-/// `--force`.
-const DISCARD_CONFIRM_SECS: i64 = 120;
+/// `--force`. One shared fence with the Timer screen.
+use crate::app::screens::timer::DISCARD_CONFIRM_SECS;
 
 async fn discard(api: &ApiClient, force: bool) -> Result<Outcome, ApiError> {
     let timer = api.timer().await?;
