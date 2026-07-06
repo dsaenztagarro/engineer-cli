@@ -17,6 +17,7 @@ mod error;
 mod notes;
 mod progress;
 mod review;
+mod segments;
 mod timer;
 
 pub use activities::{Activity, ActivityCreate, ActivityFilters};
