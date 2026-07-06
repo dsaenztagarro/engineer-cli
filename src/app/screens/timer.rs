@@ -254,6 +254,9 @@ pub struct Timer {
     rail_hidden: bool,
     /// Today's logged minutes (summed from today's activities) for the rail.
     today_minutes: Option<u32>,
+    /// The week's per-day minutes (mon→sun) for the rail's sparkline; empty
+    /// until the progress read lands (or on servers without `by_day`).
+    week: Vec<crate::api::DayMinutes>,
     /// The open live-search panel (bind or start picker), if any. The panel
     /// owns the keys while open; the clock underneath runs untouched.
     panel: Option<Panel>,
@@ -272,6 +275,7 @@ impl Timer {
         self.stage = Stage::Loading;
         spawn_load(api, tx);
         spawn_today(api, tx);
+        spawn_week(api, tx);
         spawn_settings(api, tx);
     }
 
@@ -440,6 +444,7 @@ impl Timer {
                 }
             },
             Action::TimerTodayLoaded(minutes) => self.today_minutes = Some(minutes),
+            Action::TimerWeekLoaded(days) => self.week = days,
             Action::SettingsLoaded(s) => self.settings = Some(*s),
             Action::TimerPauseResume => {
                 if matches!(self.stage, Stage::Live) {
@@ -1031,6 +1036,40 @@ impl Timer {
                 ),
                 theme::muted(),
             )));
+            lines.push(Line::from(""));
+        }
+
+        // THIS WEEK — the mon→sun sparkline over the progress by_day series;
+        // absent on servers without it (the block degrades to TODAY below).
+        if !self.week.is_empty() {
+            let today = jiff::Zoned::now().date();
+            let max = self
+                .week
+                .iter()
+                .map(|d| d.minutes)
+                .max()
+                .unwrap_or(0)
+                .max(1);
+            const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+            let mut spans: Vec<Span<'static>> = vec![];
+            for day in &self.week {
+                let idx = if day.minutes == 0 {
+                    0
+                } else {
+                    (((day.minutes as usize) * (BARS.len() - 1)) / max as usize).max(1)
+                };
+                let style = if day.date == today {
+                    Style::default()
+                        .fg(theme::ACCENT)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme::SUCCESS)
+                };
+                spans.push(Span::styled(BARS[idx].to_string(), style));
+            }
+            lines.push(Line::from(Span::styled("THIS WEEK", theme::muted())));
+            lines.push(Line::from(spans));
+            lines.push(Line::from(Span::styled("mon → sun", theme::muted())));
             lines.push(Line::from(""));
         }
 
@@ -1961,6 +2000,17 @@ fn spawn_mode(api: &ApiClient, tx: &UnboundedSender<Action>, mode: &'static str)
     });
 }
 
+/// The week's per-day minutes for the rail's sparkline — the current week's
+/// progress read, reduced to `by_day`.
+fn spawn_week(api: &ApiClient, tx: &UnboundedSender<Action>) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        if let Ok(progress) = api.get_progress(None).await {
+            let _ = tx.send(Action::TimerWeekLoaded(progress.by_day));
+        }
+    });
+}
+
 /// The per-user knobs for this screen's copy and the reclaim default.
 fn spawn_settings(api: &ApiClient, tx: &UnboundedSender<Action>) {
     let (api, tx) = (api.clone(), tx.clone());
@@ -2782,6 +2832,57 @@ mod tests {
             content.contains("never stops anything"),
             "no auto-stop note"
         );
+    }
+
+    #[tokio::test]
+    async fn rail_sparkline_renders_the_week_and_degrades_without_it() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "label": "Read DDIA",
+                "elapsed_seconds": 600
+            })))),
+        )
+        .await;
+
+        // Without by_day the rail shows only the TODAY block.
+        let render = |s: &mut Timer| {
+            let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+            terminal
+                .draw(|frame| s.render(frame, frame.area()))
+                .unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol().to_string())
+                .collect::<String>()
+        };
+        let content = render(&mut s);
+        assert!(!content.contains("THIS WEEK"), "degrades without by_day");
+        assert!(content.contains("TODAY"));
+
+        let days: Vec<crate::api::DayMinutes> = serde_json::from_value(serde_json::json!([
+            { "date": "2026-07-06", "minutes": 60 },
+            { "date": "2026-07-07", "minutes": 227 },
+            { "date": "2026-07-08", "minutes": 0 },
+            { "date": "2026-07-09", "minutes": 0 },
+            { "date": "2026-07-10", "minutes": 0 },
+            { "date": "2026-07-11", "minutes": 0 },
+            { "date": "2026-07-12", "minutes": 0 }
+        ]))
+        .unwrap();
+        feed(&mut s, &api, &tx, Action::TimerWeekLoaded(days)).await;
+        let content = render(&mut s);
+        assert!(content.contains("THIS WEEK"), "sparkline block present");
+        assert!(content.contains("mon → sun"));
+        assert!(content.contains('█'), "the max day renders a full bar");
     }
 
     #[test]

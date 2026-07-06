@@ -27,7 +27,7 @@ pub use books::{Book, BookChapter, BookStatus, BookUpdate};
 pub use envelope::List;
 pub use error::{ApiError, FieldError};
 pub use notes::{Anchor, Note, NoteFilters, NoteInput};
-pub use progress::{PaceState, Progress, ProgressReading};
+pub use progress::{DayMinutes, PaceState, Progress, ProgressReading};
 pub use review::{Dashboard, RateResult, Topic, TopicFilters};
 pub use segments::SegmentUpdate;
 pub use timer::{ReclaimVerb, Reclaimed, Timer, TimerCandidate, TimerSettings, TimerStopped};

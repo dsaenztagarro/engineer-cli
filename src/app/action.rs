@@ -1,6 +1,6 @@
 use crate::api::{
-    Activity, AuditAcknowledged, AuditRead, Book, BookChapter, Dashboard, Note, Progress,
-    RateResult, Timer, TimerCandidate, TimerSettings, TimerStopped, Topic,
+    Activity, AuditAcknowledged, AuditRead, Book, BookChapter, Dashboard, DayMinutes, Note,
+    Progress, RateResult, Timer, TimerCandidate, TimerSettings, TimerStopped, Topic,
 };
 use crate::app::screens::review::Rating;
 use crate::app::screens::ScreenKind;
@@ -111,6 +111,8 @@ pub enum Action {
     TimerBreak,
     /// Today's logged minutes for the rail (summed from today's activities).
     TimerTodayLoaded(u32),
+    /// The week's per-day minutes (mon→sun) for the rail's sparkline.
+    TimerWeekLoaded(Vec<DayMinutes>),
     TimerStopped(Box<TimerStopped>),
     TimerDismissStopped,
     TimerDiscard,
