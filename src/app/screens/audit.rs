@@ -126,15 +126,13 @@ impl Audit {
                 }
             }
             Action::AuditDelete => {
-                let Some((row_id, activity_id, duration)) = self.selected_row().map(|r| {
+                let (row_id, activity_id, duration) = self.selected_row().map(|r| {
                     (
                         r.id,
                         r.activity_id,
                         r.formatted_duration.clone().unwrap_or_default(),
                     )
-                }) else {
-                    return None;
-                };
+                })?;
                 if self.delete_armed != Some(row_id) {
                     self.delete_armed = Some(row_id);
                     return Some((
