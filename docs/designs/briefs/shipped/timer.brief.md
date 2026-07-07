@@ -1,16 +1,34 @@
-# Timer gap analysis — `timer.dc.html` vs engineer's shipped timer
+# Design brief — engineer-cli · Timer (run the timer without leaving your work + ambient presence)
 
-**For:** Claude Design (the **engineer-cli** terminal project).
-**Purpose:** the next design pass on `timer.dc.html` should close the gaps below, so the CLI design covers the **full timer feature set the engineer app has already shipped** before we implement it.
-**Method:** `timer.dc.html` was diffed against engineer's shipped timer behavior — the live timer + idle guard + focus + segment audit (epic #717, `engineer/docs/features/timer-hygiene.md`), the canonical pill spec (`engineer/docs/designs/navigation-bar.html` §M), the overrun ping (`engineer/docs/designs/nudges.html` §B), the settings knobs (`engineer/docs/designs/settings.html`), and the `api/v1` timer/segments endpoints the CLI consumes.
-**Status of the current doc:** strong — the hero face, status-line collapse, start picker, idle reclaim, overnight/4 AM panel, focus rhythm, segment audit, and headless reads are all present. The items below are what's *not* there yet, plus a few places where the design's verbs drifted from the server's.
+**For:** Claude Design (the **engineer-cli** terminal project — not the web `engineer` project; see `../../README.md`).
+**Produces:** the timer face and states, the ambient status-bar string, the fuzzy bind flow, and the headless verb suite — mocked in `../../timer.dc.html`, anchored on `../../design-system.dc.html`.
+**Status:** **shipped.** The interactive timer, header status-cell, focus rhythm, idle reclaim, overrun ping, segment audit, and the full `engineer timer` headless suite are live (epic #26 timer-v2 → v0.3.0; guards & rhythm → v0.4.0). This brief is kept as the module record; the gap analysis in §A/§B/§C is the diff-vs-`engineer` that drove the design and is now closed.
+
+> **Module note.** This is one of the per-module briefs the terminal client decomposes into (see `../README.md`). It folds the run-the-timer and ambient-presence workflow from the retired omnibus (`terminal-client.brief.md` jobs 1–2) into the timer gap analysis that originally shipped as `timer-gaps.brief.md`. The house format is shared across module briefs: workflow → jobs → the gap record → the API it consumes.
+
+## Workflow (why the timer is the heart of a terminal client)
+
+> "A timer I start with a keystroke without leaving neovim, that shows up in my zellij status bar — ` systems 24:13 ● ` — so I always know it's running. Binding it to a book or a repo is a fuzzy picker, not a menu I arrow through. And it has to survive a dropped connection — I study on trains: the timer is a local clock; reconcile it with the server when the network comes back, don't lose my session."
+
+## Jobs
+
+1. **Run the timer without leaving your work.** Start / pause / resume / stop / discard, bind to an activity (or run as an unnamed stopwatch), and *switch* what it's bound to — from a one-shot command (`engineer timer start`, `toggle`, `stop`) and from the TUI. Binding uses a fuzzy picker over the candidate search. *(Shipped.)*
+2. **Be aware of the timer everywhere.** A compact, colour-coded status string the user drops into a zellij/tmux status bar or neovim statusline, plus a keybind-friendly `toggle` — the terminal's answer to the web's canonical timer pill. *(Shipped: the header status-cell + the `--short` headless string.)*
+
+*(The adjacent "log after the fact, fast" verb — `engineer log …` — is a capture verb tracked in `activities.brief.md`, not here. Offline-tolerance / local-clock reconciliation, a principle this workflow leans on, is captured in `cross-cutting.brief.md`; today the timer renders on a display-smoothed local tick but every write is live.)*
+
+---
+
+## The gap record — `timer.dc.html` vs engineer's shipped timer
+
+**Method:** `timer.dc.html` was diffed against engineer's shipped timer behavior — the live timer + idle guard + focus + segment audit (`engineer` epic #717, `engineer/docs/features/timer-hygiene.md`), the canonical pill spec (`engineer/docs/designs/navigation-bar.html` §M), the overrun ping (`engineer/docs/designs/nudges.html` §B), the settings knobs (`engineer/docs/designs/settings.html`), and the `api/v1` timer/segments endpoints the CLI consumes.
 
 > **Design pass of 2026-07-06 — sections A and B are closed.** Every item below now has a panel (or an explicit caption) in `timer.dc.html`:
 > M1 → §Start a timer (just-start row) + §Bind at stop + §Status line (unnamed row) · M2 → §Start conflict · M3 → §Paused + §Status line (paused row) · M4 → §Focus offers (offers, long break, mode switch) · M5 → §Overrun + §Status line (over row) · M6 → §Segment audit (Looks right action; Trim specced as a segment-edit PATCH preset) · M7 → §Timer settings (view-only in CLI, edit on web — decided) + settings-driven copy throughout · M8 → §Headless (write verbs) + §Headless contract (full status-string table, `--short`, exit codes 0/1/3/4) · M9 → §Saved & undo · M10 → caption on §Idle reclaim (presence = TUI keystrokes; detached/closed = absent; entered on next interaction or launch) ·
 > F1 → §Idle reclaim remapped to the server verbs (trim keeps running / keep / stop at last input, + discard escape) · F2 → see M6 · F3 → see M7 · F4 → hero rail relabelled THIS WEEK.
-> **Section C (backend API gaps) remains open** — it is the API request list for the implementation epic; nothing in the design silently narrows around it.
+> **Section C (backend API gaps) — now RESOLVED.** The `engineer` server shipped the timer-hygiene API (epic #754): `POST /api/v1/timer/{reclaim,phase,mode,heartbeat}` and `GET /api/v1/timer/settings` (`engineer/config/routes.rb:380-391`), plus the segment-audit list + acknowledge (`GET /api/v1/progress/audit`, `PATCH /api/v1/progress/audit/segments/:id/acknowledge`). The CLI consumes all of them (`src/api/timer.rs`, `src/api/audit.rs`), and the interactive + headless surfaces shipped. Settings stayed `GET`-only, so **"view-only in the CLI, edit on the web" is API-forced, not just a UX choice** — the decision M7 records.
 
-The kit rules still bind (`README.md`, `design-system.dc.html`): character grid, keyboard-only, `j/k`/`⏎`/`Esc` grammar, the shipped chrome and widget idioms.
+The kit rules still bind (`../../README.md`, `../../design-system.dc.html`): character grid, keyboard-only, `j/k`/`⏎`/`Esc` grammar, the shipped chrome and widget idioms.
 
 ---
 
@@ -91,12 +109,15 @@ Web idle = absence of `pointerdown`/`keydown` on the page, heartbeated at most o
 
 ---
 
-## C. Backend API gaps (context for implementation — no design action, but don't design around them silently)
+## C. Backend API gaps — RESOLVED (kept as the record of what was blocked, and how it unblocked)
 
-The v1 JSON API the CLI consumes exposes the timer read (with `idle`, `mode`, `phase`, `intervals_completed`), start/pause/resume/stop/bind/candidates/discard, and segment CRUD. **Web-only today (no API):** heartbeat, reclaim, focus phase transition, mode switch, the segment audit (list/acknowledge/delete-flow), and settings. Consequences:
+When this analysis was written, the v1 JSON API the CLI consumes exposed only the timer read (with `idle`, `mode`, `phase`, `intervals_completed`), start/pause/resume/stop/bind/candidates/discard, and segment CRUD. Heartbeat, reclaim, focus phase transition, mode switch, the segment audit (list/acknowledge/delete-flow), and settings were **web-only, no API** — so `engineer timer stop --reclaim=…`, the §Idle reclaim screen, focus transitions (M4), audit actions (M6), and any settings surface (M7) were all blocked on the server.
 
-- `engineer timer stop --reclaim=…` (§Headless) and the §Idle reclaim screen need a reclaim-capable API before they can ship; same for focus transitions (M4), audit actions (M6), and any settings surface (M7).
-- These will be tracked as blocked tickets on the implementation epic and raised against the engineer repo — the design should still specify them fully so the API request is concrete.
+Those gaps have since shipped in the `engineer` repo (epic #754) and the CLI now consumes them:
+
+- `POST /api/v1/timer/reclaim` (`trim` | `keep` | `stop`), `POST /api/v1/timer/phase`, `POST /api/v1/timer/mode`, `POST /api/v1/timer/heartbeat`, `GET /api/v1/timer/settings` — `engineer/config/routes.rb:380-391`, consumed in `src/api/timer.rs`.
+- Segment audit: `GET /api/v1/progress/audit` and `PATCH /api/v1/progress/audit/segments/:id/acknowledge` — `routes.rb:421-423`, consumed in `src/api/audit.rs`. Trim/Delete go through the ordinary segments API (`PATCH`/`DELETE /activities/:id/segments/:id`).
+- Settings is `GET`-only — there is no write route, which is why the CLI settings surface is read-only (see M7). That is a settled decision, not an omission.
 
 ---
 

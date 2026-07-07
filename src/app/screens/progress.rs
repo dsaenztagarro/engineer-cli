@@ -3,6 +3,7 @@
 //! week header line, a behind-total footer, and a compact kind-mix line. Step
 //! weeks with `[` / `]`; `t` returns to the current week.
 
+use crossterm::event::{KeyCode, KeyEvent};
 use jiff::{ToSpan, Zoned};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
@@ -26,12 +27,37 @@ pub struct Progress {
     offset: i32,
     loading: bool,
     error: Option<String>,
+    /// Cursor over `data.targets` — the row `e` (adjust) / `x` (retire) act on.
+    selected: usize,
+    /// `Some` while the inline hours editor is open for the selected target.
+    edit: Option<String>,
+    /// The target id armed for retire; a second `x` on the same row confirms.
+    retire_armed: Option<i64>,
 }
 
 impl Progress {
     pub fn on_enter(&mut self, api: &ApiClient, tx: &UnboundedSender<Action>) {
         self.loading = true;
         self.fetch(api, tx);
+    }
+
+    /// While the inline hours editor is open it owns every relevant key, so a
+    /// digit edits the buffer rather than firing the global keymap.
+    pub fn intercept_key(&mut self, key: KeyEvent) -> Option<Action> {
+        self.edit.as_ref()?;
+        match key.code {
+            KeyCode::Esc => Some(Action::ProgressAdjustCancel),
+            KeyCode::Enter => Some(Action::ProgressAdjustSubmit),
+            KeyCode::Backspace => Some(Action::ProgressAdjustBackspace),
+            KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
+                Some(Action::ProgressAdjustInput(c))
+            }
+            _ => None,
+        }
+    }
+
+    fn selected_target(&self) -> Option<&ProgressReading> {
+        self.data.as_ref()?.targets.get(self.selected)
     }
 
     fn fetch(&self, api: &ApiClient, tx: &UnboundedSender<Action>) {
@@ -65,6 +91,10 @@ impl Progress {
                 self.data = Some(*progress);
                 self.loading = false;
                 self.error = None;
+                // Keep the cursor in range as the target set changes week to week.
+                let n = self.data.as_ref().map_or(0, |d| d.targets.len());
+                self.selected = self.selected.min(n.saturating_sub(1));
+                self.retire_armed = None;
             }
             Action::ProgressLoadFailed(e) => {
                 self.loading = false;
@@ -85,6 +115,103 @@ impl Progress {
             Action::RefreshProgress => {
                 self.loading = true;
                 self.fetch(api, tx);
+            }
+            Action::ProgressSelectMove(delta) => {
+                if let Some(data) = &self.data {
+                    let n = data.targets.len() as i32;
+                    if n > 0 {
+                        self.selected = (self.selected as i32 + delta).clamp(0, n - 1) as usize;
+                    }
+                }
+                self.retire_armed = None;
+            }
+            Action::ProgressAdjustBegin => {
+                // Prefill with the current hours so the edit starts from the truth.
+                if let Some(r) = self.selected_target() {
+                    self.edit = Some(fmt_hours(r.target.hours_per_week));
+                }
+                self.retire_armed = None;
+            }
+            Action::ProgressAdjustInput(c) => {
+                if let Some(b) = self.edit.as_mut() {
+                    b.push(c);
+                }
+            }
+            Action::ProgressAdjustBackspace => {
+                if let Some(b) = self.edit.as_mut() {
+                    b.pop();
+                }
+            }
+            Action::ProgressAdjustCancel => self.edit = None,
+            Action::ProgressAdjustSubmit => {
+                let parsed = self
+                    .edit
+                    .as_deref()
+                    .and_then(|b| b.trim().parse::<f64>().ok());
+                let id = self.selected_target().map(|r| r.target.id);
+                self.edit = None;
+                match (id, parsed) {
+                    (Some(id), Some(hours)) if hours > 0.0 => {
+                        let api = api.clone();
+                        let tx = tx.clone();
+                        tokio::spawn(async move {
+                            match api.update_target(id, hours).await {
+                                Ok(t) => {
+                                    let _ = tx.send(Action::Notify {
+                                        level: Level::Success,
+                                        text: format!(
+                                            "target → {}h/wk",
+                                            fmt_hours(t.hours_per_week)
+                                        ),
+                                    });
+                                    let _ = tx.send(Action::RefreshProgress);
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(Action::Notify {
+                                        level: Level::Error,
+                                        text: format!("adjust failed: {e}"),
+                                    });
+                                }
+                            }
+                        });
+                    }
+                    (Some(_), _) => {
+                        return Some((Level::Warning, "enter a positive number of hours".into()))
+                    }
+                    _ => {}
+                }
+            }
+            Action::ProgressRetire => {
+                let id = self.selected_target().map(|r| r.target.id)?;
+                if self.retire_armed == Some(id) {
+                    // Second press on the same row — confirm.
+                    self.retire_armed = None;
+                    let api = api.clone();
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        match api.retire_target(id).await {
+                            Ok(_) => {
+                                let _ = tx.send(Action::Notify {
+                                    level: Level::Success,
+                                    text: "target retired — history kept".into(),
+                                });
+                                let _ = tx.send(Action::RefreshProgress);
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Action::Notify {
+                                    level: Level::Error,
+                                    text: format!("retire failed: {e}"),
+                                });
+                            }
+                        }
+                    });
+                } else {
+                    self.retire_armed = Some(id);
+                    return Some((
+                        Level::Warning,
+                        "press x again to retire this target (history is kept)".into(),
+                    ));
+                }
             }
             _ => {}
         }
@@ -113,7 +240,7 @@ impl Progress {
 
         if data.targets.is_empty() {
             lines.push(Line::from(Span::styled(
-                "No targets yet — declare a weekly intent in the web app.",
+                "No targets yet — declare one with `engineer target declare` (e.g. --kind coding --hours 4).",
                 theme::muted(),
             )));
         } else {
@@ -124,8 +251,19 @@ impl Progress {
                 .max()
                 .unwrap_or(6)
                 .clamp(6, 20);
-            for reading in &data.targets {
-                lines.push(meter_line(reading, label_w));
+            for (i, reading) in data.targets.iter().enumerate() {
+                let is_sel = i == self.selected;
+                lines.push(meter_line(reading, label_w, is_sel));
+                if is_sel {
+                    if let Some(buf) = &self.edit {
+                        lines.push(edit_line(reading, buf));
+                    } else if self.retire_armed == Some(reading.target.id) {
+                        lines.push(Line::from(Span::styled(
+                            "  retire this target? press x again — history is kept",
+                            Style::default().fg(theme::WARN),
+                        )));
+                    }
+                }
             }
         }
 
@@ -146,11 +284,17 @@ impl Progress {
     }
 
     pub fn hints(&self) -> Line<'static> {
+        if self.edit.is_some() {
+            return widgets::footer_hints(&[("⏎", "save"), ("Esc", "cancel")]);
+        }
         widgets::footer_hints(&[
+            ("j/k", "select"),
+            ("e", "adjust"),
+            ("x", "retire"),
             ("[", "prev wk"),
             ("]", "next wk"),
             ("t", "this wk"),
-            ("r", "refresh"),
+            ("a", "audit"),
             ("h", "home"),
         ])
     }
@@ -176,13 +320,18 @@ fn week_header(data: &ProgressData) -> Line<'static> {
     ])
 }
 
-/// One meter row: `systems     █████·╎···  2.2/6h   -2.1h behind`.
-fn meter_line(reading: &ProgressReading, label_w: usize) -> Line<'static> {
+/// One meter row: `▌ systems     █████·╎···  2.2/6h   -2.1h behind`. A `▌`
+/// marker (accent) flags the selected row that `e`/`x` act on.
+fn meter_line(reading: &ProgressReading, label_w: usize, selected: bool) -> Line<'static> {
     let name = reading.target.scope.name().to_lowercase();
     let label = pad_or_truncate(&name, label_w);
     let color = state_color(reading.state);
 
-    let mut spans: Vec<Span<'static>> = vec![Span::raw(format!("{label}  "))];
+    let marker = if selected { "▌ " } else { "  " };
+    let mut spans: Vec<Span<'static>> = vec![
+        Span::styled(marker.to_string(), Style::default().fg(theme::ACCENT)),
+        Span::raw(format!("{label}  ")),
+    ];
     spans.extend(widgets::pace_bar(
         reading.progress_fraction(),
         // The now-tick marks where the week expects you to be (expected/target).
@@ -208,6 +357,18 @@ fn meter_line(reading: &ProgressReading, label_w: usize) -> Line<'static> {
         )),
     }
     Line::from(spans)
+}
+
+/// The inline hours editor shown under the selected row while adjusting:
+/// `  adjust systems → 6█ h/wk  (⏎ save · Esc cancel)`.
+fn edit_line(reading: &ProgressReading, buf: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("  adjust ".to_string(), theme::muted()),
+        Span::raw(reading.target.scope.name().to_lowercase()),
+        Span::styled(" → ".to_string(), theme::muted()),
+        Span::styled(format!("{buf}█"), Style::default().fg(theme::ACCENT)),
+        Span::styled(" h/wk  (⏎ save · Esc cancel)".to_string(), theme::muted()),
+    ])
 }
 
 /// `behind 3.3h total · largest gap "systems"` — or a quiet on-pace confirmation.
@@ -366,14 +527,106 @@ mod tests {
     #[test]
     fn meter_line_renders_nums_and_state_word() {
         let data = sample();
-        let behind = spans_text(&meter_line(&data.targets[0], 18));
+        let behind = spans_text(&meter_line(&data.targets[0], 18, false));
         assert!(behind.contains("distributed sys"), "{behind}");
         assert!(behind.contains("2.2/6h"), "{behind}");
         assert!(behind.contains("behind"), "{behind}");
 
-        let met = spans_text(&meter_line(&data.targets[1], 18));
+        let met = spans_text(&meter_line(&data.targets[1], 18, false));
         assert!(met.contains("2.0/2h"), "{met}");
         assert!(met.contains("met"), "{met}");
+    }
+
+    #[test]
+    fn meter_line_marks_the_selected_row() {
+        let data = sample();
+        assert!(spans_text(&meter_line(&data.targets[0], 18, true)).starts_with('▌'));
+        assert!(!spans_text(&meter_line(&data.targets[0], 18, false)).starts_with('▌'));
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    fn ctx() -> (ApiClient, UnboundedSender<Action>) {
+        let api =
+            ApiClient::with_token(url::Url::parse("http://127.0.0.1:9/").unwrap(), "t".into());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        (api, tx)
+    }
+
+    fn loaded() -> Progress {
+        // two targets: id 42 (6h), id 51 (2h)
+        Progress {
+            data: Some(sample()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn select_move_clamps_within_targets() {
+        let (api, tx) = ctx();
+        let mut p = loaded();
+        p.handle(Action::ProgressSelectMove(1), &api, &tx).await;
+        assert_eq!(p.selected, 1);
+        p.handle(Action::ProgressSelectMove(5), &api, &tx).await;
+        assert_eq!(p.selected, 1, "clamped at the last row");
+        p.handle(Action::ProgressSelectMove(-9), &api, &tx).await;
+        assert_eq!(p.selected, 0, "clamped at the first row");
+    }
+
+    #[tokio::test]
+    async fn adjust_prefills_current_hours_and_edits_buffer() {
+        let (api, tx) = ctx();
+        let mut p = loaded();
+        p.handle(Action::ProgressAdjustBegin, &api, &tx).await;
+        assert_eq!(
+            p.edit.as_deref(),
+            Some("6"),
+            "prefilled from the current 6h"
+        );
+        p.handle(Action::ProgressAdjustBackspace, &api, &tx).await;
+        p.handle(Action::ProgressAdjustInput('8'), &api, &tx).await;
+        assert_eq!(p.edit.as_deref(), Some("8"));
+        p.handle(Action::ProgressAdjustCancel, &api, &tx).await;
+        assert!(p.edit.is_none());
+    }
+
+    #[tokio::test]
+    async fn retire_arms_then_disarms_on_move() {
+        let (api, tx) = ctx();
+        let mut p = loaded();
+        let note = p.handle(Action::ProgressRetire, &api, &tx).await;
+        assert!(note.is_some(), "first press asks for confirmation");
+        assert_eq!(p.retire_armed, Some(42));
+        p.handle(Action::ProgressSelectMove(1), &api, &tx).await;
+        assert_eq!(p.retire_armed, None, "moving the cursor disarms retire");
+    }
+
+    #[test]
+    fn intercept_only_captures_keys_while_editing() {
+        let mut p = Progress::default();
+        // Not editing → keys fall through to the global keymap.
+        assert!(p.intercept_key(key(KeyCode::Char('8'))).is_none());
+        p.edit = Some(String::new());
+        assert!(matches!(
+            p.intercept_key(key(KeyCode::Char('8'))),
+            Some(Action::ProgressAdjustInput('8'))
+        ));
+        assert!(matches!(
+            p.intercept_key(key(KeyCode::Char('.'))),
+            Some(Action::ProgressAdjustInput('.'))
+        ));
+        assert!(matches!(
+            p.intercept_key(key(KeyCode::Enter)),
+            Some(Action::ProgressAdjustSubmit)
+        ));
+        assert!(matches!(
+            p.intercept_key(key(KeyCode::Esc)),
+            Some(Action::ProgressAdjustCancel)
+        ));
+        // A non-hours character is not captured.
+        assert!(p.intercept_key(key(KeyCode::Char('q'))).is_none());
     }
 
     #[test]

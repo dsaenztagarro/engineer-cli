@@ -19,6 +19,7 @@ mod notes;
 mod progress;
 mod review;
 mod segments;
+mod targets;
 mod timer;
 
 pub use activities::{Activity, ActivityCreate, ActivityFilters};
@@ -27,9 +28,10 @@ pub use books::{Book, BookChapter, BookStatus, BookUpdate};
 pub use envelope::List;
 pub use error::{ApiError, FieldError};
 pub use notes::{Anchor, Note, NoteFilters, NoteInput};
-pub use progress::{DayMinutes, PaceState, Progress, ProgressReading};
+pub use progress::{DayMinutes, PaceState, Progress, ProgressReading, TargetRef};
 pub use review::{Dashboard, RateResult, Topic, TopicFilters};
 pub use segments::SegmentUpdate;
+pub use targets::{TargetCreate, TargetScope, TargetState};
 pub use timer::{ReclaimVerb, Reclaimed, Timer, TimerCandidate, TimerSettings, TimerStopped};
 
 /// Current user from `GET /api/v1/me`. Fields mirror the API contract; not all

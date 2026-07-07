@@ -240,15 +240,21 @@ fn timer_key(key: crossterm::event::KeyEvent) -> Option<Action> {
 }
 
 fn progress_key(key: crossterm::event::KeyEvent) -> Option<Action> {
-    match key.code {
+    match (key.code, key.modifiers) {
         // The audit subtab (§Segment audit).
-        KeyCode::Char('a') => Some(Action::Goto(ScreenKind::Audit)),
+        (KeyCode::Char('a'), _) => Some(Action::Goto(ScreenKind::Audit)),
+        // j/k move the target-row cursor; `e` adjusts the selected target's
+        // weekly hours in place; `x` retires it (confirmed on a second press).
+        (KeyCode::Char('j'), _) | (KeyCode::Down, _) => Some(Action::ProgressSelectMove(1)),
+        (KeyCode::Char('k'), _) | (KeyCode::Up, _) => Some(Action::ProgressSelectMove(-1)),
+        (KeyCode::Char('e'), _) => Some(Action::ProgressAdjustBegin),
+        (KeyCode::Char('x'), _) => Some(Action::ProgressRetire),
         // `[` / `]` step weeks (a vim-ish prev/next idiom that avoids the
         // `h`-means-back convention the other screens use); `t` jumps to today.
-        KeyCode::Char('[') => Some(Action::ProgressWeekStep(-1)),
-        KeyCode::Char(']') => Some(Action::ProgressWeekStep(1)),
-        KeyCode::Char('t') => Some(Action::ProgressWeekReset),
-        KeyCode::Char('h') | KeyCode::Esc => Some(Action::Goto(ScreenKind::Home)),
+        (KeyCode::Char('['), _) => Some(Action::ProgressWeekStep(-1)),
+        (KeyCode::Char(']'), _) => Some(Action::ProgressWeekStep(1)),
+        (KeyCode::Char('t'), _) => Some(Action::ProgressWeekReset),
+        (KeyCode::Char('h'), _) | (KeyCode::Esc, _) => Some(Action::Goto(ScreenKind::Home)),
         _ => None,
     }
 }

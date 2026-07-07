@@ -144,6 +144,7 @@ impl Screen {
             Self::Books(s) => s.intercept_key(key),
             Self::BookDetail(s) => s.intercept_key(key),
             Self::Activities(s) => s.intercept_key(key),
+            Self::Progress(s) => s.intercept_key(key),
             Self::Timer(s) => s.intercept_key(key),
             Self::Notes(s) => s.intercept_key(key),
             Self::Review(s) => s.intercept_key(key),

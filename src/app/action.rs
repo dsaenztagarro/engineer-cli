@@ -84,6 +84,17 @@ pub enum Action {
     ProgressWeekStep(i32),
     ProgressWeekReset,
     RefreshProgress,
+    // Target editing on the Progress screen (job 6 — adjust in place). `e` edits
+    // the selected target's weekly hours inline; `x` retires it (armed, confirmed
+    // on a second press). Declaring a new target is the headless `engineer target
+    // declare` verb until the shared scope picker lands (cross-cutting.brief.md).
+    ProgressSelectMove(i32),
+    ProgressAdjustBegin,
+    ProgressAdjustInput(char),
+    ProgressAdjustBackspace,
+    ProgressAdjustSubmit,
+    ProgressAdjustCancel,
+    ProgressRetire,
 
     // Timer — the header cell (app-owned snapshot) and the Timer screen.
     // `RefreshTimer` re-polls the header snapshot; `TimerLoaded` updates the
