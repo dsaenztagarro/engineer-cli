@@ -85,6 +85,13 @@ modules, keeping transport generic and the domain calls local:
   `update_segment(activity_id, id, {minutes})`
   (`PATCH /api/v1/activities/:activity_id/segments/:id`, the trim preset) and
   `delete_segment(activity_id, id)` (the post-save undo / audit delete).
+- `src/api/today.rs` — `today()` (`GET /api/v1/today` — a bare object, not the
+  `List` envelope): the composed daily-loop aggregate the TUI Home renders in one
+  pass. Every block composes the derivation that owns it (`date`, `timer`, `pace`,
+  `plan`, `totals`, `review`, `reading`), so it never disagrees with the
+  per-resource endpoints. Additive-only (engineer ADR 0027): the core `date`/
+  `timer` blocks are required, the rest serde-default, `pace` is `null` when
+  nothing trails, and the `timer` block reuses the shared `Timer` struct verbatim.
 - `me()` (`src/api/mod.rs`) — `GET /api/v1/me`, the canonical current-user
   endpoint shared with the identity server and the MCP tools.
 

@@ -21,6 +21,7 @@ mod review;
 mod segments;
 mod targets;
 mod timer;
+mod today;
 
 pub use activities::{Activity, ActivityCreate, ActivityFilters};
 pub use audit::{AuditAcknowledged, AuditRead, AuditSegment};
@@ -33,6 +34,8 @@ pub use review::{Dashboard, RateResult, Topic, TopicFilters};
 pub use segments::SegmentUpdate;
 pub use targets::{TargetCreate, TargetScope, TargetState};
 pub use timer::{ReclaimVerb, Reclaimed, Timer, TimerCandidate, TimerSettings, TimerStopped};
+// `today::*` re-exports are added by their first consumer (the Home screen,
+// #64) — an unused `pub use` in this binary crate trips `clippy -D warnings`.
 
 /// Current user from `GET /api/v1/me`. Fields mirror the API contract; not all
 /// are consumed by the UI yet.
