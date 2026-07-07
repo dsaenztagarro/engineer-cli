@@ -5,6 +5,8 @@
 **Do not edit** `books.html` (the anchor mockup), `terminal-tokens.css`, or `README.md` — extend them.
 **Status:** handoff draft. Tracked by [engineer-cli#8](https://github.com/dsaenztagarro/engineer-cli/issues/8), part of EPIC [engineer-cli#7](https://github.com/dsaenztagarro/engineer-cli/issues/7); companion of the server epic [engineer#652](https://github.com/dsaenztagarro/engineer/issues/652).
 
+> **Historical / superseded (kept as the record of epic #7).** This is the pre-lifecycle brief that drove the first wave of daily-loop screens; its screens have shipped. It predates the `briefs/proposed|shipped` lifecycle and has been **decomposed into per-module briefs** — see the [briefs index](briefs/README.md) (timer, activities, review, notes, command-palette, home). Two anchors it names below are **retired**: `books.html` and `terminal-tokens.css` no longer exist; the live style anchor is [`design-system.dc.html`](design-system.dc.html). Read the module briefs, not this, for current-state guidance.
+
 ### How to read this brief (please read first)
 This brief is **deliberately problem-first and light on solution.**
 It tells you *who this is for*, *what jobs the screens must do*, and *what genuinely constrains you* — then gets out of your way.

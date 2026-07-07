@@ -5,6 +5,7 @@ mod api;
 mod app;
 mod auth;
 mod config;
+mod target_cli;
 mod timer_cli;
 mod ui;
 
@@ -41,6 +42,8 @@ enum Cmd {
     /// Read or drive the live timer headlessly (status/start/stop/…);
     /// exit codes: 0 counting · 1 nothing running · 3 idle · 4 paused.
     Timer(timer_cli::TimerArgs),
+    /// Declare, adjust, retire, or list weekly targets headlessly.
+    Target(target_cli::TargetArgs),
     /// Launch the TUI (default).
     Tui,
 }
@@ -69,6 +72,7 @@ fn main() -> Result<()> {
             Cmd::Logout => auth::logout_cli(&cfg).await.map(|()| 0),
             Cmd::Whoami => auth::whoami_cli(&cfg).await.map(|()| 0),
             Cmd::Timer(args) => timer_cli::run(&cfg, args).await,
+            Cmd::Target(args) => target_cli::run(&cfg, args).await,
             Cmd::Tui => app::run(cfg).await.map(|()| 0),
         }
     })?;

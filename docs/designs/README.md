@@ -76,6 +76,8 @@ seeded by the web designs.
 
 ## Translate / don't-translate
 
+**Governing principle — sterling, not a replica.** A full terminal replica of the `engineer` web UI is a non-goal. The terminal is an *Apple Watch for the study loop*: it owns the high-frequency, high-value core, distilled into **glances (complications) and gestures (one-keystroke verbs)** — quiet, honest, and composable (every read pipes, every action is a headless verb). Depth — rich filtering, bulk edit, dashboards, planning canvases, settings forms — stays on the web. The shipped **timer** is the exemplar of the bar; the full **glance-or-gesture test**, and where each module sits against it, is the governing section of [`briefs/proposed/cross-cutting.brief.md`](briefs/proposed/cross-cutting.brief.md). Every brief is measured against it before it is designed.
+
 - **Drop entirely** (no terminal equivalent): shadows, border-radius, Inter/web-fonts,
   gradients, pixel spacing, hover states, responsive breakpoints.
 - **Replace with a terminal idiom:**

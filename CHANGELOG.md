@@ -7,9 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-07
+
 ### Added
 
+- **`engineer target` — declare, adjust, retire, and list weekly targets, headless and in place.** The Progress pillar gains its write side. A new targets client (`src/api/targets.rs`) over the shipped `/api/v1/targets` routes powers a headless verb suite — `engineer target list` (one row per lineage, `--all` / `--retired`), `declare` (exactly one scope of `--domain` / `--kind` / `--intent`, plus `--hours`), `adjust <id> <hours>`, and `retire <id>` — with `--json` (an array for list, an object per write), a stable plain-pipe form, TTY- and `NO_COLOR`-aware colour, and exit `0`/`1` for success/refusal, matching the `engineer timer` contract. On the **Progress screen** a target-row cursor (`j`/`k`) gains `e` to adjust the selected target's weekly hours in place and `x` to retire it (confirmed on a second press, history kept); the empty state now teaches `engineer target declare` instead of pointing at the web. It honours the server's append-only lineage (engineer ADR 0026): `adjust` returns the live row even when the edit minted a successor id, `retire` never deletes, and a closed-version `422` surfaces as "this target moved on — re-fetch" rather than a hard error. Interactive *declare* (which needs a domain/kind/intent scope picker) and a `:target` palette verb (it collides with the shipped `:t` → timer prefix) are deliberately deferred and recorded in the progress and command-palette briefs.
+
 - **Presence heartbeat — the idle guard no longer trips on real in-TUI work.** While a timer is running (and not paused), a key in the TUI now marks presence: a background `POST /api/v1/timer/heartbeat`, throttled to at most once a minute (matching the web pill). So a session spent reading, navigating, and typing *inside* the TUI without touching timer verbs keeps the clock alive instead of drifting into the idle guard. It's deliberately silent once the timer has already gone idle — the reclaim screen owns that decision (its **Keep** verb is the explicit "I was present"), so moving through the reclaim list never auto-resolves it. Needs the engineer API's new `POST /api/v1/timer/heartbeat` (dsaenztagarro/engineer#781), the last v1 gap versus the web timer — closing the follow-up left open when the idle guard shipped server-driven in #35.
+
+### Changed
+
+- **Design briefs reorganised — one brief per engineer-cli module, under a governing product principle.** The single omnibus `terminal-client.brief.md` — stale in both directions (the CLI had shipped most of its Phase-1 jobs; the `engineer` API had shipped `targets` / `today` / `weeks` / `automations` ahead of it) — is retired to a tombstone and decomposed into one brief per module: `timer` (absorbing the former `timer-gaps` gap analysis, its backend-API "Section C" now resolved), `progress`, `home`, `activities`, `review`, `notes`, `command-palette`, `week-planning`, `assisted-capture`, and a `cross-cutting` brief. Each is grounded in the API it actually consumes (verified against `engineer/config/routes.rb`) and states shipped reality rather than a pre-implementation snapshot; the pre-lifecycle `daily-loop.brief.md` is marked historical and the retired `books.html` / `terminal-tokens.css` anchors corrected to `design-system.dc.html` throughout.
+
+- **A governing principle — "sterling, not a replica."** A new lead section in `cross-cutting.brief.md` (pointed to from the kit `README` and the briefs index) makes explicit that a full terminal replica of the `engineer` web UI is a non-goal: the terminal owns the study loop's high-frequency core as glances and gestures — the shipped timer is the exemplar — with depth staying on the web. Three surfaces were reframed to fit it: progress's time-explorer becomes a glance plus a `--json` rollup rather than a pivot grid, the activities table is capped as the one deliberate lean-back ledger (its watch-native core being capture and the audit), and week-planning is a planned-vs-done readout plus a one-liner declare rather than a planning canvas.
 
 ## [0.4.0] - 2026-07-06
 
@@ -81,7 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Explicit environment selection** via the `--env` flag and `ENGINEER_ENV` variable (`production` default, or `development` for localhost), with built-in URL presets so a fresh run needs no config file. Layered configuration: environment preset < `~/.config/engineer-cli/config.toml` (XDG-honored on all platforms, including macOS) < `ENGINEER_*` env vars.
 - **GitHub Actions CI** running `cargo test` on pushes to `master` and on pull requests.
 
-[Unreleased]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.1.0...v0.2.0
