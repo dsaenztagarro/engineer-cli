@@ -7,6 +7,7 @@ mod auth;
 mod config;
 mod target_cli;
 mod timer_cli;
+mod today_cli;
 mod ui;
 
 #[derive(Parser)]
@@ -44,6 +45,8 @@ enum Cmd {
     Timer(timer_cli::TimerArgs),
     /// Declare, adjust, retire, or list weekly targets headlessly.
     Target(target_cli::TargetArgs),
+    /// Print today's composed daily-loop read — the Home screen, headless.
+    Today(today_cli::TodayArgs),
     /// Launch the TUI (default).
     Tui,
 }
@@ -73,6 +76,7 @@ fn main() -> Result<()> {
             Cmd::Whoami => auth::whoami_cli(&cfg).await.map(|()| 0),
             Cmd::Timer(args) => timer_cli::run(&cfg, args).await,
             Cmd::Target(args) => target_cli::run(&cfg, args).await,
+            Cmd::Today(args) => today_cli::run(&cfg, args).await,
             Cmd::Tui => app::run(cfg).await.map(|()| 0),
         }
     })?;
