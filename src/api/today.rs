@@ -71,13 +71,15 @@ pub struct Pace {
 pub struct Worst {
     pub target_id: i64,
     pub axis: String,
-    /// The raw scope value (domain id or enum string); `scope_name` is what the
-    /// meter shows.
+    /// The raw scope value (domain id or enum string); `scope_name` is the human
+    /// label Home renders.
     #[serde(default)]
     pub scope_value: serde_json::Value,
     pub scope_name: String,
     /// Minutes behind. Modeled `i64` for parity with the pace derivation, though
-    /// a behind target is always positive here.
+    /// a behind target is always positive here. This is the only quantity the
+    /// fold carries — the full now-tick meter (fill / expected / target) lives on
+    /// `GET /api/v1/progress` (the design defers "the full meters" to `g p`).
     pub delta_minutes: i64,
 }
 
