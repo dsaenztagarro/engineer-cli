@@ -35,6 +35,7 @@ engineer            # launch TUI (default); prompts for login if needed
 engineer login      # run the OAuth flow from the shell, store refresh token in OS keyring
 engineer logout     # revoke + delete keyring entry
 engineer whoami     # print the authenticated user
+engineer today [--json]  # today at a glance (the Home screen, headless): timer · pace · plan · review · reading
 
 engineer timer                     # one-line read of the live timer (--json for the full read)
 engineer timer status [--short]    # fixed-order status string; --short = glyph + clock for status bars
