@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-08
+
 ### Added
 
 - **`engineer today` — the Home screen, headless.** A one-shot read of the composed daily-loop aggregate (`GET /api/v1/today`): `--json` emits the payload (date · timer · pace · plan · totals · review · reading), and the bare form prints a compact, greppable summary reading top-to-bottom like the screen. Read-only (Home owns no write); exits `0`, with `401`/transport errors surfacing through the shared `ApiError` path, matching the `engineer timer`/`target` contract. (`home.dc.html` §ONE READ)

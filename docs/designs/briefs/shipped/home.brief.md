@@ -2,7 +2,7 @@
 
 **For:** Claude Design (the **engineer-cli** terminal project — not the web `engineer` project; see `../../README.md` for why they're kept apart).
 **Produces:** the terminal Home screen, rebuilt to *open* with the live timer and this week's pace and to fold its two-call load into one aggregate read — plus the net-new `src/api/today.rs` client on `GET /api/v1/today` it needs. Extend `../../design-system.dc.html` (the style anchor); a `home.dc.html` board is the natural home for the mock, mirroring `timer.dc.html`.
-**Status:** proposed. A single unblocked slice — the server aggregate is shipped and unused, so the work is pure-CLI.
+**Status:** shipped (epic #61, v0.6.0). The enriched Home rebuilt on `GET /api/v1/today`, a global `g`-goto grammar, the pace fold, and the `engineer today` headless twin all landed. One open follow-up remains a note in §5: the pace fold renders as a chip summary, not an inline meter, because `/today`'s `pace.worst` block carries only `delta_minutes` (the full now-tick meters stay on Progress).
 
 > **Module note.** This brief is one of the per-module briefs the terminal client decomposes into (see `../README.md`). It carries job 11 of the retired omnibus (`terminal-client.brief.md`, "Home, enriched") plus the daily loop's opening question — "check what I meant to do today" — verified against the shipped `engineer` API. The shared house format — workflow → jobs → principles → orientation → the API it consumes → visual language → phasing — is common to every module brief.
 
