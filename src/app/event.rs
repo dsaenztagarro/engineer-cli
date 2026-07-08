@@ -50,9 +50,22 @@ pub fn translate(app: &mut App, ev: Event) -> Option<Action> {
         return leader(key);
     }
 
+    // Goto (`g`) pending — the second key picks a destination (`g t`/`g p`/…) or,
+    // on a second `g`, the current list's top motion (`gg`). Mirrors the leader.
+    if app.goto_pending {
+        app.goto_pending = false;
+        return goto(app, key);
+    }
+
     match (key.code, key.modifiers) {
         (KeyCode::Char(' '), _) => {
             app.leader_pending = true;
+            None
+        }
+        // `g` is a prefix (vim `gg`/`gt`/…), so it never acts on its own — the
+        // next key resolves it. This means single-`g` list motions became `gg`.
+        (KeyCode::Char('g'), KeyModifiers::NONE) => {
+            app.goto_pending = true;
             None
         }
         (KeyCode::Char(':'), _) => {
@@ -62,7 +75,7 @@ pub fn translate(app: &mut App, ev: Event) -> Option<Action> {
         (KeyCode::Char('q'), KeyModifiers::NONE) => Some(Action::Quit),
         (KeyCode::Char('?'), _) => Some(Action::Notify {
             level: crate::ui::notify::Level::Info,
-            text: "help: j/k move · / search · : command · <Space> leader · q quit".into(),
+            text: "help: j/k move · gg/G top/bottom · g t/p/r goto · / search · : command · <Space> leader · q quit".into(),
         }),
         (KeyCode::Char('r'), KeyModifiers::NONE) => Some(refresh_for(app.current.kind())),
         _ => screen_key(app, key),
@@ -89,6 +102,46 @@ fn leader(key: crossterm::event::KeyEvent) -> Option<Action> {
         // `n` browses notes; `c` captures one from anywhere (the sacred path).
         KeyCode::Char('n') => Some(Action::Goto(ScreenKind::Notes)),
         KeyCode::Char('c') => Some(Action::CaptureOpen),
+        _ => None,
+    }
+}
+
+/// The `g`-goto prefix's second key: a destination (`g t`/`g p`/…), or `gg` for
+/// the current list's top motion. Kept beside `leader` so the two prefixes read
+/// alike. One goto grammar on every screen; single letters stay free for
+/// screen-local actions.
+fn goto(app: &App, key: crossterm::event::KeyEvent) -> Option<Action> {
+    use ScreenKind::*;
+    match key.code {
+        KeyCode::Char('t') => Some(Action::Goto(Timer)),
+        KeyCode::Char('p') => Some(Action::Goto(Progress)),
+        KeyCode::Char('r') => Some(Action::Goto(Review)),
+        KeyCode::Char('h') => Some(Action::Goto(Home)),
+        KeyCode::Char('b') => Some(Action::Goto(Books)),
+        KeyCode::Char('n') => Some(Action::Goto(Notes)),
+        KeyCode::Char('a') => Some(Action::Goto(Activities)),
+        // `gg` — the vim top motion the single-`g` handlers served before `g`
+        // became the goto prefix.
+        KeyCode::Char('g') => jump_start_for(app),
+        _ => None,
+    }
+}
+
+/// The current screen's "jump to top" motion, dispatched by `gg`. Screens with
+/// no scrollable list return `None`.
+fn jump_start_for(app: &App) -> Option<Action> {
+    use crate::app::screens::review::Stage;
+    match app.current.kind() {
+        ScreenKind::Books => Some(Action::BooksJumpStart),
+        ScreenKind::Activities => Some(Action::ActivitiesJumpStart),
+        ScreenKind::Notes => Some(Action::NotesJumpStart),
+        // Review's list lives in the Browse stage only.
+        ScreenKind::Review => match &app.current {
+            Screen::Review(s) if matches!(s.stage(), Stage::Browse) => {
+                Some(Action::ReviewBrowseJumpStart)
+            }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -159,7 +212,7 @@ fn review_key(app: &App, key: crossterm::event::KeyEvent) -> Option<Action> {
         Stage::Browse => match (key.code, key.modifiers) {
             (KeyCode::Char('j'), _) | (KeyCode::Down, _) => Some(Action::ReviewBrowseMove(1)),
             (KeyCode::Char('k'), _) | (KeyCode::Up, _) => Some(Action::ReviewBrowseMove(-1)),
-            (KeyCode::Char('g'), _) => Some(Action::ReviewBrowseJumpStart),
+            // `gg` jumps to the top (handled by the global goto prefix); `G` to the end.
             (KeyCode::Char('G'), _) => Some(Action::ReviewBrowseJumpEnd),
             (KeyCode::Enter, _) | (KeyCode::Char('l'), _) => Some(Action::ReviewBrowseOpenDetail),
             // `s` cycles the sort ring (the #11 `f`-ring precedent).
@@ -183,7 +236,7 @@ fn activities_key(key: crossterm::event::KeyEvent) -> Option<Action> {
     match (key.code, key.modifiers) {
         (KeyCode::Char('j'), _) | (KeyCode::Down, _) => Some(Action::ActivitiesMove(1)),
         (KeyCode::Char('k'), _) | (KeyCode::Up, _) => Some(Action::ActivitiesMove(-1)),
-        (KeyCode::Char('g'), _) => Some(Action::ActivitiesJumpStart),
+        // `gg` jumps to the top (handled by the global goto prefix); `G` to the end.
         (KeyCode::Char('G'), _) => Some(Action::ActivitiesJumpEnd),
         (KeyCode::Enter, _) | (KeyCode::Char('l'), _) => Some(Action::ActivitiesOpenDetail),
         (KeyCode::Char('c'), _) => Some(Action::ActivitiesComplete),
@@ -204,7 +257,7 @@ fn notes_key(key: crossterm::event::KeyEvent) -> Option<Action> {
     match (key.code, key.modifiers) {
         (KeyCode::Char('j'), _) | (KeyCode::Down, _) => Some(Action::NotesMove(1)),
         (KeyCode::Char('k'), _) | (KeyCode::Up, _) => Some(Action::NotesMove(-1)),
-        (KeyCode::Char('g'), _) => Some(Action::NotesJumpStart),
+        // `gg` jumps to the top (handled by the global goto prefix); `G` to the end.
         (KeyCode::Char('G'), _) => Some(Action::NotesJumpEnd),
         (KeyCode::Enter, _) | (KeyCode::Char('l'), _) => Some(Action::NotesOpenDetail),
         (KeyCode::Char('a'), _) => Some(Action::NotesArchiveSelected),
@@ -272,7 +325,7 @@ fn books_key(key: crossterm::event::KeyEvent) -> Option<Action> {
         (KeyCode::Char('k'), _) | (KeyCode::Up, _) => Some(Action::BooksMove(-1)),
         (KeyCode::Char('d'), KeyModifiers::CONTROL) => Some(Action::BooksMove(10)),
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => Some(Action::BooksMove(-10)),
-        (KeyCode::Char('g'), _) => Some(Action::BooksJumpStart),
+        // `gg` jumps to the top (handled by the global goto prefix); `G` to the end.
         (KeyCode::Char('G'), _) => Some(Action::BooksJumpEnd),
         (KeyCode::Enter, _) | (KeyCode::Char('l'), _) => Some(Action::BooksOpen),
         (KeyCode::Char('h'), _) => Some(Action::Goto(ScreenKind::Home)),

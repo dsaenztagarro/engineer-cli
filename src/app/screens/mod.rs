@@ -191,7 +191,7 @@ impl Screen {
         }
     }
 
-    pub fn hints(&self, leader: bool, command: Option<&str>) -> Line<'static> {
+    pub fn hints(&self, leader: bool, goto: bool, command: Option<&str>) -> Line<'static> {
         if let Some(buf) = command {
             // The command line renders its own four states (empty / partial /
             // unknown / executing) from the grammar table.
@@ -209,6 +209,19 @@ impl Screen {
                 ("n", "notes"),
                 ("c", "+note"),
                 ("s", "save"),
+            ]);
+        }
+        if goto {
+            // The `g`-goto menu: destinations plus `gg` = top of the list.
+            return crate::ui::widgets::footer_hints(&[
+                ("t", "timer"),
+                ("p", "progress"),
+                ("r", "review"),
+                ("h", "home"),
+                ("b", "books"),
+                ("n", "notes"),
+                ("a", "activities"),
+                ("g", "top"),
             ]);
         }
         match self {

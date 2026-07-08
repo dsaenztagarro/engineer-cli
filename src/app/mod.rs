@@ -53,6 +53,9 @@ pub struct App {
     pub current: Screen,
     pub notification: Option<Notification>,
     pub leader_pending: bool,
+    /// `g`-goto prefix pending — the next key picks a destination (`g t`/`g p`/
+    /// `g r`/…) or, on a `g`, the current list's top motion (`gg`).
+    pub goto_pending: bool,
     pub command_buffer: Option<String>,
     /// The quick-capture overlay, when open — modal over the current screen and
     /// reachable from anywhere (`<Space>c`). `None` when closed.
@@ -110,6 +113,7 @@ async fn run_loop(
         current: Screen::new(start),
         notification: None,
         leader_pending: false,
+        goto_pending: false,
         command_buffer: None,
         capture: None,
         should_quit: false,
@@ -448,9 +452,11 @@ impl App {
         // The open overlay owns the footer hints so its keymap is legible.
         let hints = match self.capture.as_ref() {
             Some(cap) => cap.hints(),
-            None => self
-                .current
-                .hints(self.leader_pending, self.command_buffer.as_deref()),
+            None => self.current.hints(
+                self.leader_pending,
+                self.goto_pending,
+                self.command_buffer.as_deref(),
+            ),
         };
         let chrome = Chrome {
             user: self.user.as_deref(),
@@ -535,6 +541,7 @@ mod tests {
             current: Screen::new(ScreenKind::Home),
             notification: None,
             leader_pending: false,
+            goto_pending: false,
             command_buffer: None,
             capture: None,
             should_quit: false,
@@ -832,5 +839,63 @@ mod tests {
         app.handle(Action::CaptureOpenEdit(Box::new(note))).await;
         assert!(app.capture.is_some());
         assert!(rendered_text(&mut app).contains("Edit note"));
+    }
+
+    /// Feed a plain `Char` key through the real translate pipeline.
+    fn press(app: &mut App, c: char) -> Option<Action> {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let ev = Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        crate::app::event::translate(app, ev)
+    }
+
+    #[tokio::test]
+    async fn g_prefix_navigates_to_the_ambient_surfaces() {
+        let (mut app, _rx) = test_app(None);
+
+        // `g` alone pends — no action yet.
+        assert!(press(&mut app, 'g').is_none());
+        assert!(app.goto_pending);
+
+        // `g t` / `g p` / `g r` — the footer's goto grammar.
+        assert!(matches!(
+            press(&mut app, 't'),
+            Some(Action::Goto(ScreenKind::Timer))
+        ));
+        assert!(!app.goto_pending); // prefix cleared after the destination
+
+        press(&mut app, 'g');
+        assert!(matches!(
+            press(&mut app, 'p'),
+            Some(Action::Goto(ScreenKind::Progress))
+        ));
+        press(&mut app, 'g');
+        assert!(matches!(
+            press(&mut app, 'r'),
+            Some(Action::Goto(ScreenKind::Review))
+        ));
+    }
+
+    #[tokio::test]
+    async fn gg_tops_a_list_and_is_inert_where_there_is_none() {
+        let (mut app, _rx) = test_app(None);
+
+        // On a list screen, `gg` is the top motion (single-`g` became `gg`).
+        app.current = Screen::new(ScreenKind::Books);
+        press(&mut app, 'g');
+        assert!(matches!(press(&mut app, 'g'), Some(Action::BooksJumpStart)));
+
+        // Home has no list — `gg` is a clean no-op.
+        app.current = Screen::new(ScreenKind::Home);
+        press(&mut app, 'g');
+        assert!(press(&mut app, 'g').is_none());
+    }
+
+    #[tokio::test]
+    async fn g_prefix_then_unmapped_key_clears_without_acting() {
+        let (mut app, _rx) = test_app(None);
+        press(&mut app, 'g');
+        assert!(app.goto_pending);
+        assert!(press(&mut app, 'z').is_none());
+        assert!(!app.goto_pending); // consumed and cleared, no lingering prefix
     }
 }

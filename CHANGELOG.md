@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **One `g`-goto grammar on every screen.** Navigation gains a vim-style `g` prefix — `g t` timer, `g p` progress, `g r` review, plus `g h` home, `g b` books, `g n` notes, `g a` activities — so the same goto chord works everywhere and the footer advertises it (a `g`-menu appears the moment you press `g`). The existing single-letter jumps (`t`/`p`/`R`/…) and the `Space` leader stay as aliases, so muscle memory is intact. To make `g` a clean prefix, a list's "jump to top" is now **`gg`** (matching the documented `gg`/`G` grammar and vim); `G` still jumps to the bottom. Frees the single letters for screen-local actions going forward. (`home.dc.html` §Home · enriched footer)
+
 ## [0.5.0] - 2026-07-07
 
 ### Added
