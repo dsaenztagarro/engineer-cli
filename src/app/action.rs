@@ -1,6 +1,6 @@
 use crate::api::{
     Activity, AuditAcknowledged, AuditRead, Book, BookChapter, Dashboard, DayMinutes, Note,
-    Progress, RateResult, Timer, TimerCandidate, TimerSettings, TimerStopped, Topic,
+    Progress, RateResult, Timer, TimerCandidate, TimerSettings, TimerStopped, Today, Topic,
 };
 use crate::app::screens::review::Rating;
 use crate::app::screens::ScreenKind;
@@ -25,10 +25,12 @@ pub enum Action {
     LoginFailed(String),
 
     // Home
-    HomeLoaded {
-        today: Vec<Activity>,
-        reading: Vec<Book>,
-    },
+    /// The composed daily-loop aggregate (`GET /api/v1/today`) — the whole Home
+    /// screen from one read. Boxed: `Today` is large next to the other variants.
+    TodayLoaded(Box<Today>),
+    /// The `today()` load failed; clears Home's spinner (the error is surfaced
+    /// as a notification tile from the load task).
+    HomeLoadFailed,
     RefreshHome,
 
     // Books

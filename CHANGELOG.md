@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **One `g`-goto grammar on every screen.** Navigation gains a vim-style `g` prefix — `g t` timer, `g p` progress, `g r` review, plus `g h` home, `g b` books, `g n` notes, `g a` activities — so the same goto chord works everywhere and the footer advertises it (a `g`-menu appears the moment you press `g`). The existing single-letter jumps (`t`/`p`/`R`/…) and the `Space` leader stay as aliases, so muscle memory is intact. To make `g` a clean prefix, a list's "jump to top" is now **`gg`** (matching the documented `gg`/`G` grammar and vim); `G` still jumps to the bottom. Frees the single letters for screen-local actions going forward. (`home.dc.html` §Home · enriched footer)
 
+### Changed
+
+- **Home opens the day with the timer, from one read.** The Home screen is rebuilt to lead with the running timer as a band — the same `timer_cell` grammar the header speaks, larger — over today's plan (state glyphs, kind, logged-vs-planned, carried-over rows), a logged/review/left strip, and the books you're mid-chapter in with where-you-are. It all comes from a **single `GET /api/v1/today`** aggregate: the old two-call load (`list_activities` + `list_books`) and its client-side day-window math are gone, so Home now honours the server's 4 AM study-day boundary and can't drift from the header cell or Progress. Empty plan and idle timer render as calm states, never blank panels. The pace fold that leads beneath the band lands next. (`home.dc.html` §Home · enriched / §nothing planned / §nothing running)
+
 ## [0.5.0] - 2026-07-07
 
 ### Added

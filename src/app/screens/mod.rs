@@ -227,14 +227,12 @@ impl Screen {
         match self {
             Self::Login(s) => s.hints(),
             Self::Home(_) => crate::ui::widgets::footer_hints(&[
-                ("t", "timer"),
+                ("r", "refresh"),
                 ("a", "+activity"),
-                ("A", "activities"),
-                ("b", "books"),
-                ("R", "review"),
-                ("n", "notes"),
+                ("g t", "timer"),
+                ("g p", "progress"),
+                ("g r", "review"),
                 ("c", "+note"),
-                ("p", "progress"),
                 (":", "cmd"),
                 ("q", "quit"),
             ]),
