@@ -104,6 +104,11 @@ pub struct PlanItem {
     pub status: String,
     #[serde(default)]
     pub state: String,
+    /// The activity kind (`read`/`write`/`review`/…) the plan row labels the
+    /// item by. Additive (ADR 0027): absent on payloads that don't carry it, so
+    /// the row simply drops the label.
+    #[serde(default)]
+    pub kind: Option<String>,
     #[serde(default)]
     pub size_minutes: u32,
     #[serde(default)]
@@ -139,6 +144,10 @@ pub struct Review {
 pub struct ReadingItem {
     pub id: i64,
     pub title: String,
+    /// The author, when the payload carries it — additive (ADR 0027), so the
+    /// row drops the `· author` tail when it's absent.
+    #[serde(default)]
+    pub author: Option<String>,
     #[serde(default)]
     pub progress_percent: Option<f32>,
     #[serde(default)]
@@ -199,7 +208,7 @@ mod tests {
                 "items": [
                     {
                         "id": 1, "title": "Implement Raft leader election",
-                        "status": "in_progress", "state": "live",
+                        "status": "in_progress", "state": "live", "kind": "build",
                         "size_minutes": 120, "logged_minutes": 34
                     },
                     {
@@ -215,6 +224,7 @@ mod tests {
             "reading": [
                 {
                     "id": 10, "title": "Designing Data-Intensive Applications",
+                    "author": "Kleppmann",
                     "progress_percent": 42, "chapters_total": 12,
                     "next_chapter": { "number": 7, "title": "Transactions" }
                 }
@@ -248,6 +258,7 @@ mod tests {
 
         assert_eq!(today.plan.items.len(), 2);
         assert_eq!(today.plan.items[0].state, "live");
+        assert_eq!(today.plan.items[0].kind.as_deref(), Some("build"));
         assert_eq!(today.plan.items[0].logged_minutes, 34);
         assert_eq!(today.plan.items[1].moved_from.as_deref(), Some("Sun"));
         assert_eq!(today.plan.left_count, 2);
@@ -257,6 +268,7 @@ mod tests {
         assert_eq!(today.review.stale_count, 1);
 
         let book = &today.reading[0];
+        assert_eq!(book.author.as_deref(), Some("Kleppmann"));
         assert_eq!(book.progress_percent, Some(42.0));
         assert_eq!(book.next_chapter.as_ref().unwrap().number, 7);
     }
