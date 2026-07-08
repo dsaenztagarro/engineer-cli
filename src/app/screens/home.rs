@@ -1,8 +1,9 @@
 //! Home — the daily loop's opening question, served from one `GET /api/v1/today`
-//! read. It leads with the running timer (the header's `timer_cell` atom, drawn
-//! larger as a band) over today's plan, the logged/review strip, and the books
-//! mid-chapter. The pace fold that leads beneath the band arrives in #65. Home
-//! owns no write; its blocks link out (Timer / Progress / Review).
+//! read. It leads with the two ambient reads that decide the next move — the
+//! running timer (the header's `timer_cell` atom, drawn larger as a band) and
+//! this week's pace fold — over today's plan, the logged/review strip, and the
+//! books mid-chapter. Home owns no write; its blocks link out (Timer / Progress
+//! / Review).
 
 use std::time::Instant;
 
@@ -79,7 +80,7 @@ impl Home {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1),             // date line
-                Constraint::Length(3),             // lead band (pace fold joins in #65)
+                Constraint::Length(4),             // lead band: timer + pace fold
                 Constraint::Length(plan_rows + 2), // today's plan (+ borders)
                 Constraint::Length(2),             // stats strip (+ a spacer row)
                 Constraint::Min(4),                // mid-chapter reading
@@ -93,12 +94,13 @@ impl Home {
         render_reading(frame, chunks[4], today);
     }
 
-    /// The lead band: the running timer as `widgets::timer_cell`, given its own
-    /// bordered band for prominence — the *same atom, larger*, not a second
-    /// timer face. When nothing runs, the calm idle line leads instead.
+    /// The lead band — the two ambient reads that decide the next move: the
+    /// running timer as `widgets::timer_cell` (the *same atom, larger*, not a
+    /// second timer face), and the pace fold beneath it. When nothing runs, the
+    /// calm idle line leads instead.
     fn render_lead(&self, frame: &mut Frame, area: Rect, today: &Today) {
         let elapsed = live_elapsed(&today.timer, self.loaded_at);
-        let line = match widgets::timer_cell(&today.timer, elapsed, false, false) {
+        let timer_line = match widgets::timer_cell(&today.timer, elapsed, false, false) {
             Some(spans) => Line::from(spans),
             None => Line::from(vec![
                 Span::styled("○ ", theme::muted()),
@@ -111,7 +113,47 @@ impl Home {
                 Span::styled("   ⎵ t start", theme::muted()),
             ]),
         };
-        frame.render_widget(Paragraph::new(line).block(bordered("")), area);
+        frame.render_widget(
+            Paragraph::new(vec![timer_line, pace_line(today)]).block(bordered("")),
+            area,
+        );
+    }
+}
+
+/// The pace fold beneath the timer — this week's promise, pre-folded to the
+/// single worst-behind target. `pace: null` is the on-pace state, rendered as a
+/// calm line (silence is on-pace, baked into the API — never a red or empty
+/// panel). Behind wears a small warn chip naming the worst target by scope and
+/// how many trail. The full now-tick meters stay on Progress (`g p`) — the
+/// `/today` fold carries only `delta_minutes`, not the fill/expected/target the
+/// meter needs.
+fn pace_line(today: &Today) -> Line<'static> {
+    match today.pace.as_ref() {
+        None => Line::from(vec![
+            Span::styled("✓ ", Style::default().fg(theme::SUCCESS)),
+            Span::styled(
+                "This week · on pace",
+                Style::default()
+                    .fg(theme::SUCCESS)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("   nothing behind — the quiet state", theme::muted()),
+        ]),
+        Some(pace) => {
+            let hours = pace.worst.delta_minutes as f64 / 60.0;
+            Line::from(vec![
+                Span::styled(format!("{:<10}", pace.worst.scope_name), theme::muted()),
+                Span::styled(
+                    format!(" behind {hours:.1}h "),
+                    Style::default().fg(Color::Black).bg(theme::WARN),
+                ),
+                Span::styled(
+                    format!("   worst of {} targets trailing", pace.behind_count),
+                    theme::muted(),
+                ),
+                Span::styled("   g p → Progress", theme::focused()),
+            ])
+        }
     }
 }
 
@@ -399,6 +441,45 @@ mod tests {
         // The mid-chapter reading panel with where-you-are.
         assert!(text.contains("Mid-chapter"), "{text}");
         assert!(text.contains("Transactions"), "next chapter: {text}");
+        // `pace: null` folds to the calm on-pace line — no meter, no red.
+        assert!(text.contains("on pace"), "on-pace fold: {text}");
+        assert!(
+            !text.contains("targets trailing"),
+            "no behind chip when on pace: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn behind_pace_folds_to_the_worst_target_chip() {
+        let (api, tx) = deps();
+        let mut home = Home::default();
+        home.handle(
+            Action::TodayLoaded(Box::new(today(serde_json::json!({
+                "date": { "day": "2026-07-06", "weekday": "mon", "week": "2026-W28" },
+                "timer": { "running": true, "bound": true, "label": "Raft", "elapsed_seconds": 1453 },
+                "pace": { "behind_count": 2, "worst": {
+                    "target_id": 42, "axis": "domain", "scope_value": 7,
+                    "scope_name": "systems", "delta_minutes": 108
+                } }
+            })))),
+            &api,
+            &tx,
+        )
+        .await;
+
+        let text = render_home(&mut home);
+        // The worst target named by scope, the warn chip (108m => 1.8h), and how
+        // many trail. No on-pace line when behind.
+        assert!(text.contains("systems"), "scope: {text}");
+        assert!(text.contains("behind 1.8h"), "warn chip: {text}");
+        assert!(
+            text.contains("2 targets trailing"),
+            "trailing count: {text}"
+        );
+        assert!(
+            !text.contains("on pace"),
+            "no calm line when behind: {text}"
+        );
     }
 
     #[tokio::test]
