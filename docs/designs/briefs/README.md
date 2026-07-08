@@ -28,7 +28,6 @@ One brief per module. Folder tells status: `proposed/` = has open design/impleme
 | Module brief | What it covers | Open work |
 |---|---|---|
 | [`proposed/progress.brief.md`](proposed/progress.brief.md) | The Measure pillar: pace meters (shipped), `engineer target` declare/adjust/retire, the pace headless twin, the time-explorer pivot. | targets-write (**first to build**), pace `--json` one-shot, pivot |
-| [`proposed/home.brief.md`](proposed/home.brief.md) | Home, enriched — lead with the running timer + this week's pace via the one-call `GET /api/v1/today` aggregate. | rebuild Home on `/today` |
 | [`proposed/notes.brief.md`](proposed/notes.brief.md) | Five-second capture + the notes browser + one-line anchor read-back. | `$EDITOR`-for-prose (replaces the in-TUI textarea for long-form) |
 | [`proposed/week-planning.brief.md`](proposed/week-planning.brief.md) | Plan the week + the retro (planned-vs-done) via `GET /api/v1/weeks/:iso_week`; planning writes go through the activities API. | the whole surface |
 | [`proposed/assisted-capture.brief.md`](proposed/assisted-capture.brief.md) | The draft-triage inbox over `/api/v1/automations/tasks` + a terminal-native git-source connect flow (Phase 2). | the whole surface |
@@ -42,6 +41,7 @@ One brief per module. Folder tells status: `proposed/` = has open design/impleme
 | [`shipped/activities.brief.md`](shipped/activities.brief.md) | The core activities table (list/filter/sort/complete/archive/duplicate) and the segment drill + audit. | epic #7 daily-loop |
 | [`shipped/review.brief.md`](shipped/review.brief.md) | The spaced-repetition dashboard, the due triage, the rate sitting, and browse-all. | epic #7 daily-loop |
 | [`shipped/command-palette.brief.md`](shipped/command-palette.brief.md) | The `:` verb line — nav, timer actions, `:note` capture, completion and unknown-verb handling. Notes the `:log`/`:target` verbs still to add. | epic #7 daily-loop |
+| [`shipped/home.brief.md`](shipped/home.brief.md) | Home, enriched — lead with the running timer + this week's pace over one `GET /api/v1/today` read, with a global `g`-goto grammar and the `engineer today` headless twin. | epic #61 (v0.6.0) |
 
 *(Some of the CLI's earliest screens — Login, Books, Book detail — predate the briefs workflow; see the kit README's screen inventory. The retired omnibus `terminal-client.brief.md` and the pre-lifecycle `daily-loop.brief.md` were decomposed into the module set above.)*
 
