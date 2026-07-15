@@ -44,6 +44,10 @@ pub enum Action {
     BooksJumpStart,
     BooksJumpEnd,
     BooksOpen,
+    /// `f` — open a fuzzy picker over the loaded books; while open it owns keys,
+    /// routed through `BooksPickerKey`.
+    BooksPickerOpen,
+    BooksPickerKey(crossterm::event::KeyEvent),
 
     // Book detail
     BookDetailLoaded {

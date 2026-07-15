@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
@@ -9,6 +9,7 @@ use crate::api::{ApiClient, Book, BookStatus};
 use crate::app::action::{Action, BooksFilter};
 use crate::app::screens::ScreenKind;
 use crate::ui::notify::Level;
+use crate::ui::picker::{Picker, PickerItem};
 use crate::ui::{layout::bordered, theme, widgets};
 
 pub struct Books {
@@ -18,6 +19,10 @@ pub struct Books {
     pub query: String,
     pub searching: bool,
     pub loading: bool,
+    /// `f` — a fuzzy jump over the loaded books (the shared picker widget). `/`
+    /// stays the server-side search; this is the local, instant jump within the
+    /// set already on screen.
+    picker: Option<Picker<i64>>,
 }
 
 impl Default for Books {
@@ -31,6 +36,7 @@ impl Default for Books {
             query: String::new(),
             searching: false,
             loading: false,
+            picker: None,
         }
     }
 }
@@ -73,6 +79,11 @@ impl Books {
     }
 
     pub fn intercept_key(&mut self, key: KeyEvent) -> Option<Action> {
+        // The fuzzy picker is modal: while open it owns every key so a typed
+        // letter filters rather than firing the global keymap.
+        if self.picker.is_some() {
+            return Some(Action::BooksPickerKey(key));
+        }
         if !self.searching {
             if matches!(key.code, KeyCode::Char('/')) {
                 self.searching = true;
@@ -81,6 +92,9 @@ impl Books {
                     level: Level::Info,
                     text: "search: type then Enter".into(),
                 });
+            }
+            if matches!(key.code, KeyCode::Char('f')) {
+                return Some(Action::BooksPickerOpen);
             }
             return None;
         }
@@ -161,9 +175,59 @@ impl Books {
                 self.loading = true;
                 self.fetch(api, tx);
             }
+            Action::BooksPickerOpen => {
+                if !self.items.is_empty() {
+                    let items = self
+                        .items
+                        .iter()
+                        .map(|b| PickerItem::new(book_label(b), b.id))
+                        .collect();
+                    self.picker = Some(Picker::new("open book", items));
+                }
+            }
+            Action::BooksPickerKey(key) => {
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                match key.code {
+                    KeyCode::Esc => self.picker = None,
+                    KeyCode::Enter => {
+                        // Reuse the normal open path: select the picked row, then
+                        // fire BooksOpen (which loads chapters and navigates).
+                        let id = self.picker.as_ref().and_then(|p| p.selected().copied());
+                        self.picker = None;
+                        if let Some(idx) =
+                            id.and_then(|id| self.items.iter().position(|b| b.id == id))
+                        {
+                            self.state.select(Some(idx));
+                            let _ = tx.send(Action::BooksOpen);
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        if let Some(p) = self.picker.as_mut() {
+                            p.backspace();
+                        }
+                    }
+                    // Movement is on the arrows / Ctrl-n/p — plain letters filter.
+                    KeyCode::Down => self.picker_move(1),
+                    KeyCode::Up => self.picker_move(-1),
+                    KeyCode::Char('n') if ctrl => self.picker_move(1),
+                    KeyCode::Char('p') if ctrl => self.picker_move(-1),
+                    KeyCode::Char(c) if !ctrl => {
+                        if let Some(p) = self.picker.as_mut() {
+                            p.input(c);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             _ => {}
         }
         None
+    }
+
+    fn picker_move(&mut self, delta: i32) {
+        if let Some(p) = self.picker.as_mut() {
+            p.move_cursor(delta);
+        }
     }
 
     fn move_cursor(&mut self, delta: i32) {
@@ -222,9 +286,20 @@ impl Books {
             .highlight_style(theme::selection())
             .highlight_symbol("▌ ");
         frame.render_stateful_widget(list, area, &mut self.state);
+
+        // The fuzzy jump draws over the list when open.
+        if let Some(p) = &self.picker {
+            p.render(frame, area);
+        }
     }
 
     pub fn hints(&self) -> Line<'static> {
+        if self.picker.is_some() {
+            return Line::from(Span::styled(
+                "type to filter · ↑/↓ or ^n/^p move · ↵ open · Esc cancel",
+                theme::muted(),
+            ));
+        }
         if self.searching {
             return Line::from(Span::styled(
                 "type to search · Enter to apply · Esc to cancel",
@@ -235,8 +310,18 @@ impl Books {
             ("j/k", "move"),
             ("↵", "open"),
             ("/", "search"),
+            ("f", "find"),
             ("1/2/3", "filter"),
             ("h", "back"),
         ])
+    }
+}
+
+/// The picker row for a book — title, and the author when present, so a fuzzy
+/// query can match either.
+fn book_label(book: &Book) -> String {
+    match &book.author {
+        Some(a) if !a.is_empty() => format!("{} · {}", book.title, a),
+        _ => book.title.clone(),
     }
 }

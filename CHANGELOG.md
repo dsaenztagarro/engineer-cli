@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A shared fuzzy picker — and `f`-to-find on Books, its first home.** Two reusable widgets land: `ui::fuzzy` (a subsequence rank — `dda` finds *Designing Data-Intensive Applications*, rewarding matches that are consecutive or land on a word boundary, so tighter word-aligned hits sort first — deliberately not the substring narrow the lists use) and `ui::picker::Picker<T>` (a Telescope-flavoured modal overlay any screen mounts over its content: type to filter, `↑`/`↓` or `Ctrl-n`/`Ctrl-p` to move, `⏎` to pick, `Esc` to cancel, drawn from the shipped `▌`-selection atoms). Its first consumer: `f` on the **Books** screen opens a fuzzy jump over the books already loaded and `⏎` opens the one you pick — the instant, local counterpart to `/`, which stays the server-side search. Built as one widget rather than a per-screen re-implementation, so the interactive target declare, the timer bind, and week-planning's pick-a-planned-item can all mount the same picker next. (`cross-cutting.brief.md` §B)
+
 ### Changed
 
 - **The accent is now indigo, not sky-blue — the brand hue, ratified.** `theme.rs` moves `ACCENT` from `256 #75` (a sky-blue that had drifted off the web's indigo hue) to periwinkle `256 #105`, with the selection background following from steel `67` to indigo-dim `61`. This is the accent every mockup already drew against and the kit recommended; it keeps the terminal brand identity aligned with the web indigo while staying bright on dark. A one-line palette change every screen inherits. (`docs/designs/README.md` "The accent decision"; `cross-cutting.brief.md` §D)
