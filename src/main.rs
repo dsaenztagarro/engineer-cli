@@ -5,6 +5,7 @@ mod api;
 mod app;
 mod auth;
 mod config;
+mod progress_cli;
 mod target_cli;
 mod timer_cli;
 mod today_cli;
@@ -47,6 +48,9 @@ enum Cmd {
     Target(target_cli::TargetArgs),
     /// Print today's composed daily-loop read — the Home screen, headless.
     Today(today_cli::TodayArgs),
+    /// Read this week's pace headlessly (--json / --short); exit 0 on pace · 2 behind.
+    #[command(alias = "pace")]
+    Progress(progress_cli::ProgressArgs),
     /// Launch the TUI (default).
     Tui,
 }
@@ -77,6 +81,7 @@ fn main() -> Result<()> {
             Cmd::Timer(args) => timer_cli::run(&cfg, args).await,
             Cmd::Target(args) => target_cli::run(&cfg, args).await,
             Cmd::Today(args) => today_cli::run(&cfg, args).await,
+            Cmd::Progress(args) => progress_cli::run(&cfg, args).await,
             Cmd::Tui => app::run(cfg).await.map(|()| 0),
         }
     })?;
