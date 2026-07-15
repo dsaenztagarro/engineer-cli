@@ -12,6 +12,7 @@ use crate::auth::TokenProvider;
 
 mod activities;
 mod audit;
+mod automations;
 mod books;
 mod domains;
 mod envelope;
@@ -27,6 +28,7 @@ mod weeks;
 
 pub use activities::{Activity, ActivityCreate, ActivityFilters};
 pub use audit::{AuditAcknowledged, AuditRead, AuditSegment};
+pub use automations::Task;
 pub use books::{Book, BookChapter, BookStatus, BookUpdate};
 pub use domains::Domain;
 pub use envelope::List;
