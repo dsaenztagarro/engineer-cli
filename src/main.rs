@@ -5,6 +5,7 @@ mod api;
 mod app;
 mod auth;
 mod config;
+mod inbox_cli;
 mod log_cli;
 mod progress_cli;
 mod target_cli;
@@ -59,6 +60,8 @@ enum Cmd {
     Week(week_cli::WeekArgs),
     /// Declare a plan item — a planned activity on a day.
     Plan(week_cli::PlanArgs),
+    /// Triage the assisted-capture draft inbox (list/accept/reject/ack/show).
+    Inbox(inbox_cli::InboxArgs),
     /// Launch the TUI (default).
     Tui,
 }
@@ -93,6 +96,7 @@ fn main() -> Result<()> {
             Cmd::Log(args) => log_cli::run(&cfg, args).await,
             Cmd::Week(args) => week_cli::run_week(&cfg, args).await,
             Cmd::Plan(args) => week_cli::run_plan(&cfg, args).await,
+            Cmd::Inbox(args) => inbox_cli::run(&cfg, args).await,
             Cmd::Tui => app::run(cfg).await.map(|()| 0),
         }
     })?;
