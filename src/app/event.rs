@@ -302,6 +302,8 @@ fn progress_key(key: crossterm::event::KeyEvent) -> Option<Action> {
         (KeyCode::Char('k'), _) | (KeyCode::Up, _) => Some(Action::ProgressSelectMove(-1)),
         (KeyCode::Char('e'), _) => Some(Action::ProgressAdjustBegin),
         (KeyCode::Char('x'), _) => Some(Action::ProgressRetire),
+        // `n` declares a new target — a fuzzy scope pick, then hours.
+        (KeyCode::Char('n'), _) => Some(Action::ProgressDeclareBegin),
         // `[` / `]` step weeks (a vim-ish prev/next idiom that avoids the
         // `h`-means-back convention the other screens use); `t` jumps to today.
         (KeyCode::Char('['), _) => Some(Action::ProgressWeekStep(-1)),
