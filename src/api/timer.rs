@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{ApiClient, ApiError};
 
-#[derive(Debug, Clone, Deserialize)]
+// `Serialize` lets the headless read cache the last-known timer for the offline
+// status-bar fallback (see `crate::timer_cache`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Timer {
     pub running: bool,
     #[serde(default)]

@@ -239,13 +239,39 @@ async fn settings(api: &ApiClient, json: bool) -> Result<Outcome, ApiError> {
 
 // ---------------------------------------------------------------- reads
 
+/// Read the live timer, caching it on success; on a *transport* failure fall
+/// back to the last-known cached value (the offline status-bar case). Auth and
+/// other errors propagate. Returns the age in seconds when the value is stale.
+async fn fetch_timer(api: &ApiClient) -> Result<(Timer, Option<i64>), ApiError> {
+    match api.timer().await {
+        Ok(t) => {
+            crate::timer_cache::store(&t);
+            Ok((t, None))
+        }
+        Err(ApiError::Transport(msg)) => match crate::timer_cache::load() {
+            Some(stale) => Ok((stale.timer, Some(stale.age_secs))),
+            None => Err(ApiError::Transport(msg)),
+        },
+        Err(e) => Err(e),
+    }
+}
+
 async fn read(api: &ApiClient, json: bool, colored: bool) -> Result<Outcome, ApiError> {
-    let timer = api.timer().await?;
+    let (timer, stale) = fetch_timer(api).await?;
     let code = exit_code(&timer);
     let line = if json {
-        json_read(&timer).to_string()
+        let mut v = json_read(&timer);
+        if let Some(age) = stale {
+            v["stale"] = true.into();
+            v["stale_age_s"] = age.into();
+        }
+        v.to_string()
     } else {
-        human_line(&timer, colored)
+        let mut l = human_line(&timer, colored);
+        if let Some(age) = stale {
+            l.push_str(&stale_suffix(age, colored));
+        }
+        l
     };
     Ok(Outcome {
         out: vec![line],
@@ -255,18 +281,43 @@ async fn read(api: &ApiClient, json: bool, colored: bool) -> Result<Outcome, Api
 }
 
 async fn status(api: &ApiClient, short: bool, colored: bool) -> Result<Outcome, ApiError> {
-    let timer = api.timer().await?;
+    let (timer, stale) = fetch_timer(api).await?;
     let code = exit_code(&timer);
     let line = if short {
-        short_status(&timer, colored)
+        let mut l = short_status(&timer, colored);
+        // A stale status-bar clock wears a `~` so a glance still reads "offline".
+        if !l.is_empty() && stale.is_some() {
+            l.push_str(" ~");
+        }
+        l
     } else {
-        plain_status(&timer)
+        let mut l = plain_status(&timer);
+        if let Some(age) = stale {
+            if l != "none" {
+                l.push_str(&format!(" stale_age_s={age}"));
+            }
+        }
+        l
     };
     Ok(Outcome {
         out: if line.is_empty() { vec![] } else { vec![line] },
         err: vec![],
         code,
     })
+}
+
+/// `  · offline (last known 2m ago)` — the muted staleness tail on the human read.
+fn stale_suffix(age_secs: i64, colored: bool) -> String {
+    let ago = if age_secs >= 60 {
+        format!("{}m", age_secs / 60)
+    } else {
+        format!("{age_secs}s")
+    };
+    paint(
+        &format!("  · offline (last known {ago} ago)"),
+        COLOR_MUTED,
+        colored,
+    )
 }
 
 // ---------------------------------------------------------------- writes
