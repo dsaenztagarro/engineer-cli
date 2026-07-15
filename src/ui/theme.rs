@@ -3,8 +3,8 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
-pub const ACCENT: Color = Color::Indexed(75); // soft blue
-pub const ACCENT_DIM: Color = Color::Indexed(67);
+pub const ACCENT: Color = Color::Indexed(105); // periwinkle — indigo-light, true to the brand hue
+pub const ACCENT_DIM: Color = Color::Indexed(61); // indigo-dim, matches the accent hue
 pub const BORDER: Color = Color::Indexed(240);
 pub const MUTED: Color = Color::Indexed(244);
 pub const SUCCESS: Color = Color::Indexed(108);
