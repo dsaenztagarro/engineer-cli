@@ -23,6 +23,7 @@ mod segments;
 mod targets;
 mod timer;
 mod today;
+mod weeks;
 
 pub use activities::{Activity, ActivityCreate, ActivityFilters};
 pub use audit::{AuditAcknowledged, AuditRead, AuditSegment};
@@ -37,6 +38,7 @@ pub use segments::SegmentUpdate;
 pub use targets::{TargetCreate, TargetScope, TargetState};
 pub use timer::{ReclaimVerb, Reclaimed, Timer, TimerCandidate, TimerSettings, TimerStopped};
 pub use today::Today;
+pub use weeks::Week;
 
 /// Current user from `GET /api/v1/me`. Fields mirror the API contract; not all
 /// are consumed by the UI yet.
