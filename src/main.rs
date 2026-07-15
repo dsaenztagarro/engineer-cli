@@ -11,6 +11,7 @@ mod target_cli;
 mod timer_cli;
 mod today_cli;
 mod ui;
+mod week_cli;
 
 #[derive(Parser)]
 #[command(name = "engineer", version, about = "Terminal client for Engineer")]
@@ -54,6 +55,10 @@ enum Cmd {
     Progress(progress_cli::ProgressArgs),
     /// Log a completed session after the fact — a new activity, or minutes onto one.
     Log(log_cli::LogArgs),
+    /// Read a week's planned-vs-done readout (--json for the aggregate).
+    Week(week_cli::WeekArgs),
+    /// Declare a plan item — a planned activity on a day.
+    Plan(week_cli::PlanArgs),
     /// Launch the TUI (default).
     Tui,
 }
@@ -86,6 +91,8 @@ fn main() -> Result<()> {
             Cmd::Today(args) => today_cli::run(&cfg, args).await,
             Cmd::Progress(args) => progress_cli::run(&cfg, args).await,
             Cmd::Log(args) => log_cli::run(&cfg, args).await,
+            Cmd::Week(args) => week_cli::run_week(&cfg, args).await,
+            Cmd::Plan(args) => week_cli::run_plan(&cfg, args).await,
             Cmd::Tui => app::run(cfg).await.map(|()| 0),
         }
     })?;

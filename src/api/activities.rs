@@ -79,6 +79,14 @@ pub struct ActivityCreate {
     pub bloom_level: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_minutes: Option<u32>,
+    /// A plan item is a planned activity carrying this `planned_on` day (status
+    /// defaults to `planned` server-side). Set by `engineer plan`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planned_on: Option<jiff::civil::Date>,
+    /// The plan item's rough size — the retro's planned-vs-done judges "done" as
+    /// logged ≥ half of this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_duration_minutes: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
