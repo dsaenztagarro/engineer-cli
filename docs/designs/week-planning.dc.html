@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <meta name="design_doc_mode" content="canvas">
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#0B0E14; }
+    a { color:#8787FF; text-decoration:none; }
+    a:hover { color:#A5A5FF; }
+    @keyframes pulse { 0%{opacity:1} 45%{opacity:.28} 100%{opacity:1} }
+  </style>
+</helmet>
+
+<div style="padding:44px 48px 100px; display:flex; flex-direction:column; gap:58px; width:2680px; color:#E6EBF2">
+
+  <!-- ============================ INTRO ============================ -->
+  <div style="display:flex; flex-direction:column; gap:16px; width:1240px">
+    <div data-drags-parent="1" style="font-weight:700; font-size:12px; color:#9aa4b2; letter-spacing:.10em">WEEK-PLANNING · engineer-cli · declare the week &amp; read planned-vs-done</div>
+    <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:18px 20px; font-size:13.5px; line-height:1.6; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+      <div><span style="color:#8787FF; font-weight:700">The plan and the retro are two faces of one ISO week.</span> <span style="color:#808080">On Monday you </span><span style="color:#E6EBF2">declare</span><span style="color:#808080"> what the week is </span><span style="font-style:normal; color:#E6EBF2">for</span><span style="color:#808080"> — a short list of intents, a keystroke each. On Friday you read the honest </span><span style="color:#E6EBF2">planned-vs-done</span><span style="color:#808080"> — </span><span style="color:#87AF87">SICP done</span><span style="color:#808080"> · </span><span style="color:#D7AF5F">systems 2 of 3</span><span style="color:#808080"> · </span><span style="color:#D75F5F">that paper never happened</span><span style="color:#808080"> — and write </span><span style="color:#E6EBF2">why</span><span style="color:#808080"> in </span><span style="color:#8787FF">$EDITOR</span><span style="color:#808080">, the way you write a commit message. A readout and a one-liner — not a planning canvas.</span></div>
+      <div style="margin-top:12px; color:#808080; font-size:12.5px">This canvas reads top to bottom: <span style="color:#E6EBF2">the board (plan ⇄ retro) → the readout dissected + the empty week → declaring the week → the $EDITOR reflection → the headless twins &amp; the API</span>. The actuals half is <span style="color:#E6EBF2">derived</span> from <span style="color:#8787FF">GET /api/v1/weeks/:iso_week</span>; the plan items are real activity rows written through the <a href="cross-cutting-concerns.dc.html">activities API</a>.</div>
+      <div style="margin-top:14px; color:#808080; display:flex; gap:22px; flex-wrap:wrap; font-size:12.5px; border-top:1px solid #1A2230; padding-top:12px">
+        <span><span style="color:#8787FF">████</span> accent · verbs · nav</span>
+        <span><span style="color:#87AF87">████</span> done · on-track</span>
+        <span><span style="color:#D7AF5F">████</span> partial · hold</span>
+        <span><span style="color:#D75F5F">████</span> untouched · never happened</span>
+        <span><span style="color:#808080">████</span> muted</span>
+        <span><span style="color:#5F5FAF">████</span> row selection</span>
+      </div>
+      <div style="margin-top:12px; color:#808080; font-size:12px; border-top:1px solid #1A2230; padding-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+        <span style="background:#5F5F87; color:#E6EBF2; font-weight:700; padding:1px 7px; border-radius:4px; font-size:11px">STATUS</span>
+        <span><span style="color:#E6EBF2">proposed</span> — no planning screen or weeks client is built yet. The read &amp; plan-writes are <span style="color:#87AF87">unblocked</span>; the reflection write is <span style="color:#D75F5F">blocked on a v1 route</span> (§ ACT 4).</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ ACT 1 · THE BOARD ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">1</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">THE BOARD — one ISO week, two faces: declare the plan ⇄ read planned-vs-done</span>
+      <span style="color:#808080; font-size:12.5px">click <span style="color:#8787FF">◧ plan ⇄ retro</span> to flip the same week between Monday's intents and Friday's readout</span>
+    </div>
+
+    <div style="width:1300px">
+      <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">WEEK · one derived read · plan items are activity rows · 104×36</div>
+      <div data-screen-label="Week · board" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+        <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+          <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+          <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Week · 104×36</span>
+        </div>
+        <div style="padding:14px 16px; font-size:14px; line-height:1.4; color:#E6EBF2">
+
+          <!-- breadcrumb / week stepper -->
+          <div style="display:flex; align-items:baseline; margin-bottom:12px">
+            <span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Week</span>
+            <span onclick="{{ toggleView }}" title="flip plan ⇄ retro" style="cursor:pointer; user-select:none; color:#8787FF; border:1px solid #1A2230; border-radius:5px; padding:0 8px; white-space:pre; font-size:12px; margin-left:14px">◧ plan ⇄ retro</span>
+            <span style="flex:1"></span>
+            <span style="color:#585858">[&nbsp;</span><span style="color:#808080">‹</span>&nbsp;<span style="font-weight:700">2026-W28</span>&nbsp;<span style="color:#808080">›</span><span style="color:#585858">&nbsp;]</span>
+            <span style="color:#808080">&nbsp;·&nbsp;Jul 6–12&nbsp;·&nbsp;</span><span style="color:#87AF87">this week</span>
+          </div>
+
+          <!-- ===================== LEAD BAND ===================== -->
+          <sc-if value="{{ planView }}" hint-placeholder-val="{{ false }}">
+            <div style="border:1px solid #1A2230; border-left:2px solid #8787FF; border-radius:6px; background:#080B12; padding:13px 16px">
+              <div style="display:flex; align-items:center">
+                <span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre; font-size:12px; padding:1px 8px; border-radius:3px">PLAN</span>
+                <span style="font-weight:700; margin-left:12px; font-size:16px">What this week is for</span>
+                <span style="color:#808080; margin-left:12px; font-size:12.5px">5 declared · 14h intended · 9h logged so far</span>
+                <span style="flex:1"></span>
+                <span style="color:#808080; font-size:12.5px"><span style="color:#87AF87">●</span>&nbsp;1 live now&nbsp;·&nbsp;<span style="color:#8787FF">a</span> add an intent</span>
+              </div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ retroView }}" hint-placeholder-val="{{ true }}">
+            <div style="border:1px solid #1A2230; border-left:2px solid #87AF87; border-radius:6px; background:#080B12; padding:13px 16px">
+              <div style="display:flex; align-items:center">
+                <span style="color:#87AF87; margin-right:11px; font-weight:700">✓</span>
+                <span style="font-weight:700; font-size:15px">SICP</span><span style="color:#87AF87; font-weight:700">&nbsp;done</span>
+                <span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+                <span style="font-weight:700; font-size:15px">systems</span><span style="color:#D7AF5F; font-weight:700">&nbsp;2 of 3</span>
+                <span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+                <span style="font-weight:700; font-size:15px">that paper</span><span style="color:#D75F5F; font-weight:700">&nbsp;never happened</span>
+                <span style="flex:1"></span>
+                <span style="color:#808080; font-size:12.5px"><span style="color:#87AF87; font-weight:700">3 done</span> · <span style="color:#D7AF5F">1 partial</span> · <span style="color:#808080">1 untouched</span> · 12h20 / 14h</span>
+              </div>
+            </div>
+          </sc-if>
+
+          <!-- ===================== PLAN LIST ===================== -->
+          <div style="display:flex; margin-top:14px">
+            <span style="color:#585858">┌</span>
+            <sc-if value="{{ planView }}" hint-placeholder-val="{{ false }}">
+              <span style="color:#8787FF; font-weight:700; white-space:pre"> This week · 5 planned · 9h / 14h logged </span>
+            </sc-if>
+            <sc-if value="{{ retroView }}" hint-placeholder-val="{{ true }}">
+              <span style="color:#8787FF; font-weight:700; white-space:pre"> Planned vs done · 2026-W28 </span>
+            </sc-if>
+            <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────</div>
+            <span style="color:#585858">┐</span>
+          </div>
+
+          <!-- PLAN VIEW rows -->
+          <sc-if value="{{ planView }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; color:#808080"><span style="width:22px; text-align:center; color:#87AF87">✓</span><span style="width:96px; color:#808080">build</span><span style="flex:1; min-width:0; color:#E6EBF2">Ship the timer epic</span><span style="width:120px; text-align:right">5h50 / 6h</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre; width:22px; text-align:center"><span style="background:#87AF87; color:#0B0E14; white-space:pre">●</span></span><span style="width:96px">read</span><span style="flex:1; min-width:0">SICP — chapters 2 &amp; 3&nbsp;&nbsp;<span style="background:#87AF87; color:#0B0E14; white-space:pre; font-size:11.5px; padding:0 5px; border-radius:2px">live</span></span><span style="width:120px; text-align:right">2h10 / 3h</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; color:#808080"><span style="width:22px; text-align:center; color:#585858">○</span><span style="width:96px; color:#808080">read</span><span style="flex:1; min-width:0; color:#E6EBF2">Systems reading · 3 papers</span><span style="width:120px; text-align:right">1h00 / 3h</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; color:#808080"><span style="width:22px; text-align:center; color:#585858">○</span><span style="width:96px; color:#808080">write</span><span style="flex:1; min-width:0; color:#E6EBF2">Raft consensus summary</span><span style="width:120px; text-align:right">0 / 1h</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; display:flex; align-items:center; color:#808080"><span style="width:22px; text-align:center; color:#585858">○</span><span style="width:96px; color:#808080">read</span><span style="flex:1; min-width:0; color:#E6EBF2">The Raft paper (revisit)</span><span style="width:120px; text-align:right">0 / 1h</span></div><span style="color:#585858">│</span></div>
+          </sc-if>
+
+          <!-- RETRO VIEW rows -->
+          <sc-if value="{{ retroView }}" hint-placeholder-val="{{ true }}">
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; color:#808080"><span style="width:96px; color:#808080">build</span><span style="flex:1; min-width:0; color:#E6EBF2">Ship the timer epic</span><span style="white-space:pre; margin:0 12px; color:#87AF87">██████████</span><span style="width:96px; text-align:left"><span style="background:#87AF87; color:#0B0E14; font-weight:700; white-space:pre; font-size:11.5px; padding:1px 7px; border-radius:3px"> done </span></span><span style="width:112px; text-align:right">6h10 / 6h</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; color:#808080"><span style="width:96px; color:#808080">read</span><span style="flex:1; min-width:0; color:#E6EBF2">SICP — chapters 2 &amp; 3</span><span style="white-space:pre; margin:0 12px; color:#87AF87">██████████</span><span style="width:96px; text-align:left"><span style="background:#87AF87; color:#0B0E14; font-weight:700; white-space:pre; font-size:11.5px; padding:1px 7px; border-radius:3px"> done </span></span><span style="width:112px; text-align:right">3h10 / 3h</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="width:96px">read</span><span style="flex:1; min-width:0">Systems reading · 3 papers&nbsp;&nbsp;<span style="color:#0B0E14">2 of 3</span></span><span style="white-space:pre; margin:0 12px"><span style="color:#0B0E14">██████▍</span><span style="color:#2C2C63">···</span></span><span style="width:96px; text-align:left"><span style="background:#D7AF5F; color:#0B0E14; font-weight:700; white-space:pre; font-size:11.5px; padding:1px 7px; border-radius:3px"> hold </span></span><span style="width:112px; text-align:right">1h55 / 3h</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; color:#808080"><span style="width:96px; color:#808080">write</span><span style="flex:1; min-width:0; color:#E6EBF2">Raft consensus summary</span><span style="white-space:pre; margin:0 12px; color:#87AF87">██████████</span><span style="width:96px; text-align:left"><span style="background:#87AF87; color:#0B0E14; font-weight:700; white-space:pre; font-size:11.5px; padding:1px 7px; border-radius:3px"> done </span></span><span style="width:112px; text-align:right">1h05 / 1h</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; display:flex; align-items:center; color:#808080"><span style="width:96px; color:#585858">read</span><span style="flex:1; min-width:0; color:#808080">The Raft paper (revisit)&nbsp;&nbsp;<span style="color:#585858">never happened</span></span><span style="white-space:pre; margin:0 12px; color:#2C2C33">··········</span><span style="width:96px; text-align:left; color:#585858">untouched</span><span style="width:112px; text-align:right; color:#585858">0 / 1h</span></div><span style="color:#585858">│</span></div>
+          </sc-if>
+
+          <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+
+          <!-- ===================== BELOW-FOLD ===================== -->
+          <sc-if value="{{ planView }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex; gap:26px; margin:9px 2px 3px; font-size:13px; flex-wrap:wrap">
+              <span style="color:#808080">on a plan item&nbsp;&nbsp;<span style="color:#8787FF; font-weight:700">s</span> start the timer bound to it</span>
+              <span style="color:#585858">·</span>
+              <span style="color:#808080"><span style="color:#8787FF; font-weight:700">a</span> add · <span style="color:#8787FF; font-weight:700">c</span> mark done · <span style="color:#8787FF; font-weight:700">d</span> drop</span>
+              <span style="color:#585858">·</span>
+              <span style="color:#808080">arranging the week stays on the <a href="#">web</a></span>
+            </div>
+          </sc-if>
+          <sc-if value="{{ retroView }}" hint-placeholder-val="{{ true }}">
+            <!-- the reflection (week note) -->
+            <div style="display:flex; margin-top:9px">
+              <span style="color:#585858">┌</span>
+              <span style="color:#8787FF; font-weight:700; white-space:pre"> Reflection · this week's note </span>
+              <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────</div>
+              <span style="color:#585858">┐</span>
+            </div>
+            <sc-if value="{{ reflected }}" hint-placeholder-val="{{ true }}">
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:5px 10px 1px; color:#E6EBF2; line-height:1.55">The timer epic landed — shipping it freed the head-space that made SICP easy.</div><span style="color:#585858">│</span></div>
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; color:#E6EBF2; line-height:1.55">Systems reading kept slipping to the end of the day; the third paper was always</div><span style="color:#585858">│</span></div>
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 5px; color:#E6EBF2; line-height:1.55">the one I cut. Next week: read the paper first, build second.</div><span style="color:#585858">│</span></div>
+            </sc-if>
+            <sc-if value="{{ empty }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:12px 10px; text-align:center; color:#808080">No reflection yet.<br><span style="font-size:12.5px">press <span style="color:#8787FF">i</span> to write </span><span style="font-size:12.5px; color:#585858">why</span><span style="font-size:12.5px"> the week went the way it did — opens <span style="color:#8787FF">$EDITOR</span></span></div><span style="color:#585858">│</span></div>
+            </sc-if>
+            <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+            <div style="margin-top:8px; display:flex; align-items:center; gap:14px; font-size:12.5px; color:#808080">
+              <span onclick="{{ toggleReflect }}" title="toggle written / empty" style="cursor:pointer; user-select:none; color:#8787FF; border:1px solid #1A2230; border-radius:5px; padding:0 8px; white-space:pre; font-size:12px"><sc-if value="{{ reflected }}" hint-placeholder-val="{{ true }}"><span>◧ clear note</span></sc-if><sc-if value="{{ empty }}" hint-placeholder-val="{{ false }}"><span>◧ write note</span></sc-if></span>
+              <span><span style="color:#8787FF; font-weight:700">i</span> edit in $EDITOR</span>
+              <span style="color:#585858">·</span>
+              <span>derived readout above · <span style="color:#E6EBF2">one</span> stored line below</span>
+            </div>
+          </sc-if>
+
+          <!-- footer -->
+          <div style="border-top:1px solid #1A2230; padding-top:10px; margin-top:11px; display:flex; align-items:center; flex-wrap:wrap">
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> a </span><span>&nbsp;add intent</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> s </span><span>&nbsp;start</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> i </span><span>&nbsp;reflect</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> [ </span><span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre">]</span><span>&nbsp;week</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> t </span><span>&nbsp;this week</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> : </span><span>&nbsp;command</span>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:8px; font-size:12px; color:#808080; line-height:1.5">The plan list is the <span style="color:#8787FF">Activities table</span> grammar — full-row inverse selection with <span style="color:#8787FF">●/▌</span>, one font size. The retro readout is the <span style="color:#8787FF">pace/progress meter</span> block plus status pills: <span style="background:#87AF87; color:#0B0E14; white-space:pre; font-size:11px; padding:0 5px; border-radius:2px"> done </span> <span style="background:#D7AF5F; color:#0B0E14; white-space:pre; font-size:11px; padding:0 5px; border-radius:2px"> hold </span> <span style="color:#808080">untouched</span>. Both faces render the <span style="color:#E6EBF2">same</span> plan items — the plan is <span style="color:#E6EBF2">declared</span>, the done/partial/untouched judgment is <span style="color:#E6EBF2">derived</span> from the segments, and only the reflection line is stored.</div>
+    </div>
+  </section>
+
+  <!-- ============================ ACT 2 · THE READOUT DISSECTED ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">2</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">THE READOUT — how a plan item is judged, &amp; the week you haven't planned</span>
+      <span style="color:#808080; font-size:12.5px">done / partial / untouched come read-through from the segments, never stored</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- judgment anatomy -->
+      <div style="width:820px; background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:16px 18px; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+        <div style="color:#E6EBF2; font-weight:700; margin-bottom:12px; font-size:13px">ONE ROW · planned intent ⟶ derived judgment</div>
+
+        <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin-bottom:6px">DONE · logged meets the plan</div>
+        <div style="display:flex; align-items:center; font-size:14px; padding:2px 0">
+          <span style="width:88px; color:#808080">read</span><span style="flex:1">SICP — chapters 2 &amp; 3</span>
+          <span style="white-space:pre; margin:0 12px; color:#87AF87">██████████</span>
+          <span style="background:#87AF87; color:#0B0E14; font-weight:700; white-space:pre; font-size:11.5px; padding:1px 7px; border-radius:3px"> done </span>
+          <span style="width:96px; text-align:right; color:#808080">3h10 / 3h</span>
+        </div>
+
+        <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:16px 0 6px">PARTIAL · some logged, short of plan — the honest middle</div>
+        <div style="display:flex; align-items:center; font-size:14px; padding:2px 0">
+          <span style="width:88px; color:#808080">read</span><span style="flex:1">Systems reading · <span style="color:#D7AF5F">2 of 3</span></span>
+          <span style="white-space:pre; margin:0 12px"><span style="color:#D7AF5F">██████▍</span><span style="color:#585858">···</span></span>
+          <span style="background:#D7AF5F; color:#0B0E14; font-weight:700; white-space:pre; font-size:11.5px; padding:1px 7px; border-radius:3px"> hold </span>
+          <span style="width:96px; text-align:right; color:#808080">1h55 / 3h</span>
+        </div>
+
+        <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:16px 0 6px">UNTOUCHED · zero segments — “never happened”</div>
+        <div style="display:flex; align-items:center; font-size:14px; padding:2px 0; color:#808080">
+          <span style="width:88px; color:#585858">read</span><span style="flex:1; color:#808080">The Raft paper (revisit)</span>
+          <span style="white-space:pre; margin:0 12px; color:#2C2C33">··········</span>
+          <span style="color:#585858; font-size:11.5px; padding:1px 7px">untouched</span>
+          <span style="width:96px; text-align:right; color:#585858">0 / 1h</span>
+        </div>
+
+        <div style="margin-top:14px; padding-top:12px; border-top:1px solid #1A2230; color:#808080; font-size:12px; line-height:1.7">
+          <div><span style="color:#E6EBF2; font-weight:700">planned intent</span> — a planned activity: <span style="color:#585858">{ title, kind, planned_on, size_minutes }</span>, written through the activities API.</div>
+          <div><span style="color:#E6EBF2; font-weight:700">actuals</span> — <span style="color:#585858">logged_minutes = Σ segments</span> for that activity, summed server-side; never typed.</div>
+          <div style="margin-top:6px; color:#585858">The label (<span style="color:#87AF87">done</span> / <span style="color:#D7AF5F">hold</span> / <span style="color:#808080">untouched</span>) is a fold of logged-vs-planned + <span style="color:#8787FF">status</span> — recomputed on every read. The board keeps no second ledger.</div>
+        </div>
+      </div>
+
+      <!-- empty week -->
+      <div style="width:640px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">NOTHING DECLARED · plan.items empty · a calm invitation</div>
+        <div data-screen-label="Week · nothing planned" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">Week · nothing declared</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px">
+            <div style="display:flex; align-items:baseline; margin-bottom:12px">
+              <span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Week</span>
+              <span style="flex:1"></span>
+              <span style="color:#585858">[&nbsp;</span><span style="color:#808080">‹</span>&nbsp;<span style="font-weight:700">2026-W29</span>&nbsp;<span style="color:#808080">›</span><span style="color:#585858">&nbsp;]</span><span style="color:#808080">&nbsp;·&nbsp;Jul 13–19</span>
+            </div>
+            <div style="display:flex">
+              <span style="color:#585858">┌</span>
+              <span style="color:#8787FF; font-weight:700; white-space:pre"> This week </span>
+              <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">────────────────────────────────────────────────</div>
+              <span style="color:#585858">┐</span>
+            </div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:14px 10px; text-align:center; color:#808080">Nothing declared for this week yet.<br><span style="font-size:12.5px">say what it's for — <span style="color:#8787FF">a</span> add an intent, or <span style="color:#8787FF">engineer plan add</span> from the shell</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+            <div style="margin-top:9px; color:#808080; font-size:13px">unplanned work still lands in <span style="color:#E6EBF2">the actuals</span> — the retro reads segments, planned or not.</div>
+          </div>
+        </div>
+        <div style="margin-top:7px; font-size:12px; color:#808080; line-height:1.5">An empty week is an invitation, not a blank. And because the retro is <span style="color:#E6EBF2">derived from segments</span>, a week you never planned still gets an honest readout — the untouched intents are simply the ones you declared and didn't reach.</div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============================ ACT 3 · DECLARE THE WEEK ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">3</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">DECLARE THE WEEK — a one-liner, not a canvas · reuses the activities API</span>
+      <span style="color:#808080; font-size:12.5px">a plan item <span style="color:#E6EBF2">is</span> a planned activity with <span style="color:#8787FF">planned_on</span> set — no new endpoint</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- the shell one-liner -->
+      <div style="width:820px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">THE VERB · engineer plan add — declare, adjust, close, from the shell</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">bash — a planned activity + planned_on = a plan item</span>
+          </div>
+          <div style="padding:15px 17px; font-size:12.5px; line-height:1.85; color:#E6EBF2; white-space:pre-wrap"><span style="color:#585858">$</span> engineer plan add <span style="color:#87AF87">"one systems paper"</span> <span style="color:#8787FF">--kind</span> read <span style="color:#8787FF">--size</span> 1h
+<span style="color:#87AF87">✓</span> planned · <span style="color:#8787FF">2026-W28</span> · read · one systems paper · 1h    <span style="color:#585858"># exit 0</span>
+
+<span style="color:#585858">$</span> engineer plan add <span style="color:#87AF87">"Ship the timer epic"</span> <span style="color:#8787FF">--kind</span> build <span style="color:#8787FF">--week</span> next
+<span style="color:#87AF87">✓</span> planned · <span style="color:#8787FF">2026-W29</span> · build · Ship the timer epic
+
+<span style="color:#585858">$</span> engineer plan <span style="color:#8787FF">--json</span> | jq -r <span style="color:#87AF87">'.items[] | .title'</span>
+<span style="color:#E6EBF2">Ship the timer epic
+SICP — chapters 2 &amp; 3
+Systems reading · 3 papers</span>                <span style="color:#585858"># clean text, no ANSI</span></div>
+        </div>
+        <div style="font-size:12px; color:#808080; line-height:1.5"><span style="color:#8787FF">plan add</span> is <span style="color:#8787FF">POST /api/v1/activities</span> with <span style="color:#8787FF">planned_on</span> pointed at the week — <span style="color:#8787FF">adjust</span> is <span style="color:#8787FF">PATCH</span>, <span style="color:#8787FF">done</span> rides <span style="color:#8787FF">member { patch :complete }</span>. The one CLI gap is a <span style="color:#8787FF">planned_on</span> field on <span style="color:#8787FF">ActivityCreate</span>; the rest of the write client already exists.</div>
+      </div>
+
+      <!-- board add + timer seam -->
+      <div style="width:660px; display:flex; flex-direction:column; gap:16px">
+        <!-- inline add -->
+        <div data-screen-label="Week · add an intent" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">press a — declare an intent in the app</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px">
+            <div style="display:flex; align-items:center; margin-bottom:2px">
+              <span style="color:#585858">┌</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre; font-size:11.5px; padding:1px 7px; border-radius:0"> INSERT </span>
+              <span style="color:#8787FF; font-weight:700; white-space:pre">&nbsp;Add intent · 2026-W28&nbsp;</span>
+              <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">────────────────────────────</div>
+              <span style="color:#585858">┐</span>
+            </div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:5px 10px; display:flex; align-items:center"><span style="color:#808080; width:64px">kind</span><span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> read </span><span style="color:#585858; margin-left:8px; font-size:12px">⎵ cycles</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center"><span style="color:#808080; width:64px">title</span><span style="color:#E6EBF2">one systems paper</span><span style="width:8px; height:17px; background:#E6EBF2; display:inline-block; margin-left:1px"></span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 5px; display:flex; align-items:center"><span style="color:#808080; width:64px">size</span><span style="color:#E6EBF2">1h</span><span style="color:#585858; margin-left:12px; font-size:12px">optional · shapes the meter, not required</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+            <div style="margin-top:8px; display:flex; align-items:center; flex-wrap:wrap; font-size:13px">
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ⏎ </span><span>&nbsp;declare</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#585858; color:#0B0E14; font-weight:600; white-space:pre"> Esc </span><span>&nbsp;cancel</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- timer seam -->
+        <div style="background:#05080F; border:1px solid #1A2230; border-left:2px solid #8787FF; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.6; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="color:#E6EBF2; font-weight:700; margin-bottom:9px">The seam · <span style="color:#8787FF">s</span> binds the timer to a planned item</div>
+          <div style="white-space:pre; line-height:1.7; color:#808080; font-size:12px; margin-bottom:9px"><span style="background:#5F5FAF; color:#0B0E14; font-weight:700; white-space:pre">▌ ● read  SICP — chapters 2 &amp; 3 </span>
+        │  <span style="color:#8787FF">s</span>
+        ▼
+   <span style="color:#87AF87">●</span> <span style="color:#E6EBF2; font-weight:700">02:11</span> <span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre"> read </span> bound to the plan item</div>
+          <div style="padding-top:9px; border-top:1px solid #1A2230; color:#585858">Starting on a plan item is the join between this module and the <a href="timer.dc.html">timer</a> — the plan and the actuals become one ledger, because the segments the timer writes are what the retro reads back.</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============================ ACT 4 · THE $EDITOR REFLECTION ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">4</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">THE REFLECTION — $EDITOR for prose, never a textarea in ratatui</span>
+      <span style="background:#D75F5F; color:#0B0E14; font-weight:700; padding:2px 9px; border-radius:4px; font-size:11.5px">WRITE BLOCKED</span>
+      <span style="color:#808080; font-size:12.5px">the render ships in phase 2; the persist waits on a v1 route</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- handoff flow -->
+      <div style="width:820px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">THE HANDOFF · press i on the retro → suspend the TUI → $EDITOR → read back</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">week note — the git-commit pattern</span>
+          </div>
+          <div style="padding:15px 17px; font-size:12.5px; line-height:1.7; color:#808080; white-space:pre-wrap"><span style="color:#585858">┌─ ratatui · retro ──────────────────────────────────┐</span>
+<span style="color:#585858">│</span>  <span style="color:#87AF87">3 done</span> · <span style="color:#D7AF5F">1 partial</span> · <span style="color:#808080">1 untouched</span>                    <span style="color:#585858">│</span>
+<span style="color:#585858">│</span>  reflection  <span style="color:#8787FF">[ i ] write why ▾</span>                     <span style="color:#585858">│</span>
+<span style="color:#585858">└────────────────────────────────────────────────────┘</span>
+                     │  <span style="color:#8787FF">i</span>
+                     ▼
+        <span style="color:#87AF87">nvim</span> /tmp/engineer-week-2026-W28.md   <span style="color:#585858"># suspend TUI, spawn</span>
+                     │  <span style="color:#8787FF">:wq</span> save        <span style="color:#585858"># read the temp file back</span>
+                     │  <span style="color:#D75F5F">empty buffer</span>       <span style="color:#585858"># → cancels, no write</span>
+                     ▼
+        <span style="color:#87AF87">✓</span> reflection attached · <span style="color:#D7AF5F">persist pending a v1 route</span></div>
+        </div>
+        <div style="font-size:12px; color:#808080; line-height:1.5">The retro <span style="color:#E6EBF2">readout</span> is a screen; the retro <span style="color:#E6EBF2">writing</span> is a hand-off. Same convention as note capture — spawn <span style="color:#8787FF">$EDITOR</span> on a temp file, save-and-quit persists, an <span style="color:#D75F5F">empty buffer cancels</span>. One stored line per week, never a rich editor rebuilt on a character grid.</div>
+      </div>
+
+      <!-- the server gap -->
+      <div style="width:660px; display:flex; flex-direction:column; gap:16px">
+        <div style="background:#05080F; border:1px solid #1A2230; border-left:2px solid #D75F5F; border-radius:8px; padding:16px 18px; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="color:#E6EBF2; font-weight:700; font-size:12.5px; margin-bottom:10px">THE GAP · no v1 route persists the reflection — raise it</div>
+          <div style="font-size:12.5px; line-height:1.55; color:#808080">
+            <div style="display:flex; padding:5px 0; border-top:1px solid #121826"><span style="color:#87AF87; width:70px; flex-shrink:0; font-weight:700">GET ✓</span><span><span style="color:#8787FF">/api/v1/weeks/:iso_week</span> — the derived aggregate. <span style="color:#E6EBF2">Read-only</span>, shipped. The retro renders straight off this.</span></div>
+            <div style="display:flex; padding:5px 0; border-top:1px solid #121826"><span style="color:#87AF87; width:70px; flex-shrink:0; font-weight:700">PLAN ✓</span><span><span style="color:#8787FF">POST / PATCH /api/v1/activities</span> — plan writes ride the shipped activities API. No new endpoint.</span></div>
+            <div style="display:flex; padding:5px 0; border-top:1px solid #121826"><span style="color:#D75F5F; width:70px; flex-shrink:0; font-weight:700">NOTE ✗</span><span>the week-note write exists only in the <span style="color:#E6EBF2">web namespace</span> (<span style="color:#585858">Turbo autosave</span>), not under <span style="color:#8787FF">api/v1</span> — no token-auth JSON route the CLI can call.</span></div>
+          </div>
+          <div style="margin-top:11px; padding-top:10px; border-top:1px solid #1A2230; font-size:12px; color:#585858; line-height:1.55">The ask, exactly as the timer's §C once stood: a v1 <span style="color:#8787FF">PATCH /api/v1/weeks/:iso_week/note</span> (or fold it into the aggregate), analogous to the <span style="color:#8787FF">POST /api/v1/timer/*</span> hygiene routes that later unblocked the timer. <span style="color:#E6EBF2">Don't design around it silently.</span></div>
+        </div>
+
+        <div style="background:#05080F; border:1px solid #1A2230; border-left:2px solid #87AF87; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.6; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="color:#E6EBF2; font-weight:700; margin-bottom:6px">Until the route lands</div>
+          <div>The reflection is <span style="color:#E6EBF2">read-and-display only</span> — the readout and note render in phase 2 off the shipped <span style="color:#8787FF">GET</span>. Ship the write flow's design now; land the write when the server exposes the v1 route, mirroring how the timer's gaps closed once <span style="color:#E6EBF2">engineer</span> shipped the hygiene API.</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============================ ACT 5 · HEADLESS TWINS & API ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">5</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">HEADLESS TWINS &amp; THE API — every read the board shows is also a one-shot</span>
+      <span style="color:#808080; font-size:12.5px">the retro is a <span style="color:#8787FF">--json</span> readout &amp; a piped line · the plan-declare a verb</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- the outputs -->
+      <div style="width:900px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">engineer week — a machine form &amp; a pipe form, TTY-detected, NO_COLOR-respecting</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">bash — the retro, piped</span>
+          </div>
+          <div style="padding:15px 17px; font-size:12.5px; line-height:1.75; color:#E6EBF2; white-space:pre-wrap"><span style="color:#585858">$</span> engineer week <span style="color:#8787FF">--json</span>
+{ <span style="color:#8787FF">"iso_week"</span>:<span style="color:#87AF87">"2026-W28"</span>, <span style="color:#8787FF">"planned_minutes"</span>:<span style="color:#D7AF5F">840</span>, <span style="color:#8787FF">"done_minutes"</span>:<span style="color:#D7AF5F">740</span>,
+  <span style="color:#8787FF">"tally"</span>:{ <span style="color:#8787FF">"done"</span>:<span style="color:#D7AF5F">3</span>, <span style="color:#8787FF">"partial"</span>:<span style="color:#D7AF5F">1</span>, <span style="color:#8787FF">"untouched"</span>:<span style="color:#D7AF5F">1</span> },
+  <span style="color:#8787FF">"items"</span>:[ { <span style="color:#8787FF">"title"</span>:<span style="color:#87AF87">"SICP…"</span>, <span style="color:#8787FF">"kind"</span>:<span style="color:#87AF87">"read"</span>, <span style="color:#8787FF">"planned_m"</span>:<span style="color:#D7AF5F">180</span>, <span style="color:#8787FF">"logged_m"</span>:<span style="color:#D7AF5F">190</span>, <span style="color:#8787FF">"verdict"</span>:<span style="color:#87AF87">"done"</span> } ],
+  <span style="color:#8787FF">"note"</span>:<span style="color:#87AF87">"The timer epic landed…"</span> }
+
+<span style="color:#585858">$</span> engineer week            <span style="color:#585858"># stable, field-ordered plain line</span>
+2026-W28 3/1/1 740/840 <span style="color:#87AF87">"SICP done · systems 2 of 3 · Raft paper never happened"</span>
+<span style="color:#585858">└─ iso ──┘ └d/p/u┘ └don/pln┘ └───────────── readout ─────────────┘</span>
+
+<span style="color:#585858">$</span> engineer week <span style="color:#8787FF">--short</span>    <span style="color:#585858"># the status-bar reduction</span>
+<span style="color:#87AF87">W28</span> 3<span style="color:#585858">·</span><span style="color:#D7AF5F">1</span><span style="color:#585858">·</span>1 <span style="color:#808080">88%</span></div>
+        </div>
+        <div style="font-size:12px; color:#808080; line-height:1.5">Colour is gated on <span style="color:#8787FF">stdout().is_terminal()</span> AND <span style="color:#8787FF">NO_COLOR</span> unset — a pipe gets clean text. The plain line's column order never changes and uses <span style="color:#E6EBF2">-</span> placeholders, so <span style="color:#8787FF">awk</span>/<span style="color:#8787FF">cut</span> don't break. The <span style="color:#8787FF">read</span> twins are unblocked today; only the note <span style="color:#E6EBF2">write</span> waits on §4's route.</div>
+      </div>
+
+      <!-- the API + phasing -->
+      <div style="width:640px; display:flex; flex-direction:column; gap:16px">
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.5; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="color:#E6EBF2; font-weight:700; margin-bottom:10px">The API it consumes</div>
+          <div style="display:flex; padding:5px 0; border-top:1px solid #121826"><span style="color:#87AF87; width:52px; flex-shrink:0; font-weight:700">GET</span><span><span style="color:#8787FF">/api/v1/weeks/:iso_week</span> — the derived aggregate: plan, actuals, pace fold, note. Read-only.</span></div>
+          <div style="display:flex; padding:5px 0; border-top:1px solid #121826"><span style="color:#87AF87; width:52px; flex-shrink:0; font-weight:700">POST</span><span><span style="color:#8787FF">/api/v1/activities</span> — declare a plan item (<span style="color:#8787FF">planned_on</span> = the week).</span></div>
+          <div style="display:flex; padding:5px 0; border-top:1px solid #121826"><span style="color:#87AF87; width:52px; flex-shrink:0; font-weight:700">PATCH</span><span><span style="color:#8787FF">/api/v1/activities/:id</span> — adjust · <span style="color:#8787FF">:id/complete</span> closes it done.</span></div>
+          <div style="display:flex; padding:5px 0; border-top:1px solid #121826"><span style="color:#D75F5F; width:52px; flex-shrink:0; font-weight:700">— ✗</span><span>week-note write — <span style="color:#D75F5F">no v1 route yet</span>. Raised in §4.</span></div>
+        </div>
+
+        <div style="background:#05080F; border:1px solid #1A2230; border-left:2px solid #5F5F87; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.6; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="color:#E6EBF2; font-weight:700; margin-bottom:9px">Phasing</div>
+          <div style="display:flex; gap:11px; padding:3px 0"><span style="color:#8787FF; font-weight:700; flex-shrink:0">1</span><div>this design pass → gap brief → epic.</div></div>
+          <div style="display:flex; gap:11px; padding:3px 0"><span style="color:#87AF87; font-weight:700; flex-shrink:0">2</span><div>week read + retro readout <span style="color:#87AF87">(unblocked)</span> — wire the weeks client, render the board + <span style="color:#8787FF">--json</span>/plain twins.</div></div>
+          <div style="display:flex; gap:11px; padding:3px 0"><span style="color:#87AF87; font-weight:700; flex-shrink:0">3</span><div>plan writes <span style="color:#87AF87">(unblocked)</span> — declare/adjust/complete + the timer seam.</div></div>
+          <div style="display:flex; gap:11px; padding:3px 0"><span style="color:#D7AF5F; font-weight:700; flex-shrink:0">4</span><div>the $EDITOR reflection <span style="color:#D75F5F">(behind the v1 route)</span> — design now, land the write when the server ships it.</div></div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+</div>
+
+<template id="__bundler_thumbnail">
+  <svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+    <rect width="80" height="80" rx="16" fill="#05080F"/>
+    <rect x="16" y="17" width="30" height="8" rx="2" fill="#8787FF"/>
+    <rect x="16" y="31" width="34" height="6" rx="2" fill="#87AF87"/>
+    <rect x="54" y="31" width="10" height="6" rx="2" fill="#87AF87"/>
+    <rect x="16" y="43" width="30" height="6" rx="2" fill="#585858"/>
+    <rect x="54" y="43" width="10" height="6" rx="2" fill="#D7AF5F"/>
+    <rect x="16" y="55" width="26" height="6" rx="2" fill="#585858"/>
+    <rect x="54" y="55" width="10" height="6" rx="2" fill="#585858"/>
+  </svg>
+</template>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { view: 'retro', reflected: true };
+  renderVals() {
+    return {
+      planView: this.state.view === 'plan',
+      retroView: this.state.view === 'retro',
+      toggleView: () => this.setState(s => ({ view: s.view === 'plan' ? 'retro' : 'plan' })),
+      reflected: this.state.reflected,
+      empty: !this.state.reflected,
+      toggleReflect: () => this.setState(s => ({ reflected: !s.reflected })),
+    };
+  }
+}
+</script>
+</body>
+</html>

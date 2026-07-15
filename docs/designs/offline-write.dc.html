@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <meta name="design_doc_mode" content="canvas">
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#0B0E14; }
+    @keyframes owpulse { 0%{opacity:1} 45%{opacity:.32} 100%{opacity:1} }
+    a { color:#8787FF; text-decoration:none; }
+    a:hover { color:#A6A6FF; text-decoration:underline; }
+  </style>
+</helmet>
+
+<div style="padding:44px 48px 96px; display:flex; flex-direction:column; gap:58px; width:2760px; color:#E6EBF2">
+
+  <!-- ============================ INTRO ============================ -->
+  <div style="display:flex; flex-direction:column; gap:16px; width:1220px">
+    <div data-drags-parent="1" style="font-weight:700; font-size:12px; color:#9aa4b2; letter-spacing:.10em">OFFLINE-WRITE · engineer-cli · the optimistic write queue &amp; honest reconcile · #96 → #81</div>
+    <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:18px 20px; font-size:13.5px; line-height:1.6; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+      <div><span style="color:#8787FF; font-weight:700">The write half of offline-tolerance.</span> <span style="color:#808080">The read half shipped (#91 — the header cell caches last-known instead of going blank). This designs the other half: the timer as a genuine </span><span style="color:#E6EBF2">local clock</span><span style="color:#808080"> you control offline, a persisted </span><span style="color:#E6EBF2">queue of intents</span><span style="color:#808080"> every mutation rides, and the </span><span style="color:#E6EBF2">reconcile</span><span style="color:#808080"> moment when local and server disagree. Study on a train, lose the signal in a tunnel — start / pause / stop still take the keystroke, the clock keeps counting, and everything syncs on its own at the next station. It never silently drops a segment.</span></div>
+      <div style="margin-top:12px; color:#808080; font-size:12.5px">This canvas reads top to bottom: <span style="color:#E6EBF2">the two new honest states → Foundation (the intent queue) → Phase A: the timer, offline &amp; reconciled → the four divergence moments → Phase B: log &amp; activity writes → Phase C: the long tail → the headless twin → the server contract it needs.</span></div>
+      <div style="margin-top:14px; color:#808080; display:flex; gap:20px; flex-wrap:wrap; font-size:12.5px; border-top:1px solid #1A2230; padding-top:12px">
+        <span><span style="color:#8787FF">████</span> accent · queued · verbs</span>
+        <span><span style="color:#87AF87">████</span> synced / confirmed</span>
+        <span><span style="color:#D7AF5F">████</span> stale · reconcile pending</span>
+        <span><span style="color:#D75F5F">████</span> diverged · needs a choice</span>
+        <span><span style="color:#808080">████</span> muted</span>
+        <span><span style="color:#5F5FAF">████</span> row selection</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ STATE VOCABULARY ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">§</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">HONEST STATES, EXTENDED</span>
+      <span style="color:#808080; font-size:12.5px">the governing test · this track adds two words to a vocabulary that already renders truthfully — never hide one to look tidy</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- shipped family -->
+      <div style="width:600px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">ALREADY TRUTHFUL · the states the kit already renders</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:15px 17px; font-size:12.5px; line-height:1.55; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:12px; padding:5px 0; border-bottom:1px solid #121826"><span style="color:#808080; width:70px; flex-shrink:0"><span style="color:#808080">◐</span> paused</span><span>the timer isn't counting; the number is frozen, not gone</span></div>
+          <div style="display:flex; align-items:center; gap:12px; padding:5px 0; border-bottom:1px solid #121826"><span style="color:#D7AF5F; width:70px; flex-shrink:0"><span style="color:#D7AF5F">○</span> idle</span><span>counting, but no keystroke in a while — reclaim pending</span></div>
+          <div style="display:flex; align-items:center; gap:12px; padding:5px 0; border-bottom:1px solid #121826"><span style="color:#D7AF5F; width:70px; flex-shrink:0"><span style="color:#D7AF5F">◔</span> over</span><span>past the planned interval; the ping already fired</span></div>
+          <div style="display:flex; align-items:center; gap:12px; padding:5px 0; border-bottom:1px solid #121826"><span style="color:#D7AF5F; width:70px; flex-shrink:0"><span style="color:#D7AF5F">▾</span> behind</span><span>the loudest allowed ambient signal — a target off pace</span></div>
+          <div style="display:flex; align-items:center; gap:12px; padding:5px 0"><span style="color:#D7AF5F; width:70px; flex-shrink:0"><span style="color:#D7AF5F">~</span> stale</span><span>the read cache is showing a last-known value <span style="color:#585858">· shipped #91</span></span></div>
+        </div>
+      </div>
+
+      <!-- NEW -->
+      <div style="width:640px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">NEW · this track adds exactly two — same visual family, not a new language</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-left:2px solid #8787FF; border-radius:8px; padding:15px 17px; font-size:12.5px; line-height:1.6; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; gap:13px; padding:8px 0; border-bottom:1px solid #121826">
+            <span style="color:#8787FF; font-weight:700; width:96px; flex-shrink:0; white-space:nowrap"><span style="color:#8787FF">↑</span>3 queued</span>
+            <div><span style="color:#E6EBF2; font-weight:700">Unsynced local intents pending.</span> One or more start / pause / stop acted locally and are waiting for the wire. A quiet accent count next to the clock — never a filled pill, never a nag. Glance, don't manage.</div>
+          </div>
+          <div style="display:flex; gap:13px; padding:8px 0">
+            <span style="width:96px; flex-shrink:0"><span style="background:#D75F5F; color:#0B0E14; font-weight:700; white-space:pre"> diverged </span></span>
+            <div><span style="color:#E6EBF2; font-weight:700">Reconciliation needs a choice.</span> Replay found the server moved on. This one <span style="color:#E6EBF2">is</span> loud — danger, a full-row treatment — because the promise is: never silently drop or merge a segment. Surface it, let the user pick a side.</div>
+          </div>
+        </div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:13px 16px; font-size:12px; line-height:1.55; color:#585858; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <span style="color:#808080"><span style="color:#8787FF; font-weight:700">Quiet by default, loud only for a choice.</span> The read cache's ` ~` and the local clock's <span style="color:#D7AF5F">◔</span> already taught the eye "the number is real but unconfirmed." <span style="color:#8787FF">↑N queued</span> joins that family; <span style="color:#D75F5F">diverged</span> is the one moment we break quiet — on purpose.</span>
+        </div>
+      </div>
+
+      <!-- the ledger principle -->
+      <div style="width:560px; background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.65; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+        <div style="color:#E6EBF2; font-weight:700; margin-bottom:8px">A queue of intents is not a second ledger</div>
+        <div>Measure's rule is <span style="color:#E6EBF2">derived, never stored — the client keeps no second ledger</span>. The queue is the deliberate, scoped exception: it stores <span style="color:#E6EBF2">pending intents</span>, not derived actuals, and only until they sync. The server stays authoritative — the moment an intent lands, it leaves the queue.</div>
+        <div style="margin-top:10px; padding-top:10px; border-top:1px solid #1A2230"><span style="color:#E6EBF2; font-weight:700">One clock, offline too.</span> The local clock uses engineer's study-day boundary and the same <span style="color:#8787FF">started_at / elapsed_seconds / paused_seconds / paused_at</span> arithmetic the server does, so a locally-run session reconciles to the second. Not a second definition of time — the same one, computed client-side.</div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============================ 1 · FOUNDATION ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">1</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">FOUNDATION — the persisted intent queue &amp; reconciler</span>
+      <span style="color:#808080; font-size:12.5px">a small module sibling to <span style="color:#8787FF">timer_cache.rs</span> · shared by both client surfaces · shipped before any surface</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- the seam diagram -->
+      <div style="width:660px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">THE SEAM · every write already funnels through one place — the queue keys off it</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:16px 18px; font-size:12px; line-height:1.6; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="white-space:pre; line-height:1.55; color:#808080; font-size:12px">   <span style="color:#87AF87">local action</span>  (start / pause / stop / log …)
+        │
+        ▼
+   <span style="color:#8787FF">api/mod.rs · send()</span>
+        │
+   ┌────┴─────────────────┐
+   │                      │
+ <span style="color:#87AF87">2xx</span>                <span style="color:#D75F5F">ApiError::Transport</span>
+   │                      │  <span style="color:#585858">(wire down)</span>
+   ▼                      ▼
+ <span style="color:#87AF87">confirmed</span>   ──►   <span style="color:#D7AF5F">enqueue intent</span>  ─►  <span style="color:#808080">queue.json</span> <span style="color:#585858">(XDG state)</span>
+                          │
+        <span style="color:#585858">network returns</span>     ▼
+                    <span style="color:#8787FF">replay in order</span>  ─►  <span style="color:#8787FF">reconcile</span>
+                          │
+              ┌───────────┴───────────┐
+              ▼                        ▼
+          <span style="color:#87AF87">merged</span>                 <span style="color:#D75F5F">diverged</span> <span style="color:#585858">→ ask</span></div>
+          <div style="margin-top:12px; padding-top:10px; border-top:1px solid #1A2230; color:#585858; line-height:1.55"><span style="color:#808080">The read cache already falls back to disk on <span style="color:#D75F5F">Transport</span> alone (auth / other errors still propagate). The queue keys <span style="color:#E6EBF2">defer</span> on the identical seam</span> — a blind byte-interceptor at <span style="color:#8787FF">send()</span> won't do: each write returns a different typed resource the caller consumes, so the queue synthesises a <span style="color:#E6EBF2">plausible local response</span> per verb, then reconciles it.</div>
+        </div>
+      </div>
+
+      <!-- the intent log -->
+      <div style="width:700px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">THE INTENT LOG · a durable, ordered log of pending writes — glance, not a console</div>
+        <div data-screen-label="Queue inspector" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Queue · 96×20</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+            <div style="display:flex; align-items:baseline; margin-bottom:8px">
+              <span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Queue</span>
+              <span style="flex:1"></span>
+              <span><span style="color:#D75F5F">●</span>&nbsp;<span style="color:#808080">offline</span>&nbsp;&nbsp;<span style="color:#8787FF; font-weight:700">↑3 queued</span></span>
+            </div>
+            <div style="display:flex"><span style="color:#585858">┌</span><span style="color:#8787FF; font-weight:700; white-space:pre"> Pending intents · 3 · oldest 2m ago </span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">────────────────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┐</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; color:#8787FF; font-weight:700"><span style="width:42px">#</span><span style="width:150px">INTENT</span><span style="width:210px">TARGET</span><span style="width:78px">AGE</span><span>STATE</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ 12   timer.start     build · Raft leader election   2m       provisional</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="width:42px; color:#808080">13</span><span style="width:150px">timer.pause</span><span style="width:210px; color:#808080">—</span><span style="width:78px; color:#808080">1m</span><span style="color:#D7AF5F">◔ provisional</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 2px; display:flex"><span style="width:42px; color:#808080">14</span><span style="width:150px">timer.resume</span><span style="width:210px; color:#808080">—</span><span style="width:78px; color:#808080">12s</span><span style="color:#D7AF5F">◔ provisional</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+            <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:8px">
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> r </span><span>&nbsp;retry now</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> x </span><span>&nbsp;drop intent</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> q </span><span>&nbsp;close</span>
+            </div>
+            <div style="margin-top:9px; padding-top:8px; border-top:1px solid #121826; font-size:12px; color:#585858">Replays automatically on reconnect · this view is for when you want to <span style="color:#808080">look</span>, not a sync manager. Full reconcile history stays on the web.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- foundation deliverables -->
+      <div style="width:600px; background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.6; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+        <div style="color:#E6EBF2; font-weight:700; margin-bottom:10px">What Foundation ships (before any surface)</div>
+        <div style="display:flex; gap:11px; padding:5px 0; border-bottom:1px solid #121826"><span style="color:#87AF87; flex-shrink:0; font-weight:700">1</span><div><span style="color:#E6EBF2; font-weight:700">A durable ordered intent log</span> in the XDG state dir (<span style="color:#8787FF">queue.json</span>, sibling to <span style="color:#8787FF">timer-cache.json</span>) — survives exit, which in-memory state does not.</div></div>
+        <div style="display:flex; gap:11px; padding:5px 0; border-bottom:1px solid #121826"><span style="color:#87AF87; flex-shrink:0; font-weight:700">2</span><div><span style="color:#E6EBF2; font-weight:700">A replay-on-reconnect pass</span> keyed on <span style="color:#D75F5F">ApiError::Transport</span> — in order, one intent at a time, stopping to ask on divergence.</div></div>
+        <div style="display:flex; gap:11px; padding:5px 0; border-bottom:1px solid #121826"><span style="color:#87AF87; flex-shrink:0; font-weight:700">3</span><div><span style="color:#E6EBF2; font-weight:700">The <span style="color:#8787FF">queued</span> / <span style="color:#D75F5F">diverged</span> vocabulary</span> surfaced in <span style="color:#8787FF">--json</span>, the plain status line, and exit codes — the headless twin is half the feature, not a follow-up.</div></div>
+        <div style="display:flex; gap:11px; padding:5px 0"><span style="color:#87AF87; flex-shrink:0; font-weight:700">4</span><div><span style="color:#E6EBF2; font-weight:700">Shared by both surfaces</span> — the TUI event loop and the headless CLIs enqueue to one queue, reconciled by whichever process is live.</div></div>
+        <div style="margin-top:11px; padding-top:10px; border-top:1px solid #1A2230; color:#585858">A small persisted sibling module — the pattern <span style="color:#8787FF">timer_cache.rs</span> set — <span style="color:#808080">not a framework.</span></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============================ 2 · PHASE A · TIMER LOCAL CLOCK ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">2</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">PHASE A — the timer as a local clock · the train case</span>
+      <span style="color:#808080; font-size:12.5px">highest value, standalone · control offline &amp; enqueue · the clock keeps counting, marked unconfirmed</span>
+    </div>
+
+    <!-- 2a · control offline (interactive) -->
+    <div style="width:1180px">
+      <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">CONTROL OFFLINE · <span style="color:#8787FF">◧ pull the wire</span> — the keystroke is never refused, the number never freezes</div>
+      <div data-screen-label="Timer control · offline" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+        <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+          <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+          <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Timer · focus · 100×22</span>
+          <span style="flex:1"></span>
+          <span onclick="{{ toggleNet }}" title="drop / restore the network" style="cursor:pointer; user-select:none; color:#8787FF; border:1px solid #1A2230; border-radius:5px; padding:1px 9px; white-space:pre; font-size:12px">◧ pull the wire</span>
+        </div>
+        <div style="padding:16px 18px; font-size:14px; color:#E6EBF2">
+          <div style="display:flex; align-items:baseline; margin-bottom:14px">
+            <span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Timer</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span style="color:#8787FF">focus</span>
+            <span style="flex:1"></span>
+            <sc-if value="{{ online }}" hint-placeholder-val="{{ true }}">
+              <span><span style="color:#87AF87">●</span>&nbsp;<span style="font-weight:700">{{ clock }}</span>&nbsp;<span style="color:#808080">build · Raft</span></span>
+            </sc-if>
+            <sc-if value="{{ offline }}" hint-placeholder-val="{{ false }}">
+              <span><span style="color:#D7AF5F">◔</span>&nbsp;<span style="font-weight:700">{{ clock }}</span>&nbsp;<span style="color:#808080">build · Raft</span>&nbsp;&nbsp;<span style="color:#8787FF; font-weight:700">↑2 queued</span></span>
+            </sc-if>
+          </div>
+
+          <div style="text-align:center; margin:6px 0 14px">
+            <div style="font-weight:700; white-space:pre; line-height:1.05">
+<sc-if value="{{ online }}" hint-placeholder-val="{{ true }}"><span style="color:#8787FF; text-shadow:0 0 22px rgba(135,135,255,.30)">{{ clock }}</span></sc-if><sc-if value="{{ offline }}" hint-placeholder-val="{{ false }}"><span style="color:#D7AF5F; text-shadow:0 0 22px rgba(215,175,95,.28)">{{ clock }}</span></sc-if>
+            </div>
+            <div style="margin-top:8px"><span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> build </span><span style="font-weight:700">&nbsp;&nbsp;Implement Raft leader election</span></div>
+          </div>
+
+          <sc-if value="{{ online }}" hint-placeholder-val="{{ true }}">
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-top:1px solid #121826; font-size:12.5px"><span style="color:#87AF87">●</span><span style="color:#808080">online · every keystroke is a live round-trip, confirmed by the server</span></div>
+          </sc-if>
+          <sc-if value="{{ offline }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-top:1px solid #121826; font-size:12.5px"><span style="color:#D7AF5F">◔</span><span style="color:#808080">offline · <span style="color:#E6EBF2">start / pause / stop still work</span> — they act on the local clock and join the queue. The number counts from <span style="color:#8787FF">started_at</span> + paused seconds; the <span style="color:#D7AF5F">◔</span> says it hasn't been confirmed yet.</span></div>
+          </sc-if>
+
+          <div style="margin-top:12px; display:flex; align-items:center; flex-wrap:wrap; border-top:1px solid #1A2230; padding-top:11px">
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> SPC </span><span>&nbsp;pause</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> s </span><span>&nbsp;stop</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> b </span><span>&nbsp;bind</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Q </span><span>&nbsp;queue</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> i </span><span>&nbsp;instruments</span>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:7px; font-size:12px; color:#808080; line-height:1.5">The only difference offline is the glyph and the count — the layout doesn't lurch, no error toast, no disabled keys. <span style="color:#585858">Click <span style="color:#8787FF">◧ pull the wire</span> to compare; the clock keeps ticking either way.</span></div>
+    </div>
+
+    <!-- 2b · reconcile happy path -->
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+      <div style="width:640px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">RECONNECT · the happy path — replay in order, no choice needed</div>
+        <div data-screen-label="Reconcile · replaying" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">engineer-cli — reconnect · replaying</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13.5px; color:#808080; line-height:1.6">
+            <div style="display:flex; align-items:baseline; font-size:14px; margin-bottom:10px"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Timer</span><span style="flex:1"></span><span><span style="color:#87AF87">●</span>&nbsp;<span style="color:#E6EBF2; font-weight:700">47:12</span>&nbsp;<span style="color:#808080">build · Raft</span></span></div>
+            <div style="white-space:pre; line-height:1.7"><span style="color:#87AF87">●</span> back online · replaying the queue…
+  <span style="color:#87AF87">✓</span> timer.start    build · Raft            <span style="color:#87AF87">synced</span>
+  <span style="color:#87AF87">✓</span> timer.pause                            <span style="color:#87AF87">synced</span>
+  <span style="color:#87AF87">✓</span> timer.resume                           <span style="color:#87AF87">synced</span></div>
+          </div>
+        </div>
+        <!-- merged notify -->
+        <div data-screen-label="Reconcile · merged" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">notify tile · info</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px">
+            <div style="display:flex; align-items:center"><span style="color:#87AF87; font-weight:700">✓ synced</span><span style="color:#808080">&nbsp;&nbsp;3 queued writes reconciled · nothing diverged</span></div>
+            <div style="margin-top:8px; color:#585858; font-size:12px">the ambient <span style="color:#8787FF">↑N</span> count clears; the clock's <span style="color:#D7AF5F">◔</span> becomes <span style="color:#87AF87">●</span>. Auto-dismisses in ~4s — a glance, not a report.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- the reconcile rule -->
+      <div style="width:560px; background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.65; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+        <div style="color:#E6EBF2; font-weight:700; margin-bottom:8px">Reconcile toward the server, always</div>
+        <div>Replay re-reads rather than trusting local. The moment the server acknowledges an intent, it's authoritative and the intent leaves the queue. Keep the queue as small and short-lived as the network allows.</div>
+        <div style="margin-top:10px; padding-top:10px; border-top:1px solid #1A2230"><span style="color:#E6EBF2; font-weight:700">The touched surface.</span> Phase A upgrades <span style="color:#8787FF">live_elapsed</span> and the poll/heartbeat loop from a display tick into a controlling clock, and touches the 10 timer methods + <span style="color:#8787FF">create_segment</span> / <span style="color:#8787FF">delete_segment</span> (a stop writes a segment). It ships the headline "study on trains" value on its own.</div>
+        <div style="margin-top:10px; padding-top:10px; border-top:1px solid #1A2230; color:#585858">When replay is clean, the user does nothing — the queue drains silently and the tile confirms. A <span style="color:#D75F5F">choice</span> only appears when the server disagrees. →</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 3 · DIVERGENCE ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#D75F5F; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">3</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">THE DIVERGENCE MOMENTS — the honesty deliverable</span>
+      <span style="color:#808080; font-size:12.5px">the hardest screen · one gesture resolves each · <span style="color:#E6EBF2">never silently drops or merges a segment</span></span>
+    </div>
+
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- 3a · session started elsewhere -->
+      <div style="width:640px; display:flex; flex-direction:column; gap:9px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">A · SESSION STARTED ELSEWHERE · you ran offline; the web started a different one</div>
+        <div data-screen-label="Diverged · session elsewhere" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — reconcile · 96×20</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+            <div style="display:flex; align-items:baseline; margin-bottom:8px"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Timer</span><span style="flex:1"></span><span style="background:#D75F5F; color:#0B0E14; font-weight:700; white-space:pre"> diverged </span></div>
+            <div style="display:flex"><span style="color:#D75F5F">┌</span><span style="color:#D75F5F; font-weight:700; white-space:pre"> Two sessions — which is real? </span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#D75F5F">──────────────────────────────────────────────────────────</div><span style="color:#D75F5F">┐</span></div>
+            <div style="display:flex"><span style="color:#D75F5F">│</span><div style="flex:1; min-width:0; padding:6px 10px 2px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ local     47:12   build · Raft leader election   3 segments</span></div><span style="color:#D75F5F">│</span></div>
+            <div style="display:flex"><span style="color:#D75F5F">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex"><span style="white-space:pre">  server   12:04   read · DDIA ch.7             started on web 09:20</span></div><span style="color:#D75F5F">│</span></div>
+            <div style="display:flex"><span style="color:#D75F5F">│</span><div style="flex:1; min-width:0; padding:2px 10px 6px; color:#808080; font-size:12px">keeping local adopts your 47:12 and stops the web session; taking server keeps its segments and drops yours to the queue for review — never deletes them.</div><span style="color:#D75F5F">│</span></div>
+            <div style="display:flex"><span style="color:#D75F5F">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#D75F5F">──────────────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#D75F5F">┘</span></div>
+            <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:9px">
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;choose</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#87AF87; color:#0B0E14; font-weight:600; white-space:pre"> ⏎ </span><span>&nbsp;keep this side</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> b </span><span>&nbsp;keep both, review</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3b · rejected segment -->
+      <div style="width:640px; display:flex; flex-direction:column; gap:9px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">B · SERVER REJECTS A REPLAYED SEGMENT · overlap / a closed study day (422)</div>
+        <div data-screen-label="Diverged · rejected segment" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — reconcile · 96×20</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+            <div style="display:flex; align-items:baseline; margin-bottom:8px"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Queue</span><span style="flex:1"></span><span style="background:#D75F5F; color:#0B0E14; font-weight:700; white-space:pre"> diverged </span><span>&nbsp;&nbsp;<span style="color:#808080">1 of 3</span></span></div>
+            <div style="display:flex"><span style="color:#D75F5F">┌</span><span style="color:#D75F5F; font-weight:700; white-space:pre"> Server refused this segment </span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#D75F5F">──────────────────────────────────────────────────────────</div><span style="color:#D75F5F">┐</span></div>
+            <div style="display:flex"><span style="color:#D75F5F">│</span><div style="flex:1; min-width:0; padding:6px 10px 2px"><span style="color:#E6EBF2; font-weight:700">segment 14:02–14:47</span> <span style="color:#808080">· build · Raft · 45m</span></div><span style="color:#D75F5F">│</span></div>
+            <div style="display:flex"><span style="color:#D75F5F">│</span><div style="flex:1; min-width:0; padding:0 10px 2px"><span style="color:#D75F5F">422</span> <span style="color:#808080">overlaps an existing segment 14:20–15:05 (web)</span></div><span style="color:#D75F5F">│</span></div>
+            <div style="display:flex"><span style="color:#D75F5F">│</span><div style="flex:1; min-width:0; padding:2px 10px 6px; color:#585858; font-size:12px">the offending minutes stay in the queue until you decide — nothing is written or dropped behind your back.</div><span style="color:#D75F5F">│</span></div>
+            <div style="display:flex"><span style="color:#D75F5F">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#D75F5F">──────────────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#D75F5F">┘</span></div>
+            <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:9px">
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> e </span><span>&nbsp;edit times ($EDITOR)</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#D75F5F; color:#0B0E14; font-weight:600; white-space:pre"> x </span><span>&nbsp;drop it</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> s </span><span>&nbsp;skip &amp; keep queued</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3c · clock drifted -->
+      <div style="width:640px; display:flex; flex-direction:column; gap:9px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">C · CLOCK DRIFTED · local elapsed ≠ server elapsed on reconnect</div>
+        <div data-screen-label="Diverged · clock drift" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — reconcile · 96×19</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+            <div style="display:flex; align-items:baseline; margin-bottom:8px"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Timer</span><span style="flex:1"></span><span style="background:#D75F5F; color:#0B0E14; font-weight:700; white-space:pre"> diverged </span></div>
+            <div style="display:flex"><span style="color:#D75F5F">┌</span><span style="color:#D75F5F; font-weight:700; white-space:pre"> The clocks disagree by 2m14s </span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#D75F5F">──────────────────────────────────────────────────────────</div><span style="color:#D75F5F">┐</span></div>
+            <div style="display:flex"><span style="color:#D75F5F">│</span><div style="flex:1; min-width:0; padding:6px 10px 2px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ local    47:12   counted through the tunnel</span></div><span style="color:#D75F5F">│</span></div>
+            <div style="display:flex"><span style="color:#D75F5F">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex"><span style="white-space:pre">  server  44:58   last heartbeat before the drop</span></div><span style="color:#D75F5F">│</span></div>
+            <div style="display:flex"><span style="color:#D75F5F">│</span><div style="flex:1; min-width:0; padding:2px 10px 6px; color:#585858; font-size:12px">both use the same started_at + paused arithmetic; the gap is unbeaten offline seconds. Pick the elapsed to write.</div><span style="color:#D75F5F">│</span></div>
+            <div style="display:flex"><span style="color:#D75F5F">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#D75F5F">──────────────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#D75F5F">┘</span></div>
+            <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:9px">
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;choose</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#87AF87; color:#0B0E14; font-weight:600; white-space:pre"> ⏎ </span><span>&nbsp;keep this elapsed</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3d · duplicate replay -->
+      <div style="width:640px; display:flex; flex-direction:column; gap:9px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">D · DUPLICATE REPLAY · ack lost on a flaky link — the server may already have it</div>
+        <div data-screen-label="Diverged · duplicate" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — reconcile · 96×19</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+            <div style="display:flex; align-items:baseline; margin-bottom:8px"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Queue</span><span style="flex:1"></span><span style="background:#D7AF5F; color:#0B0E14; font-weight:700; white-space:pre"> possible duplicate </span></div>
+            <div style="display:flex"><span style="color:#D7AF5F">┌</span><span style="color:#D7AF5F; font-weight:700; white-space:pre"> Might already be recorded </span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────</div><span style="color:#D7AF5F">┐</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:6px 10px 2px"><span style="color:#E6EBF2; font-weight:700">segment 14:02–14:47</span> <span style="color:#808080">· the ack never arrived before the drop</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px 2px"><span style="color:#87AF87">✓ idempotency key present</span> <span style="color:#808080">→ deduped automatically, no prompt</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px 6px; color:#585858; font-size:12px"><span style="color:#D7AF5F">without</span> a server key it can't be sure — it asks rather than risk a double-write. See the contract below.</div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+            <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:9px">
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> k </span><span>&nbsp;keep server's, drop mine</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> w </span><span>&nbsp;write mine anyway</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div style="width:1220px; background:#05080F; border:1px solid #1A2230; border-left:2px solid #D75F5F; border-radius:8px; padding:15px 18px; font-size:12.5px; line-height:1.6; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+      <span style="color:#E6EBF2; font-weight:700">The one rule under all four:</span> a reconciliation that has to drop or merge <span style="color:#E6EBF2">tells the user and lets them choose.</span> Silent data loss is the single failure this whole track exists to prevent — a conflict surfaced loudly beats a segment vanishing quietly. Every resolve is one gesture (<span style="color:#8787FF">j/k</span> + <span style="color:#87AF87">⏎</span>), never a lean-back sync console. Depth — the full history of every reconciled write — stays on the web.
+    </div>
+  </section>
+
+  <!-- ============================ 4 · PHASE B ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">4</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">PHASE B — segment &amp; activity writes on the same queue</span>
+      <span style="color:#808080; font-size:12.5px">now that the timer proved the shape · <span style="color:#8787FF">engineer log</span> · week plan · the activities table &amp; segment audit</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- log offline -->
+      <div style="width:640px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">LOG OFFLINE · create_activity + create_segment → a provisional row you can see</div>
+        <div data-screen-label="Log · provisional" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Today · 96×20</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+            <div style="display:flex; align-items:baseline; margin-bottom:8px"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Today</span><span style="flex:1"></span><span><span style="color:#D75F5F">●</span>&nbsp;<span style="color:#808080">offline</span>&nbsp;&nbsp;<span style="color:#8787FF; font-weight:700">↑1 queued</span></span></div>
+            <div style="display:flex"><span style="color:#585858">┌</span><span style="color:#8787FF; font-weight:700; white-space:pre"> Today · 95 min logged </span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┐</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; color:#8787FF; font-weight:700"><span style="width:60px">TIME</span><span style="width:140px">KIND</span><span style="width:56px">DUR</span><span>TITLE</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="width:60px; color:#808080">08:40</span><span style="width:140px">read</span><span style="width:56px; color:#808080">45m</span><span>Designing Data-Intensive Apps</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="width:60px; color:#808080">12:15</span><span style="width:140px">practice</span><span style="width:56px; color:#808080">30m</span><span>Rustlings · iterators set</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 2px; display:flex; color:#D7AF5F"><span style="width:60px">◔ 14:02</span><span style="width:140px">build</span><span style="width:56px">20m</span><span>Raft leader election&nbsp;&nbsp;<span style="color:#585858">provisional · queued</span></span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+            <div style="margin-top:9px; font-size:12px; color:#585858">The provisional row renders in <span style="color:#D7AF5F">◔ amber</span> — it's real to you, unconfirmed to the server. On sync it settles to plain text; on divergence it flips to a <span style="color:#D75F5F">diverged</span> choice.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- activities table / audit -->
+      <div style="width:660px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">SEGMENT AUDIT · provisional vs confirmed reads at a glance — same table, one glyph</div>
+        <div data-screen-label="Segment audit · mixed" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Segments · 96×20</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+            <div style="display:flex; align-items:baseline; margin-bottom:8px"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Segments</span><span style="flex:1"></span><span><span style="color:#D75F5F">●</span>&nbsp;<span style="color:#808080">offline</span>&nbsp;&nbsp;<span style="color:#8787FF; font-weight:700">↑2 queued</span></span></div>
+            <div style="display:flex"><span style="color:#585858">┌</span><span style="color:#8787FF; font-weight:700; white-space:pre"> build · Raft leader election · 5 segments </span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────</div><span style="color:#585858">┐</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex"><span style="width:30px; color:#8787FF; font-weight:700"> </span><span style="width:150px; color:#8787FF; font-weight:700">START</span><span style="width:120px; color:#8787FF; font-weight:700">DUR</span><span style="color:#8787FF; font-weight:700">STATE</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="width:30px; color:#87AF87">✓</span><span style="width:150px">Jul 14 · 09:15</span><span style="width:120px; color:#808080">52m</span><span style="color:#808080">confirmed</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex"><span style="width:30px; color:#87AF87">✓</span><span style="width:150px">Jul 14 · 13:40</span><span style="width:120px; color:#808080">38m</span><span style="color:#808080">confirmed</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; color:#D7AF5F"><span style="width:30px">◔</span><span style="width:150px">Jul 15 · 14:02</span><span style="width:120px">20m</span><span>provisional · queued</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 2px; display:flex; color:#D7AF5F"><span style="width:30px">◔</span><span style="width:150px">Jul 15 · 14:50</span><span style="width:120px">14m</span><span>provisional · queued</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+            <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:9px">
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> e </span><span>&nbsp;edit</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> d </span><span>&nbsp;delete</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> h </span><span>&nbsp;back</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Phase B note -->
+      <div style="width:540px; background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.65; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+        <div style="color:#E6EBF2; font-weight:700; margin-bottom:8px">Same queue, same glyphs</div>
+        <div>Phase B adds no new visual language: a queued write is <span style="color:#D7AF5F">◔ provisional</span>, a synced one is plain, a rejected one is <span style="color:#D75F5F">diverged</span> — identical to the timer. <span style="color:#8787FF">engineer log</span>, <span style="color:#8787FF">week plan</span>, the activities table and the segment audit all enqueue to the one queue and reconcile through the one pass.</div>
+        <div style="margin-top:10px; padding-top:10px; border-top:1px solid #1A2230; color:#585858">This is why Foundation ships first: the shape is proved by the timer, then everything else is a thin enqueue call — not a second mechanism.</div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============================ 5 · PHASE C + HEADLESS + CONTRACT ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">5</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">THE LONG TAIL · THE HEADLESS TWIN · THE CONTRACT</span>
+      <span style="color:#808080; font-size:12.5px">Phase C is framing, not scope · the twin is half the feature · the server gap is raised, not faked</span>
+    </div>
+
+    <!-- Phase C framing strip -->
+    <div style="width:1220px; background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.6; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:9px"><span style="background:#5F5F87; color:#E6EBF2; font-weight:700; padding:1px 9px; border-radius:4px; font-size:11.5px">PHASE C</span><span style="color:#E6EBF2; font-weight:700">The long tail rides the identical mechanism</span></div>
+      <div style="display:flex; gap:9px; flex-wrap:wrap; margin-bottom:10px">
+        <span style="border:1px solid #1A2230; border-radius:5px; padding:2px 11px; color:#808080">notes</span>
+        <span style="border:1px solid #1A2230; border-radius:5px; padding:2px 11px; color:#808080">targets</span>
+        <span style="border:1px solid #1A2230; border-radius:5px; padding:2px 11px; color:#808080">books</span>
+        <span style="border:1px solid #1A2230; border-radius:5px; padding:2px 11px; color:#808080">review</span>
+        <span style="border:1px solid #1A2230; border-radius:5px; padding:2px 11px; color:#808080">inbox</span>
+      </div>
+      <div>Framed here, not smuggled into each module brief, precisely so it stays <span style="color:#E6EBF2">one queue, not five</span>. Each is a later phase, not a different design — the same <span style="color:#D7AF5F">◔ provisional</span> / <span style="color:#8787FF">↑N queued</span> / <span style="color:#D75F5F">diverged</span> vocabulary, the same replay pass. Long-form prose (notes, retros) still hands off to <span style="color:#8787FF">$EDITOR</span> — the queue defers the write, not the editing.</div>
+    </div>
+
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- headless --json / --short -->
+      <div style="width:680px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">HEADLESS TWIN · queued &amp; diverged surface exactly as <span style="color:#8787FF">stale</span> already does</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">engineer-cli — headless · a script watching the status bar</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13px; line-height:1.6; color:#E6EBF2">
+            <div><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> timer <span style="color:#D7AF5F">--json</span></div>
+            <div style="color:#808080; white-space:pre">{
+  <span style="color:#8787FF">"state"</span>: <span style="color:#87AF87">"running"</span>,   <span style="color:#8787FF">"elapsed_seconds"</span>: <span style="color:#D7AF5F">2832</span>,
+  <span style="color:#8787FF">"offline"</span>: <span style="color:#D7AF5F">true</span>,     <span style="color:#8787FF">"stale_age_s"</span>: <span style="color:#D7AF5F">134</span>,
+  <span style="color:#8787FF">"queued"</span>: <span style="color:#D7AF5F">true</span>,      <span style="color:#8787FF">"queue_depth"</span>: <span style="color:#D7AF5F">3</span>,
+  <span style="color:#8787FF">"diverged"</span>: <span style="color:#D7AF5F">false</span>
+}</div>
+            <div style="margin-top:10px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> timer <span style="color:#D7AF5F">--short</span> <span style="color:#808080">| cat</span></div>
+            <div style="color:#E6EBF2">47:12 build ~ offline · 3 queued</div>
+            <div style="margin-top:10px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> queue <span style="color:#D7AF5F">--json</span> <span style="color:#808080"># the intent log, machine-readable</span></div>
+            <div style="color:#808080; white-space:pre">{ <span style="color:#8787FF">"depth"</span>:<span style="color:#D7AF5F">3</span>, <span style="color:#8787FF">"oldest_age_s"</span>:<span style="color:#D7AF5F">134</span>, <span style="color:#8787FF">"diverged"</span>:<span style="color:#D7AF5F">0</span> }</div>
+            <div style="margin-top:10px; border-top:1px solid #1A2230; padding-top:9px; color:#585858; font-size:12px">TTY-detected · <span style="color:#8787FF">NO_COLOR</span> respected · the ` ~` marker degrades to plain ASCII when piped, exactly like the shipped read cache.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- exit codes -->
+      <div style="width:490px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">EXIT CODES · scripts branch on the code</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">engineer queue · exit ∈ { 0 · 3 · 4 · 5 }</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13px; color:#808080; line-height:1.4">
+            <div style="display:flex; padding:5px 0; border-bottom:1px solid #121826"><span style="color:#87AF87; font-weight:700; width:34px; flex-shrink:0">0</span><span>drained · nothing pending, nothing diverged</span></div>
+            <div style="display:flex; padding:5px 0; border-bottom:1px solid #121826"><span style="color:#8787FF; font-weight:700; width:34px; flex-shrink:0">3</span><span>queued · writes pending, offline (not an error)</span></div>
+            <div style="display:flex; padding:5px 0; border-bottom:1px solid #121826"><span style="color:#D75F5F; font-weight:700; width:34px; flex-shrink:0">4</span><span>diverged · a choice is waiting</span></div>
+            <div style="display:flex; padding:5px 0"><span style="color:#D75F5F; font-weight:700; width:34px; flex-shrink:0">5</span><span>replay failed · non-transport error, propagated</span></div>
+            <div style="margin-top:11px; padding-top:9px; border-top:1px solid #1A2230; color:#585858; font-size:12px"><span style="color:#8787FF">queued</span> is deliberately <span style="color:#E6EBF2">not</span> a failure code — offline is a normal state, so a cron job doesn't page on it. Only <span style="color:#D75F5F">4/5</span> want a human.</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- the open server contract -->
+    <div style="width:1220px; background:#05080F; border:1px solid #1A2230; border-left:2px solid #D7AF5F; border-radius:8px; padding:16px 20px; font-size:12.5px; line-height:1.65; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:9px"><span style="background:#D7AF5F; color:#0B0E14; font-weight:700; padding:1px 9px; border-radius:4px; font-size:11.5px">BLOCKED ON API</span><span style="color:#E6EBF2; font-weight:700">The contract replay-and-reconcile needs — recorded, not faked client-side</span></div>
+      <div style="display:flex; gap:28px; flex-wrap:wrap">
+        <div style="flex:1; min-width:440px">
+          <div style="color:#E6EBF2; font-weight:700; margin-bottom:5px">1 · Idempotency under replay</div>
+          <div>If a queued <span style="color:#8787FF">POST /timer</span> or <span style="color:#8787FF">create_segment</span> is re-sent after the server already recorded it (ack lost on a flaky link), does the server dedupe on an <span style="color:#E6EBF2">idempotency key</span>, or double-write? Without the guarantee, replay can duplicate segments — the opposite of "never lose one." Divergence case <span style="color:#D7AF5F">D</span> above degrades to a prompt precisely because this isn't confirmed.</div>
+        </div>
+        <div style="flex:1; min-width:440px">
+          <div style="color:#E6EBF2; font-weight:700; margin-bottom:5px">2 · A structured conflict the client can render</div>
+          <div>When the server has moved on, does it return a machine-readable conflict — like targets' <span style="color:#8787FF">422 ClosedVersionError</span> — that the reconcile screen turns into a choice, or a generic error? Cases <span style="color:#D75F5F">A–C</span> are designed <span style="color:#E6EBF2">to</span> a structured conflict; a generic 500 collapses them into "something went wrong," which fails the honesty test.</div>
+        </div>
+      </div>
+      <div style="margin-top:12px; padding-top:11px; border-top:1px solid #1A2230; color:#585858; line-height:1.6">Per the <span style="color:#8787FF">/epic</span> backend-gap rule, these are <span style="color:#808080">blocked tickets, not client-side fakes</span>: the queue mechanics (Foundation + Phase A–C enqueue/replay) can land ahead of the contract, but <span style="color:#E6EBF2">honest divergence resolution (job 4) is gated on it</span>. &nbsp;·&nbsp; Accent note: this canvas is drawn to <span style="color:#8787FF">105 periwinkle</span> per CLAUDE.md; the 105-vs-75 ratification is flagged in <a href="cross-cutting-concerns.dc.html">cross-cutting §D</a>, not silently resolved here.</div>
+    </div>
+  </section>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { offline: false, secs: 47 * 60 + 12 };
+  componentDidMount() {
+    this._t = setInterval(() => this.setState(s => ({ secs: s.secs + 1 })), 1000);
+  }
+  componentWillUnmount() {
+    if (this._t) clearInterval(this._t);
+  }
+  renderVals() {
+    const s = this.state.secs;
+    const mm = String(Math.floor(s / 60)).padStart(2, "0");
+    const ss = String(s % 60).padStart(2, "0");
+    return {
+      offline: this.state.offline,
+      online: !this.state.offline,
+      clock: mm + ":" + ss,
+      toggleNet: () => this.setState(x => ({ offline: !x.offline })),
+    };
+  }
+}
+</script>
+</body>
+</html>

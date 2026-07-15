@@ -31,7 +31,8 @@ One brief per module. Folder tells status: `proposed/` = has open design/impleme
 | [`proposed/notes.brief.md`](proposed/notes.brief.md) | Five-second capture + the notes browser + one-line anchor read-back. | `$EDITOR`-for-prose (replaces the in-TUI textarea for long-form) |
 | [`proposed/week-planning.brief.md`](proposed/week-planning.brief.md) | Plan the week + the retro (planned-vs-done) via `GET /api/v1/weeks/:iso_week`; planning writes go through the activities API. | the whole surface |
 | [`proposed/assisted-capture.brief.md`](proposed/assisted-capture.brief.md) | The draft-triage inbox over `/api/v1/automations/tasks` + a terminal-native git-source connect flow (Phase 2). | the whole surface |
-| [`proposed/cross-cutting.brief.md`](proposed/cross-cutting.brief.md) | Concerns every module inherits: offline-tolerance / local-clock reconciliation, fuzzy pickers, the TUI↔headless contract, the pending accent-hue decision. | offline/local-clock; broaden fuzzy; ratify accent hue |
+| [`proposed/offline-write.brief.md`](proposed/offline-write.brief.md) | The **write** half of offline-tolerance: the timer as a controlling local clock + a persisted optimistic write queue every mutation rides, reconciled on reconnect with divergence surfaced. (Read half shipped in #91.) | the whole mechanism (Phase A timer first) |
+| [`proposed/cross-cutting.brief.md`](proposed/cross-cutting.brief.md) | Concerns every module inherits: the governing sterling-not-a-replica principle, offline-tolerance's shared principle (write detail lives in `offline-write`), fuzzy pickers, the TUI↔headless contract, the pending accent-hue decision. | broaden fuzzy; ratify accent hue |
 
 ### Shipped
 

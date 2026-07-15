@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <meta name="design_doc_mode" content="canvas">
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#0B0E14; }
+    a { color:#8787FF; text-decoration:none; }
+    a:hover { color:#A5A5FF; }
+    @keyframes pulse { 0%{opacity:1} 45%{opacity:.32} 100%{opacity:1} }
+  </style>
+</helmet>
+
+<div style="padding:44px 48px 100px; display:flex; flex-direction:column; gap:58px; width:2680px; color:#E6EBF2">
+
+  <!-- ============================ INTRO ============================ -->
+  <div style="display:flex; flex-direction:column; gap:16px; width:1300px">
+    <div data-drags-parent="1" style="font-weight:700; font-size:12px; color:#9aa4b2; letter-spacing:.10em">ASSISTED CAPTURE · engineer-cli · the draft-triage inbox &amp; the git-source connect flow</div>
+    <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:18px 20px; font-size:13.5px; line-height:1.6; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+      <div><span style="color:#8787FF; font-weight:700">Triage clears the way it should — open, glance, ⏎ to accept, x to reject, next.</span> <span style="color:#808080">The git-activity source is native here: you commit from the terminal all day, so the drafts those commits become are best cleared where you already are. A draft is </span><span style="color:#E6EBF2">one proposed segment, never one-per-commit</span><span style="color:#808080"> — the automation clusters a day's commits on a repo into a single </span><span style="white-space:pre; color:#E6EBF2">~50m build</span><span style="color:#808080"> you accept, edit, or reject. Accepting writes an activity; the log stops lying without you reconstructing your week.</span></div>
+      <div style="margin-top:12px; color:#808080; font-size:12.5px">This canvas reads top to bottom: <span style="color:#E6EBF2">the pending inbox → open one draft → accept &amp; reject in place → the ambient count → the git-source connect flow → the headless twins → the decision record.</span></div>
+      <div style="margin-top:14px; color:#808080; display:flex; gap:22px; flex-wrap:wrap; font-size:12.5px; border-top:1px solid #1A2230; padding-top:12px">
+        <span><span style="color:#8787FF">████</span> accent · selection</span>
+        <span><span style="color:#87AF87">████</span> accept · logged ✓</span>
+        <span><span style="color:#D7AF5F">████</span> expiring · attention</span>
+        <span><span style="color:#D75F5F">████</span> reject · destructive</span>
+        <span><span style="color:#808080">████</span> muted · quiet count</span>
+        <span><span style="color:#5F5FAF">████</span> row selection</span>
+      </div>
+      <div style="margin-top:12px; color:#808080; font-size:12px; border-top:1px solid #1A2230; padding-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+        <span style="background:#87AF87; color:#0B0E14; font-weight:700; padding:1px 7px; border-radius:4px; font-size:11px">SHIPPED</span>
+        <span>the server task API · <span style="color:#E6EBF2">/api/v1/automations/tasks</span> + pending / acknowledge / complete / reject</span>
+        <span style="color:#585858">·</span>
+        <span style="background:#5F5F87; color:#E6EBF2; font-weight:700; padding:1px 7px; border-radius:4px; font-size:11px">PROPOSED</span>
+        <span>every CLI surface here — inbox screen · verbs · <span style="color:#E6EBF2">:inbox</span> route · headless twin · connect flow (all net-new)</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ ACT 1 · THE PENDING INBOX ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">1</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">THE PENDING INBOX — triage, in the Review grammar <span style="color:#5F5F87; background:#5F5F87; color:#E6EBF2; font-size:12px; padding:1px 7px; border-radius:4px">JOB 1 · PROPOSED</span></span>
+      <span style="color:#808080; font-size:12.5px">the <span style="color:#8787FF">due-badge</span> reads <span style="color:#E6EBF2">expires_at</span> · expiring-first · full-row inverse selection · a count, never a nag</span>
+    </div>
+
+    <!-- centerpiece: the pending list -->
+    <div style="width:1300px">
+      <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">INBOX · PENDING · the triage read (<code style="color:#8787FF">GET /api/v1/automations/tasks/pending</code>)</div>
+      <div data-screen-label="Inbox · pending" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+        <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+          <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+          <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Inbox · pending · 100×28</span>
+        </div>
+        <div style="padding:14px 16px; font-size:14px; color:#E6EBF2">
+          <div style="display:flex; align-items:baseline; margin-bottom:10px">
+            <span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Inbox</span>
+            <span style="flex:1"></span>
+            <span style="color:#808080; white-space:pre">◧ </span><span style="color:#D7AF5F; font-weight:700">inbox 3</span>
+            <span style="color:#808080">&nbsp;&nbsp;·&nbsp;&nbsp;alice</span>
+          </div>
+
+          <!-- section head -->
+          <div style="display:flex"><span style="color:#585858">┌</span><span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Inbox · </span><span style="color:#D7AF5F; font-weight:700">pending 3</span><span style="color:#808080"> · ~1.9h proposed · git-activity </span></span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────</div><span style="color:#585858">┐</span></div>
+
+          <!-- column head -->
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 4px; display:flex; align-items:center; color:#808080; font-size:11px; letter-spacing:.06em"><span style="width:88px">EXPIRES</span><span style="width:340px">PROPOSED DRAFT</span><span style="width:78px">SOURCE</span><span>CLUSTERED FROM</span></div><span style="color:#585858">│</span></div>
+
+          <!-- row 1 · selected -->
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ </span><span style="width:80px; white-space:pre">2d left</span><span style="width:340px">~50m build · Distributed Systems</span><span style="width:78px">git</span><span>14 commits · dsaenz/raft</span></div><span style="color:#585858">│</span></div>
+
+          <!-- row 2 · expiring soon (danger badge) -->
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="background:#D75F5F; color:#0B0E14; font-weight:600; white-space:pre"> 3h left </span><span style="width:262px; padding-left:12px">~25m build · Compilers</span><span style="width:78px; color:#808080">git</span><span style="color:#808080">6 commits · dsaenz/lexer</span></div><span style="color:#585858">│</span></div>
+
+          <!-- row 3 · today (warn badge) -->
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px 4px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="background:#D7AF5F; color:#0B0E14; font-weight:600; white-space:pre"> 1d left </span><span style="width:262px; padding-left:12px">~1.2h build · Databases</span><span style="width:78px; color:#808080">git</span><span style="color:#808080">9 commits · dsaenz/lsm-store</span></div><span style="color:#585858">│</span></div>
+
+          <!-- acknowledged (revealed by tweak) -->
+          <sc-if value="{{ showAcknowledged }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex"><span style="color:#585858">├</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">─────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┤</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="color:#808080; white-space:pre"> ack&nbsp;&nbsp;&nbsp; </span><span style="width:262px; padding-left:12px; color:#808080">~40m write · Design (seen, kept)</span><span style="width:78px; color:#585858">git</span><span style="color:#585858">3 commits · dsaenz/notes-site</span></div><span style="color:#585858">│</span></div>
+          </sc-if>
+
+          <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+
+          <!-- footer keys -->
+          <div style="border-top:1px solid #1A2230; padding-top:10px; margin-top:11px; display:flex; align-items:center; flex-wrap:wrap">
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#87AF87; color:#0B0E14; font-weight:600; white-space:pre"> ⏎ </span><span>&nbsp;open / accept</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#D75F5F; color:#0B0E14; font-weight:600; white-space:pre"> x </span><span>&nbsp;reject</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> a </span><span>&nbsp;acknowledge</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> / </span><span>&nbsp;filter</span>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:8px; font-size:12px; color:#808080; line-height:1.5">This is the Review screen's triage grammar wholesale — the <span style="color:#E6EBF2">N pending</span> count header, the queue rows, and a per-row badge — with one substitution: the badge reads <span style="color:#E6EBF2">expires_at</span> instead of a review's due date, so drafts sort <span style="color:#D75F5F">expiring-first</span>. A draft that expires unseen is the pipeline's problem to re-raise, not the CLI's to shout about.</div>
+    </div>
+
+    <!-- inbox-zero + reject-cheap -->
+    <div style="display:flex; flex-wrap:wrap; gap:28px; align-items:flex-start">
+      <!-- inbox zero -->
+      <div style="width:600px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">EMPTY STATE · inbox zero — the calm the surface aims for</div>
+        <div data-screen-label="Inbox · zero" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">engineer-cli — Inbox · nothing pending · 84×16</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.4">
+            <div style="display:flex; align-items:baseline; margin-bottom:8px"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Inbox</span><span style="flex:1"></span><span style="color:#87AF87; white-space:pre">◧ inbox 0</span></div>
+            <div style="display:flex"><span style="color:#585858">┌</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────</div><span style="color:#585858">┐</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:16px 10px 2px; text-align:center"><span style="color:#87AF87; font-weight:700">✓ Inbox clear.</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; text-align:center; color:#808080">No drafts waiting. New commits surface here when the</div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px 16px; text-align:center; color:#808080">automation clusters them — <span style="color:#8787FF">quietly, as a count.</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+            <div style="border-top:1px solid #1A2230; margin-top:10px; padding-top:10px; display:flex; align-items:center; flex-wrap:wrap">
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> c </span><span>&nbsp;connect a source</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> h </span><span>&nbsp;back</span>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:7px; font-size:12px; color:#808080; line-height:1.5">Exit code <span style="color:#87AF87; font-weight:700">0</span> headless. Inbox zero is a success state, not an empty one — and the only place the connect flow is nudged if no source is wired yet.</div>
+      </div>
+
+      <!-- reject cheap -->
+      <div style="width:600px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">REJECT · cheap by default — <span style="color:#585858">x discards now, reason optional after</span></div>
+        <div data-screen-label="Inbox · reject" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">engineer-cli — Inbox · reject · 84×16</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.4">
+            <div style="display:flex"><span style="color:#585858">&nbsp;</span><div style="flex:1; min-width:0; padding:3px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ </span><span>~25m build · Compilers</span><span style="flex:1"></span><span style="color:#0B0E14">6 commits</span></div></div>
+            <sc-if value="{{ rejectCheap }}" hint-placeholder-val="{{ true }}">
+              <div style="padding:9px 12px 2px; color:#808080; font-size:13px"><span style="color:#D75F5F; font-weight:700">Rejected.</span> Discarded — the draft leaves the inbox. Add a reason so the automation learns, or move on.</div>
+              <div style="display:flex; margin-top:6px"><span style="color:#585858">┌</span><span style="white-space:pre"><span style="color:#808080"> reason · optional </span></span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────</div><span style="color:#585858">┐</span></div>
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px; display:flex; align-items:center"><span style="color:#E6EBF2">not real work — vendored deps</span><span style="width:8px; background:#8787FF; display:inline-block; height:15px; margin-left:1px"></span></div><span style="color:#585858">│</span></div>
+              <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+              <div style="border-top:1px solid #1A2230; margin-top:10px; padding-top:10px; display:flex; align-items:center; flex-wrap:wrap">
+                <span style="background:#87AF87; color:#0B0E14; font-weight:600; white-space:pre"> ⏎ </span><span>&nbsp;save reason</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+                <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> u </span><span>&nbsp;undo reject</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+                <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Esc </span><span>&nbsp;skip reason</span>
+              </div>
+            </sc-if>
+            <sc-if value="{{ rejectConfirm }}" hint-placeholder-val="{{ false }}">
+              <div style="padding:9px 12px 2px; color:#808080; font-size:13px"><span style="color:#D7AF5F; font-weight:700">Reject this draft?</span> It leaves the inbox. Press <span style="color:#D75F5F; font-weight:700">x</span> again to confirm.</div>
+              <div style="border-top:1px solid #1A2230; margin-top:10px; padding-top:10px; display:flex; align-items:center; flex-wrap:wrap">
+                <span style="background:#D75F5F; color:#0B0E14; font-weight:600; white-space:pre"> x </span><span>&nbsp;again → reject</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+                <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Esc </span><span>&nbsp;keep it</span>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+        <div style="margin-top:7px; font-size:12px; color:#808080; line-height:1.5">Reject is <span style="color:#E6EBF2">cheap and reversible-feeling</span> — <span style="color:#D75F5F">x</span> discards at once (<code style="color:#8787FF">PATCH :reject</code>), then a one-line reason field learns the automation. <span style="color:#8787FF">u</span> undoes it while it's still on screen. <span style="color:#585858">(A second-press confirm is available as a tweak for the cautious.)</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ ACT 2 · OPEN ONE DRAFT ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">2</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">OPEN ONE DRAFT — see what's being written before it's written <span style="color:#5F5F87; background:#5F5F87; color:#E6EBF2; font-size:12px; padding:1px 7px; border-radius:4px">PROPOSED</span></span>
+      <span style="color:#808080; font-size:12.5px">the <span style="color:#E6EBF2">prompt</span> is the question · the <span style="color:#E6EBF2">context</span> is the proposed segment · accept confirms the exact write</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- the open draft -->
+      <div style="width:760px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">DRAFT · one clustered segment (<code style="color:#8787FF">GET /automations/tasks/:id</code>)</div>
+        <div data-screen-label="Inbox · draft" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">engineer-cli — Inbox · draft · 92×28</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.4">
+            <div style="display:flex; align-items:baseline; margin-bottom:8px"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Inbox&nbsp;›&nbsp;</span><span>draft</span><span style="flex:1"></span><span style="color:#808080">1 of 3 pending&nbsp;&nbsp;·&nbsp;&nbsp;</span><span style="color:#808080; white-space:pre">2d left</span></div>
+
+            <!-- prompt -->
+            <div style="display:flex"><span style="color:#8787FF">┌</span><span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> git-activity proposes </span></span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#8787FF">─────────────────────────────────────────────────────────</div><span style="color:#8787FF">┐</span></div>
+            <div style="display:flex"><span style="color:#8787FF">│</span><div style="flex:1; min-width:0; padding:9px 12px 2px"><span style="color:#E6EBF2; font-weight:700">Log ~50m of build on Distributed Systems from today's commits?</span></div><span style="color:#8787FF">│</span></div>
+            <div style="display:flex"><span style="color:#8787FF">│</span><div style="flex:1; min-width:0; padding:2px 12px 9px; color:#808080">One segment clustered from <span style="color:#E6EBF2">14 commits</span> on <span style="color:#E6EBF2">dsaenz/raft</span> (main) — not 14 activities.</div><span style="color:#8787FF">│</span></div>
+            <div style="display:flex"><span style="color:#8787FF">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#8787FF">──────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#8787FF">┘</span></div>
+
+            <!-- proposed segment fields -->
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:12px 0 5px">THE ACTIVITY IT WILL WRITE · <span style="color:#585858">edit any field before accepting</span></div>
+            <div style="display:flex; align-items:center; padding:2px 0"><span style="width:130px; color:#808080">kind</span><span style="color:#E6EBF2; font-weight:700">build</span></div>
+            <div style="display:flex; align-items:center; padding:2px 0"><span style="width:130px; color:#808080">domain</span><span style="color:#E6EBF2; font-weight:700">Distributed Systems</span><span style="color:#585858">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span style="color:#808080">consensus</span></div>
+            <div style="display:flex; align-items:center; padding:2px 0"><span style="width:130px; color:#808080">duration</span><span style="color:#E6EBF2; font-weight:700; white-space:pre">50m</span><span style="color:#808080">&nbsp;&nbsp;· 09:12 → 14:05, gaps trimmed</span></div>
+            <div style="display:flex; align-items:baseline; padding:2px 0"><span style="width:130px; color:#808080; flex-shrink:0">title</span><span style="color:#E6EBF2">Raft: pre-vote &amp; leader-lease work</span></div>
+
+            <!-- commit evidence -->
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:12px 0 5px">CLUSTERED FROM · <span style="color:#585858">the evidence, collapsed</span></div>
+            <div style="white-space:pre; color:#808080; font-size:13px; line-height:1.6"><span style="color:#87AF87">a1c4f0</span> pre-vote guard before term bump
+<span style="color:#87AF87">7de92b</span> leader lease: clock-bound renewal
+<span style="color:#585858">·· +12 more on dsaenz/raft (main) ··</span></div>
+
+            <!-- footer keys -->
+            <div style="border-top:1px solid #1A2230; padding-top:10px; margin-top:11px; display:flex; align-items:center; flex-wrap:wrap">
+              <span style="background:#87AF87; color:#0B0E14; font-weight:600; white-space:pre"> ⏎ </span><span>&nbsp;accept &amp; write</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> e </span><span>&nbsp;adjust fields</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#D75F5F; color:#0B0E14; font-weight:600; white-space:pre"> x </span><span>&nbsp;reject</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> a </span><span>&nbsp;ack (keep for later)</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> J/K </span><span>&nbsp;next draft</span>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:8px; font-size:12px; color:#808080; line-height:1.5">Accept confirms the <span style="color:#E6EBF2">exact activity</span> being written — capture is sacred, so nothing commits sight-unseen. <span style="color:#8787FF">e</span> maps to the server's permitted <code style="color:#8787FF">response</code> keys (<span style="color:#E6EBF2">value · subdomain_id · notes · classification</span>); anything longer than a field opens <span style="color:#8787FF">$EDITOR</span>, never a TextArea.</div>
+      </div>
+
+      <!-- the three verbs -->
+      <div style="width:520px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">THE THREE VERBS · <span style="color:#585858">seen · written · discarded</span></div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">each maps to one PATCH verb</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13.5px; line-height:1.5">
+            <div style="display:flex; align-items:baseline; padding:6px 0"><span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre; margin-right:10px"> a </span><div><span style="color:#E6EBF2; font-weight:700">acknowledge</span> <span style="color:#808080">— seen, keep for later.</span><div style="color:#585858; font-size:12px"><code style="color:#8787FF">PATCH :acknowledge</code> · stamps acknowledged_at · stays pending</div></div></div>
+            <div style="display:flex; align-items:baseline; padding:6px 0; border-top:1px solid #121826"><span style="background:#87AF87; color:#0B0E14; font-weight:700; white-space:pre; margin-right:10px"> ⏎ </span><div><span style="color:#E6EBF2; font-weight:700">accept</span> <span style="color:#808080">— write the activity.</span><div style="color:#585858; font-size:12px"><code style="color:#8787FF">PATCH :complete</code> · fires on_complete · <span style="color:#87AF87">mints the activity</span></div></div></div>
+            <div style="display:flex; align-items:baseline; padding:6px 0; border-top:1px solid #121826"><span style="background:#D75F5F; color:#0B0E14; font-weight:700; white-space:pre; margin-right:10px"> x </span><div><span style="color:#E6EBF2; font-weight:700">reject</span> <span style="color:#808080">— discard, reason optional.</span><div style="color:#585858; font-size:12px"><code style="color:#8787FF">PATCH :reject</code> · <code style="color:#8787FF">{ reason }</code> · leaves the scope</div></div></div>
+            <div style="margin-top:10px; border-top:1px solid #1A2230; padding-top:9px; color:#808080; font-size:12px; line-height:1.6">Acknowledge is the quiet middle: it clears the <span style="color:#D7AF5F">nag</span> without forcing a decision. The draft keeps its <span style="color:#E6EBF2">expires_at</span>; the count drops the badge but keeps the row.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ ACT 3 · ACCEPT / REJECT NOTIFY ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">3</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">AFTER THE VERB — notify tiles &amp; the re-read <span style="color:#5F5F87; background:#5F5F87; color:#E6EBF2; font-size:12px; padding:1px 7px; border-radius:4px">PROPOSED</span></span>
+      <span style="color:#808080; font-size:12.5px">accept is a server write · <span style="color:#E6EBF2">fire-then-re-read</span> · a stale draft is <span style="color:#D7AF5F">“moved on,”</span> not a hard error</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- notify tiles -->
+      <div style="width:660px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">NOTIFY · auto-expiring footer tiles after a verb</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">info / success = coloured text · warn / error = full-row bg</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13.5px; line-height:1.5">
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin-bottom:5px">AFTER ACCEPT</div>
+            <div style="padding:2px 2px"><span style="color:#87AF87">✓ logged · 50m build · Distributed Systems</span><span style="color:#808080"> · inbox 2</span></div>
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:14px 0 5px">AFTER REJECT</div>
+            <div style="padding:2px 2px"><span style="color:#87AF87">✓ rejected · Compilers draft</span><span style="color:#808080"> · inbox 1 · </span><span style="color:#8787FF">u to undo</span></div>
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:14px 0 5px">AFTER ACKNOWLEDGE</div>
+            <div style="padding:2px 2px"><span style="color:#808080">◌ acknowledged · Databases · still pending, badge cleared</span></div>
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:14px 0 5px">STALE DRAFT · 422</div>
+            <div style="padding:3px 10px; background:#D7AF5F; color:#0B0E14; font-weight:700; white-space:pre">⚠ this draft already moved on — inbox re-read</div>
+            <div style="margin-top:14px; border-top:1px solid #1A2230; padding-top:9px; color:#808080; font-size:12px; line-height:1.6">A second <code style="color:#8787FF">complete</code> is the server's <span style="color:#D7AF5F">422 “Cannot complete task in completed status.”</span> The CLI surfaces it as a soft re-read, refreshes the pending scope, and never trusts a cached row after a write.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- fire then re-read diagram -->
+      <div style="width:600px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">FIRE-THEN-RE-READ · <span style="color:#585858">the write leaves the client's hands</span></div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">accept ⏎ · what actually happens</span>
+          </div>
+          <div style="padding:16px 16px; font-size:13px; line-height:1.7; color:#808080">
+            <div style="white-space:pre"><span style="color:#87AF87">⏎</span>  <span style="color:#E6EBF2">accept</span></div>
+            <div style="white-space:pre"><span style="color:#585858">│</span></div>
+            <div style="white-space:pre"><span style="color:#585858">├─▶</span> <code style="color:#8787FF">PATCH :complete</code>  <span style="color:#585858">{ resolution, response }</span></div>
+            <div style="white-space:pre"><span style="color:#585858">│</span>       <span style="color:#585858">└─ fires on_complete →</span> <span style="color:#87AF87">activity minted</span></div>
+            <div style="white-space:pre"><span style="color:#585858">│</span></div>
+            <div style="white-space:pre"><span style="color:#585858">├─▶</span> draft → <span style="color:#87AF87">completed</span> <span style="color:#585858">(terminal)</span></div>
+            <div style="white-space:pre"><span style="color:#585858">│</span></div>
+            <div style="white-space:pre"><span style="color:#585858">└─▶</span> <span style="color:#E6EBF2">re-read pending</span> <span style="color:#585858">— row gone; count drops</span></div>
+          </div>
+          <div style="padding:0 16px 14px; font-size:12px; color:#808080; line-height:1.5">Same shape as Progress's <span style="color:#E6EBF2">“adjust may mint a successor.”</span> The client owns no second ledger — the server's scope is the truth, and the CLI just re-reads it.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ ACT 4 · THE AMBIENT COUNT ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">4</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">THE AMBIENT COUNT — a count in the corner, never a popup <span style="color:#5F5F87; background:#5F5F87; color:#E6EBF2; font-size:12px; padding:1px 7px; border-radius:4px">PROPOSED</span></span>
+      <span style="color:#808080; font-size:12.5px">the timer's ambient-presence idiom · same read, four footprints</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- four footprints -->
+      <div style="width:660px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">FOUR FOOTPRINTS · from a full screen down to one word</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">where the count surfaces off-screen</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13.5px; line-height:1.7">
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin-bottom:4px">1 · HOME HEADER CELL · <span style="color:#585858">the timer's status-cell slot</span></div>
+            <div><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span><span style="color:#808080">◧ timer 24:10</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span><span style="color:#D7AF5F; font-weight:700">▾ inbox 3</span></div>
+
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:14px 0 4px">2 · NOTIFY TILE · <span style="color:#585858">quiet, on new drafts</span></div>
+            <div><span style="color:#808080">◌ 2 new drafts clustered from today's commits · </span><span style="color:#8787FF">i to triage</span></div>
+
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:14px 0 4px">3 · ZELLIJ / TMUX STATUS BAR</div>
+            <div><span style="color:#808080">◧ engineer</span>&nbsp;&nbsp;<span style="color:#D7AF5F; font-weight:700">inbox 3</span>&nbsp;<span style="color:#585858">·</span>&nbsp;<span style="color:#87AF87">on pace</span></div>
+
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:14px 0 4px">4 · THE --short STRING</div>
+            <div style="white-space:pre"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> inbox <span style="color:#D7AF5F">--short</span>  →  <span style="color:#E6EBF2">inbox 3 · 1.9h</span></div>
+
+            <div style="margin-top:14px; border-top:1px solid #1A2230; padding-top:9px; color:#808080; font-size:12px; line-height:1.6">Never an interrupt. The loudest it gets is a small amber <span style="color:#D7AF5F">▾</span> when a draft is <span style="color:#D75F5F">expiring</span>; otherwise it's a muted count that waits for you.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- quiet-by-default principle -->
+      <div style="width:600px">
+        <div style="background:#05080F; border:1px solid #1A2230; border-left:2px solid #8787FF; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.6; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="color:#E6EBF2; font-weight:700; margin-bottom:9px">Quiet by default — a count, never a nag</div>
+          <div style="display:flex; gap:10px; padding:5px 0; border-top:1px solid #121826"><span style="color:#87AF87">●</span><div><span style="color:#E6EBF2">Ambient</span> — the count rides the header cell the timer already owns; no new chrome, no new place to look.</div></div>
+          <div style="display:flex; gap:10px; padding:5px 0; border-top:1px solid #121826"><span style="color:#D7AF5F">●</span><div><span style="color:#E6EBF2">Escalates once</span> — only an expiring draft earns the amber <span style="color:#D7AF5F">▾</span>. Nothing pulses, nothing pops.</div></div>
+          <div style="display:flex; gap:10px; padding:5px 0; border-top:1px solid #121826"><span style="color:#D75F5F">✗</span><div><span style="color:#E6EBF2">Not</span> a modal, not a toast that steals focus, not a badge that follows you across screens.</div></div>
+          <div style="margin-top:10px; padding-top:9px; border-top:1px solid #1A2230; color:#585858">A draft that expires unseen is the pipeline's problem to re-raise — the CLI's job is to be there when you look, not to make you look.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ ACT 5 · CONNECT THE GIT SOURCE ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">5</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">CONNECT THE GIT SOURCE — the step that makes drafts appear <span style="color:#5F5F87; background:#5F5F87; color:#E6EBF2; font-size:12px; padding:1px 7px; border-radius:4px">JOB 2 · PROPOSED</span></span>
+      <span style="color:#808080; font-size:12.5px">terminal-native, because the source is · <span style="color:#D7AF5F">the server contract is the open question</span> — flagged, not invented</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- connect flow -->
+      <div style="width:760px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">CONNECT · point engineer at the repos you already commit in (<code style="color:#8787FF">engineer connect git</code>)</div>
+        <div data-screen-label="Connect · git source" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">engineer-cli — Connect · git · 92×24</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.4">
+            <div style="display:flex; align-items:baseline; margin-bottom:8px"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Connect&nbsp;›&nbsp;</span><span>git</span><span style="flex:1"></span><span style="color:#808080">scanned ~/src · 4 repos</span></div>
+
+            <div style="display:flex"><span style="color:#585858">┌</span><span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Watch which repos? </span><span style="color:#808080">· ⎵ toggles </span></span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────</div><span style="color:#585858">┐</span></div>
+
+            <!-- column head -->
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 3px; display:flex; align-items:center; color:#808080; font-size:11px; letter-spacing:.06em"><span style="width:34px"></span><span style="width:230px">REPOSITORY</span><span style="width:96px">BRANCH</span><span>RECENT ACTIVITY</span></div><span style="color:#585858">│</span></div>
+
+            <!-- selected + watched -->
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ ● </span><span style="width:224px">dsaenz/raft</span><span style="width:96px">main</span><span>14 commits today</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre; color:#87AF87">  ● </span><span style="width:224px">dsaenz/lsm-store</span><span style="width:96px; color:#808080">main</span><span style="color:#808080">9 commits today</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre; color:#87AF87">  ● </span><span style="width:224px">dsaenz/lexer</span><span style="width:96px; color:#808080">feat/pratt</span><span style="color:#808080">6 commits today</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px 4px; display:flex; align-items:center"><span style="white-space:pre; color:#585858">  ○ </span><span style="width:224px; color:#808080">acme/legacy-crm</span><span style="width:96px; color:#585858">—</span><span style="color:#585858">last commit 40d ago</span></div><span style="color:#585858">│</span></div>
+
+            <div style="display:flex"><span style="color:#585858">├</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">─────────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┤</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:4px 10px; display:flex; align-items:center"><span style="color:#808080">commit identity&nbsp;&nbsp;</span><span style="color:#E6EBF2">alice@dsaenz.dev</span><span style="color:#87AF87; font-weight:700">&nbsp;&nbsp;✓ matches your account</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">─────────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+
+            <div style="border-top:1px solid #1A2230; padding-top:10px; margin-top:11px; display:flex; align-items:center; flex-wrap:wrap">
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ⎵ </span><span>&nbsp;watch / ignore</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#87AF87; color:#0B0E14; font-weight:600; white-space:pre"> ⏎ </span><span>&nbsp;connect (3 watched)</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> e </span><span>&nbsp;identity</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Esc </span><span>&nbsp;cancel</span>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:8px; font-size:12px; color:#808080; line-height:1.5">One shell step: engineer scans <code style="color:#8787FF">~/src</code>, you toggle which repos to watch with <span style="color:#8787FF">⎵</span>, and it confirms your <span style="color:#E6EBF2">commit email</span> maps to your account. No web settings page. On <span style="color:#87AF87">connect</span>, a tile: <span style="color:#87AF87">✓ watching 3 repos · drafts appear in your inbox when you commit</span>.</div>
+      </div>
+
+      <!-- the open-contract callout (interactive) -->
+      <div style="width:600px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">DECISION TO RAISE · where does “watching” live? <span style="color:#585858">click a model</span></div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-left:2px solid #D7AF5F; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.6; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="color:#E6EBF2; font-weight:700; margin-bottom:4px">⚠ Open contract — the one real cross-repo dependency</div>
+          <div style="color:#808080; margin-bottom:11px">The shipped <code style="color:#8787FF">namespace :automations</code> exposes task <span style="color:#E6EBF2">consumption</span> only — no route registers a source. Tasks are “created in-process by <span style="color:#E6EBF2">AutomationJob</span>.” So this flow is drawn against an unsettled contract. Two models:</div>
+
+          <!-- tabs -->
+          <div style="display:flex; gap:0; margin-bottom:12px; font-size:13px">
+            <span onclick="{{ setServer }}" style="{{ tabServer }}">server-side</span>
+            <span style="color:#585858; padding:0 6px">·</span>
+            <span onclick="{{ setLocal }}" style="{{ tabLocal }}">local config</span>
+            <span style="color:#585858; padding:0 6px">·</span>
+            <span onclick="{{ setUndecided }}" style="{{ tabUndecided }}">undecided</span>
+          </div>
+
+          <sc-if value="{{ isServer }}" hint-placeholder-val="{{ false }}">
+            <div style="background:#0B0E14; border:1px solid #1A2230; border-radius:6px; padding:11px 13px">
+              <div style="color:#8787FF; font-weight:700; margin-bottom:5px">A · a new server endpoint</div>
+              <div style="white-space:pre; color:#87AF87; font-size:12.5px; margin-bottom:6px">POST /api/v1/automations/sources</div>
+              <div>The <span style="color:#E6EBF2">engineer</span> team adds a route; the CLI just calls it and the detector reads server state. <span style="color:#585858">Clean, but net-new server work this module can't ship alone.</span></div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ isLocal }}" hint-placeholder-val="{{ false }}">
+            <div style="background:#0B0E14; border:1px solid #1A2230; border-radius:6px; padding:11px 13px">
+              <div style="color:#8787FF; font-weight:700; margin-bottom:5px">B · purely-local client config</div>
+              <div style="white-space:pre; color:#87AF87; font-size:12.5px; margin-bottom:6px">~/.config/engineer/sources.toml</div>
+              <div>Connect writes a local file the server-side git detector reads. <span style="color:#585858">No new route — but the detector must reach into client state, which may not fit the pipeline.</span></div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ isUndecided }}" hint-placeholder-val="{{ true }}">
+            <div style="background:#0B0E14; border:1px solid #1A2230; border-radius:6px; padding:11px 13px">
+              <div style="color:#D7AF5F; font-weight:700; margin-bottom:5px">Raised, not resolved</div>
+              <div>The client UX above holds under <span style="color:#E6EBF2">either</span> model — the repo picker and identity check are the same. What differs is only <span style="color:#E6EBF2">what ⏎ writes to</span>. This is a design-pass flag for the handoff, not a decision the CLI makes unilaterally. <span style="color:#585858">(Click a model to see its shape.)</span></div>
+            </div>
+          </sc-if>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ ACT 6 · HEADLESS ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">6</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">HEADLESS — every read &amp; verb has a one-shot twin <span style="color:#5F5F87; background:#5F5F87; color:#E6EBF2; font-size:12px; padding:1px 7px; border-radius:4px">PROPOSED</span></span>
+      <span style="color:#808080; font-size:12.5px">TTY-detected · <span style="color:#8787FF">NO_COLOR</span> respected · no ANSI when piped · meaningful exit codes</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- inbox reads + verbs -->
+      <div style="width:900px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">INBOX TWINS · <code style="color:#8787FF">engineer inbox</code></div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">zsh — list · show · the three verbs</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13px; line-height:1.5">
+            <div><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> inbox <span style="color:#808080"># pending scope · --status --automation to filter</span></div>
+            <div style="color:#808080; white-space:pre"><span style="color:#D7AF5F">2d</span> ~50m build · Distributed Systems&nbsp;&nbsp;git 14c dsaenz/raft</div>
+            <div style="color:#808080; white-space:pre"><span style="color:#D75F5F">3h</span> ~25m build · Compilers&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;git&nbsp; 6c dsaenz/lexer</div>
+            <div style="color:#808080; white-space:pre"><span style="color:#D7AF5F">1d</span> ~1.2h build · Databases&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;git&nbsp; 9c dsaenz/lsm-store</div>
+
+            <div style="margin-top:10px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> inbox <span style="color:#D7AF5F">--json</span></div>
+            <div style="color:#808080; white-space:pre">{
+  <span style="color:#8787FF">"data"</span>: [
+    { <span style="color:#8787FF">"id"</span>:<span style="color:#87AF87">"tsk_9f2"</span>, <span style="color:#8787FF">"automation"</span>:<span style="color:#87AF87">"git-activity"</span>, <span style="color:#8787FF">"status"</span>:<span style="color:#87AF87">"pending"</span>,
+      <span style="color:#8787FF">"prompt"</span>:<span style="color:#87AF87">"Log ~50m of build on Distributed Systems?"</span>,
+      <span style="color:#8787FF">"entity"</span>:{ <span style="color:#8787FF">"type"</span>:<span style="color:#87AF87">"repo"</span>, <span style="color:#8787FF">"name"</span>:<span style="color:#87AF87">"dsaenz/raft"</span> },
+      <span style="color:#8787FF">"expires_at"</span>:<span style="color:#87AF87">"2026-07-17T04:00:00Z"</span> }
+  ], <span style="color:#8787FF">"page"</span>:<span style="color:#D7AF5F">1</span>, <span style="color:#8787FF">"per_page"</span>:<span style="color:#D7AF5F">25</span>, <span style="color:#8787FF">"total"</span>:<span style="color:#D7AF5F">3</span>
+}</div>
+
+            <div style="margin-top:10px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> inbox show <span style="color:#D7AF5F">tsk_9f2</span> <span style="color:#808080"># the prompt + proposed segment + evidence</span></div>
+            <div style="margin-top:8px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> inbox accept <span style="color:#D7AF5F">tsk_9f2</span> <span style="color:#808080"># PATCH :complete → mints the activity</span></div>
+            <div style="color:#808080">✓ logged · 50m build · Distributed Systems</div>
+            <div style="margin-top:8px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> inbox ack <span style="color:#D7AF5F">tsk_9f2</span><span style="color:#808080">&nbsp;&nbsp;&nbsp;&nbsp;# PATCH :acknowledge · stays pending</span></div>
+            <div style="margin-top:8px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> inbox reject <span style="color:#D7AF5F">tsk_9f2</span> <span style="color:#D7AF5F">--reason</span> <span style="color:#87AF87">"vendored deps"</span></div>
+            <div style="color:#808080">✓ rejected · Distributed Systems draft</div>
+            <div style="margin-top:8px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> inbox accept <span style="color:#D7AF5F">tsk_9f2</span> <span style="color:#808080"># already completed</span></div>
+            <div style="white-space:pre"><span style="color:#D7AF5F">⚠ this draft already moved on — re-read the inbox</span>&nbsp;&nbsp;<span style="color:#585858">(422)</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- connect twin + exit codes -->
+      <div style="width:560px; display:flex; flex-direction:column; gap:16px">
+        <div>
+          <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">CONNECT TWIN · <code style="color:#8787FF">engineer connect git</code> <span style="color:#5F5F87; background:#5F5F87; color:#E6EBF2; font-size:11px; padding:1px 6px; border-radius:4px">awaits §5</span></div>
+          <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+            <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+              <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+              <span style="margin-left:6px">zsh — wire a source headless</span>
+            </div>
+            <div style="padding:14px 16px; font-size:13px; line-height:1.55">
+              <div><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> connect git <span style="color:#D7AF5F">--repo</span> ~/src/raft</div>
+              <div style="color:#808080">✓ watching dsaenz/raft (main)</div>
+              <div style="margin-top:8px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> connect git <span style="color:#D7AF5F">--scan</span> ~/src</div>
+              <div style="color:#808080; white-space:pre">found 4 · watching 3 · ignored 1</div>
+              <div style="margin-top:8px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> connect list</div>
+              <div style="color:#808080; white-space:pre">dsaenz/raft&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color:#87AF87">watching</span></div>
+              <div style="color:#808080; white-space:pre">acme/legacy-crm <span style="color:#585858">ignored</span></div>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">EXIT CODES · scripts branch on the code</div>
+          <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+            <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+              <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+              <span style="margin-left:6px">$? after engineer inbox</span>
+            </div>
+            <div style="padding:14px 16px; font-size:13.5px; line-height:1.85">
+              <div style="display:flex; align-items:baseline"><span style="color:#87AF87; font-weight:700; width:34px">0</span><span>inbox zero — nothing pending</span></div>
+              <div style="display:flex; align-items:baseline"><span style="color:#D7AF5F; font-weight:700; width:34px">1</span><span>drafts pending (a cron can nag you)</span></div>
+              <div style="display:flex; align-items:baseline"><span style="color:#808080; font-weight:700; width:34px">3</span><span>draft not found <span style="color:#585858">(bad id)</span></span></div>
+              <div style="display:flex; align-items:baseline"><span style="color:#D7AF5F; font-weight:700; width:34px">4</span><span>draft moved on <span style="color:#585858">· 422 · re-read</span></span></div>
+              <div style="margin-top:8px; border-top:1px solid #1A2230; padding-top:9px; color:#808080; font-size:12px">Humans read the badge; scripts read <span style="color:#8787FF">$?</span> — same contract as <span style="color:#8787FF">pace</span>.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ CLOSING · DECISION RECORD ============================ -->
+  <div style="width:1300px; background:#05080F; border:1px solid #1A2230; border-left:2px solid #D7AF5F; border-radius:8px; padding:16px 20px; font-size:12.5px; line-height:1.65; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="color:#E6EBF2; font-weight:700; margin-bottom:8px">Decision record — two things to raise, not silently resolve</div>
+    <div style="display:flex; padding:6px 0; border-top:1px solid #121826"><span style="color:#8787FF; width:230px; flex-shrink:0; font-weight:700">Connect flow · open contract</span><span>The shipped <span style="color:#E6EBF2">namespace :automations</span> exposes task consumption only — <span style="color:#E6EBF2">no route registers a git source</span>. Job 2's flow is designed against an unspecified contract: a new server endpoint (<span style="color:#E6EBF2">the engineer team adds it</span>) or purely-local client config the detector reads. This is the one real cross-repo dependency — <span style="color:#D7AF5F">surfaced for the handoff, not invented</span>.</span></div>
+    <div style="display:flex; padding:6px 0; border-top:1px solid #121826"><span style="color:#8787FF; width:230px; flex-shrink:0; font-weight:700">Accept is a server write</span><span><span style="color:#E6EBF2">complete</span> runs <span style="color:#E6EBF2">on_complete</span> and leaves the draft in a terminal <span style="color:#87AF87">completed</span> status; a second attempt is the <span style="color:#D7AF5F">422</span> “Cannot complete.” So the CLI treats accept as <span style="color:#E6EBF2">fire-then-re-read</span> — refresh the pending scope, never trust a cached row, and surface the 422 as “this draft moved on,” not a hard error. Same shape as Progress's “adjust may mint a successor.”</span></div>
+    <div style="display:flex; padding:6px 0; border-top:1px solid #121826"><span style="color:#8787FF; width:230px; flex-shrink:0; font-weight:700">One segment, not one-per-commit</span><span>The automation <span style="color:#E6EBF2">clusters</span> a day's commits on a repo into a single proposed segment — accepting writes <span style="color:#E6EBF2">one activity</span>, not one per commit. The inbox exists to make the log honest, not to flood it. The CLI only ever <span style="color:#E6EBF2">consumes</span> tasks: no create, no destroy — index / show + acknowledge / accept / reject + pending.</span></div>
+    <div style="margin-top:10px; padding-top:9px; border-top:1px solid #1A2230; display:flex; gap:12px; flex-wrap:wrap; align-items:center">
+      <span style="background:#87AF87; color:#0B0E14; font-weight:700; padding:1px 7px; border-radius:4px; font-size:11px">SHIPPED</span>
+      <span>the server task API — <span style="color:#E6EBF2">list / show / pending / acknowledge / complete / reject</span></span>
+      <span style="color:#585858">·</span>
+      <span style="background:#5F5F87; color:#E6EBF2; font-weight:700; padding:1px 7px; border-radius:4px; font-size:11px">PROPOSED</span>
+      <span>job 1 (the triage screen + verbs + <span style="color:#E6EBF2">:inbox</span> route + <span style="color:#E6EBF2">engineer inbox</span> twins) is unblocked · job 2 (connect flow) awaits the §5 contract</span>
+    </div>
+  </div>
+
+</div>
+
+<template id="__bundler_thumbnail">
+  <svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+    <rect width="80" height="80" rx="16" fill="#05080F"/>
+    <path d="M20 30 h40 v20 a4 4 0 0 1 -4 4 h-32 a4 4 0 0 1 -4 -4 z" fill="none" stroke="#585858" stroke-width="2"/>
+    <path d="M20 44 h10 l3 5 h14 l3 -5 h10" fill="none" stroke="#8787FF" stroke-width="2" stroke-linejoin="round"/>
+    <circle cx="58" cy="26" r="9" fill="#D7AF5F"/>
+    <text x="58" y="30" font-family="monospace" font-size="11" font-weight="700" fill="#0B0E14" text-anchor="middle">3</text>
+  </svg>
+</template>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: { &quot;width&quot;: &quot;100%&quot;, &quot;height&quot;: &quot;100%&quot; },
+  &quot;connectContract&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;undecided&quot;, &quot;server&quot;, &quot;local&quot;], &quot;default&quot;: &quot;undecided&quot;, &quot;tsType&quot;: &quot;\&quot;undecided\&quot; | \&quot;server\&quot; | \&quot;local\&quot;&quot;, &quot;section&quot;: &quot;Assisted capture&quot;, &quot;label&quot;: &quot;Connect-flow contract framing&quot; },
+  &quot;rejectNeedsConfirm&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Assisted capture&quot;, &quot;label&quot;: &quot;Reject needs second-press confirm&quot; },
+  &quot;showAcknowledged&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Assisted capture&quot;, &quot;label&quot;: &quot;Inbox: show acknowledged row&quot; }
+}">
+class Component extends DCLogic {
+  state = { contract: null };
+
+  contract() {
+    return this.state.contract ?? (this.props.connectContract ?? 'undecided');
+  }
+
+  renderVals() {
+    const c = this.contract();
+    const rejectConfirm = this.props.rejectNeedsConfirm ?? false;
+    const tab = (on) => on
+      ? { padding: '0 2px', color: '#8787FF', fontWeight: 700, borderBottom: '2px solid #8787FF', cursor: 'pointer', userSelect: 'none' }
+      : { padding: '0 2px', color: '#808080', cursor: 'pointer', userSelect: 'none' };
+    return {
+      isServer: c === 'server',
+      isLocal: c === 'local',
+      isUndecided: c === 'undecided',
+      tabServer: tab(c === 'server'),
+      tabLocal: tab(c === 'local'),
+      tabUndecided: tab(c === 'undecided'),
+      setServer: () => this.setState({ contract: 'server' }),
+      setLocal: () => this.setState({ contract: 'local' }),
+      setUndecided: () => this.setState({ contract: 'undecided' }),
+      rejectConfirm,
+      rejectCheap: !rejectConfirm,
+      showAcknowledged: this.props.showAcknowledged ?? false,
+    };
+  }
+}
+</script>
+</body>
+</html>

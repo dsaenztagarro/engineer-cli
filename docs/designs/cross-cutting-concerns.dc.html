@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <meta name="design_doc_mode" content="canvas">
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#0B0E14; }
+    a { color:#8787FF; text-decoration:none; }
+    a:hover { color:#A5A5FF; }
+    @keyframes pulse { 0%{opacity:1} 45%{opacity:.28} 100%{opacity:1} }
+  </style>
+</helmet>
+
+<div style="padding:44px 48px 100px; display:flex; flex-direction:column; gap:60px; width:1960px; color:#E6EBF2">
+
+  <!-- ============================ INTRO ============================ -->
+  <div style="display:flex; flex-direction:column; gap:16px; width:1280px">
+    <div data-drags-parent="1" style="font-weight:700; font-size:12px; color:#9aa4b2; letter-spacing:.10em">CROSS-CUTTING CONCERNS · engineer-cli · the things every module inherits</div>
+    <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:18px 20px; font-size:13.5px; line-height:1.6; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+      <div><span style="color:#8787FF; font-weight:700">Not a screen — the concerns every module brief inherits rather than owns.</span> <span style="color:#808080">There's no board of its own; this one constrains all the others. Where a concern is owned in detail by a single module, it states the shared principle and points there. It uses </span><span style="color:#E6EBF2">§A…§E</span><span style="color:#808080"> in place of the house workflow → jobs → API skeleton, but keeps the kit: character grid, keyboard-only, dark-first, ASCII-only diagrams, shipped chrome.</span></div>
+      <div style="margin-top:12px; color:#808080; font-size:12.5px">This canvas reads top to bottom: <span style="color:#E6EBF2">the governing principle → §A offline &amp; the local clock → §B one reusable picker → §C the TUI ↔ headless contract → §D the accent decision → §E $EDITOR for prose.</span> It touches <a href="progress.dc.html">progress</a>, <a href="timer.dc.html">timer</a>, notes and week-planning — the things each leans on rather than defines.</div>
+      <div style="margin-top:14px; color:#808080; display:flex; gap:22px; flex-wrap:wrap; font-size:12.5px; border-top:1px solid #1A2230; padding-top:12px">
+        <span><span style="color:#8787FF">████</span> accent · verbs · nav</span>
+        <span><span style="color:#87AF87">████</span> success · on-track</span>
+        <span><span style="color:#D7AF5F">████</span> warn · attention</span>
+        <span><span style="color:#D75F5F">████</span> danger · refusal</span>
+        <span><span style="color:#808080">████</span> muted</span>
+        <span><span style="color:#585858">████</span> border</span>
+      </div>
+      <div style="margin-top:12px; color:#808080; font-size:12px; border-top:1px solid #1A2230; padding-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+        <span style="background:#5F5F87; color:#E6EBF2; font-weight:700; padding:1px 7px; border-radius:4px; font-size:11px">STATUS</span>
+        <span><span style="color:#E6EBF2">proposed</span> — decisions to <span style="color:#E6EBF2">ratify</span> and follow-ups to <span style="color:#E6EBF2">schedule</span>, not one shippable screen.</span>
+        <span style="color:#585858">·</span>
+        <span style="background:#87AF87; color:#0B0E14; font-weight:700; padding:1px 7px; border-radius:4px; font-size:11px">§D RATIFIED</span>
+        <span>accent <span style="color:#8787FF">105</span> adopted over sky-blue <span style="color:#5FAFFF">75</span> — recorded in CLAUDE.md.</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ §0 · THE GOVERNING PRINCIPLE ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">§0</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">THE GOVERNING PRINCIPLE — sterling, not a replica</span>
+      <span style="color:#808080; font-size:12.5px">the law every other brief is measured against · the glance-or-gesture test</span>
+    </div>
+
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- the statement + the test -->
+      <div style="width:840px; display:flex; flex-direction:column; gap:16px">
+        <div style="background:#05080F; border:1px solid #1A2230; border-left:2px solid #8787FF; border-radius:8px; padding:16px 18px; font-size:13px; line-height:1.6; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div><span style="color:#E6EBF2; font-weight:700">An Apple Watch for the study loop, not a shrunk-down web app.</span> The exemplar is already shipped — the <a href="timer.dc.html">timer</a>: an ambient string you glance at, verbs that cost one keystroke, states that never lie, offers that never fire on their own, a headless twin you pipe into a status bar. <span style="color:#E6EBF2">That is the bar.</span></div>
+          <div style="margin-top:10px; padding-top:10px; border-top:1px solid #1A2230"><span style="color:#D75F5F; font-weight:700">A full terminal replica of the web is a non-goal — explicitly.</span> The web is the cockpit (editing depth, rich filtering, bulk ops, dashboards, the long tail of CRUD). The terminal owns the high-frequency core of the study loop, distilled. Port the web surface, or distil the one thing that matters here — <span style="color:#E6EBF2">the terminal always takes the second.</span></div>
+        </div>
+
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:16px 18px; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="color:#E6EBF2; font-weight:700; font-size:13px; margin-bottom:4px">THE TEST — a feature earns its place only if it is</div>
+          <div style="color:#585858; font-size:11.5px; margin-bottom:10px">checked against every new feature, and every growth of an existing one, before it is designed</div>
+          <div style="display:flex; flex-direction:column; gap:9px; font-size:12.5px; line-height:1.5">
+            <div style="display:flex; gap:11px"><span style="background:#8787FF; color:#0B0E14; font-weight:700; border-radius:3px; width:19px; height:19px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0">1</span><div><span style="color:#E6EBF2; font-weight:700">A glance or a gesture, not a session.</span> <span style="color:#808080">Value lands in one look (a complication — a pace meter, the timer string, a due count) or one keystroke (a verb), never a lean-back editing workflow.</span></div></div>
+            <div style="display:flex; gap:11px"><span style="background:#8787FF; color:#0B0E14; font-weight:700; border-radius:3px; width:19px; height:19px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0">2</span><div><span style="color:#E6EBF2; font-weight:700">Ambient &amp; quiet.</span> <span style="color:#808080">Present without being opened; calm when on-track; a small signal when not; never a nag. On-pace is silence, </span><span style="color:#D7AF5F">behind</span><span style="color:#808080"> is as loud as it gets.</span></div></div>
+            <div style="display:flex; gap:11px"><span style="background:#8787FF; color:#0B0E14; font-weight:700; border-radius:3px; width:19px; height:19px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0">3</span><div><span style="color:#E6EBF2; font-weight:700">Distilled, not ported.</span> <span style="color:#808080">Answers the one question that matters in the terminal. Depth (the full table, the analytics grid, the planning canvas) stays on the web.</span></div></div>
+            <div style="display:flex; gap:11px"><span style="background:#8787FF; color:#0B0E14; font-weight:700; border-radius:3px; width:19px; height:19px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0">4</span><div><span style="color:#E6EBF2; font-weight:700">Honest.</span> <span style="color:#808080">paused / idle / over / behind / stale / offline render truthfully — the design never hides a state to look tidy.</span></div></div>
+            <div style="display:flex; gap:11px"><span style="background:#8787FF; color:#0B0E14; font-weight:700; border-radius:3px; width:19px; height:19px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0">5</span><div><span style="color:#E6EBF2; font-weight:700">Composable — the terminal's edge over a watch.</span> <span style="color:#808080">Every read is pipeable and every action is a headless verb (§C), so power moves to </span><span style="color:#8787FF">jq</span><span style="color:#808080">, git hooks and status bars instead of more on-screen chrome.</span></div></div>
+            <div style="display:flex; gap:11px"><span style="background:#8787FF; color:#0B0E14; font-weight:700; border-radius:3px; width:19px; height:19px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0">6</span><div><span style="color:#E6EBF2; font-weight:700">One-hand, keyboard-only, muscle memory.</span> <span style="color:#808080">j/k, /, :, ⎵ leader, i/Esc — no mouse, no bespoke keymap.</span></div></div>
+          </div>
+          <div style="margin-top:12px; padding-top:10px; border-top:1px solid #1A2230; font-size:12px; color:#585858">A surface that fails the test <span style="color:#808080">belongs on the web.</span></div>
+        </div>
+      </div>
+
+      <!-- the map -->
+      <div style="width:1000px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">THE MAP · where each module sits against the test</div>
+        <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:stretch">
+
+          <div style="flex:1; min-width:300px; background:#05080F; border:1px solid #1A2230; border-left:2px solid #87AF87; border-radius:8px; padding:15px 17px; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+            <div style="color:#87AF87; font-weight:700; font-size:12.5px; margin-bottom:3px">✓ EXEMPLARS</div>
+            <div style="color:#585858; font-size:11px; margin-bottom:10px">keep as designed</div>
+            <div style="font-size:12px; line-height:1.75; color:#808080">
+              <div><span style="color:#E6EBF2">timer</span> — the shipped bar</div>
+              <div><span style="color:#E6EBF2">home</span> — the watch face; leads with timer + pace, links out to depth</div>
+              <div><span style="color:#E6EBF2">progress</span> — pace meters + adjust-in-place</div>
+              <div><span style="color:#E6EBF2">review</span> — card → <span style="color:#8787FF">f/z/s/i</span> → next → clean exit</div>
+              <div><span style="color:#E6EBF2">notes</span> — capture + $EDITOR</div>
+              <div><span style="color:#E6EBF2">command palette</span> · this brief's machinery</div>
+            </div>
+          </div>
+
+          <div style="flex:1; min-width:300px; background:#05080F; border:1px solid #1A2230; border-left:2px solid #D7AF5F; border-radius:8px; padding:15px 17px; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+            <div style="color:#D7AF5F; font-weight:700; font-size:12.5px; margin-bottom:3px">▲ THE ONE CONCESSION</div>
+            <div style="color:#585858; font-size:11px; margin-bottom:10px">shipped — and capped</div>
+            <div style="font-size:12px; line-height:1.6; color:#808080">
+              <div><span style="color:#E6EBF2; font-weight:700">the activities table</span> — the closest thing to a web surface. Earns a place as <span style="color:#E6EBF2">the one lean-back ledger you scan and act on by the row</span>.</div>
+              <div style="margin-top:8px; padding-top:8px; border-top:1px solid #121826"><span style="color:#D7AF5F">must not</span> grow toward web parity — no saved filters, bulk edit, server-side search.</div>
+              <div style="margin-top:8px">watch-native core: <span style="color:#E6EBF2">capture</span> (<span style="color:#8787FF">engineer log</span>, <span style="color:#8787FF">t</span>) + the <span style="color:#E6EBF2">audit</span> (flagged-segment triage you clear to empty).</div>
+            </div>
+          </div>
+
+          <div style="flex:1; min-width:300px; background:#05080F; border:1px solid #1A2230; border-left:2px solid #8787FF; border-radius:8px; padding:15px 17px; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+            <div style="color:#8787FF; font-weight:700; font-size:12.5px; margin-bottom:3px">↻ REFRAMES IT FORCES</div>
+            <div style="color:#585858; font-size:11px; margin-bottom:10px">in the drifting briefs</div>
+            <div style="font-size:12px; line-height:1.6; color:#808080">
+              <div><span style="color:#E6EBF2">progress time-explorer</span> — a glance + a <span style="color:#8787FF">--json</span> rollup, not a pivot grid.</div>
+              <div style="margin-top:7px"><span style="color:#E6EBF2">week-planning</span> — a planned-vs-done readout + one-liner declare + $EDITOR reflection, not a planning canvas.</div>
+              <div style="margin-top:7px"><span style="color:#E6EBF2">review browse-all · notes browser</span> — thin, explicitly-secondary indexes.</div>
+              <div style="margin-top:7px"><span style="color:#E6EBF2">assisted-capture</span> — a queue you clear, never an inbox manager.</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============================ §A · OFFLINE-TOLERANCE ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">§A</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">OFFLINE-TOLERANCE &amp; THE LOCAL CLOCK</span>
+      <span style="color:#808080; font-size:12.5px">the train case · pull the wire → the shipped app goes blank</span>
+    </div>
+
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:2px">
+      <span style="background:#D75F5F; color:#0B0E14; font-weight:700; padding:2px 9px; border-radius:4px; font-size:11.5px">DO NOT DRAW AS SHIPPED</span>
+      <span style="color:#808080; font-size:12.5px">What exists today is <span style="color:#E6EBF2">display-smoothing</span>, not offline-tolerance. Every read &amp; write is a live round-trip; app state is in-memory and lost on exit.</span>
+    </div>
+
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- TODAY: what exists -->
+      <div style="width:620px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">TODAY · three smoothing mechanisms — none is a cache or a queue</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.55; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; padding:6px 0; border-bottom:1px solid #121826"><span style="color:#8787FF; width:150px; flex-shrink:0; font-weight:700">live_elapsed</span><span>ticks the displayed clock from the last snapshot's <span style="color:#E6EBF2">elapsed_seconds</span> + monotonic <span style="color:#E6EBF2">Instant</span> since fetch; freezes while paused. <span style="color:#585858">smooths seconds, not a source of truth.</span></span></div>
+          <div style="display:flex; padding:6px 0; border-bottom:1px solid #121826"><span style="color:#8787FF; width:150px; flex-shrink:0; font-weight:700">TIMER_POLL · ~15s</span><span>re-polls <span style="color:#E6EBF2">GET /api/v1/timer</span> for the header cell; each poll overwrites the snapshot.</span></div>
+          <div style="display:flex; padding:6px 0"><span style="color:#8787FF; width:150px; flex-shrink:0; font-weight:700">HEARTBEAT · ~60s</span><span>POSTs a presence beat so in-TUI keystrokes hold off the idle guard.</span></div>
+          <div style="margin-top:12px; padding-top:10px; border-top:1px solid #1A2230; color:#585858; line-height:1.6">
+            <span style="color:#D75F5F">no read cache</span> — the status bar goes blank the moment the network drops mid-poll.<br>
+            <span style="color:#D75F5F">no write queue</span> — a start/pause/stop with no network is an <span style="color:#808080">error</span>, not a deferred intent.
+          </div>
+        </div>
+
+        <!-- live shipped demo -->
+        <div data-screen-label="Header cell · pull-the-wire" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">engineer-cli — header cell · shipped behaviour</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px">
+            <div style="display:flex; align-items:baseline">
+              <span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Progress</span>
+              <span style="flex:1"></span>
+              <sc-if value="{{ online }}" hint-placeholder-val="{{ true }}">
+                <span><span style="color:#87AF87">●</span>&nbsp;<span style="font-weight:700">24:13</span>&nbsp;<span style="color:#808080">build · Raft</span></span>
+              </sc-if>
+              <sc-if value="{{ offline }}" hint-placeholder-val="{{ false }}">
+                <span style="color:#585858; font-style:normal">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>
+              </sc-if>
+            </div>
+            <div style="margin-top:12px; display:flex; align-items:center; gap:12px">
+              <span onclick="{{ toggleNet }}" title="drop / restore the network" style="cursor:pointer; user-select:none; color:#8787FF; border:1px solid #1A2230; border-radius:5px; padding:1px 9px; white-space:pre; font-size:12px">◧ pull the wire</span>
+              <sc-if value="{{ online }}" hint-placeholder-val="{{ true }}"><span style="color:#808080; font-size:12px"><span style="color:#87AF87">online</span> · smooth locally, poll every 15s</span></sc-if>
+              <sc-if value="{{ offline }}" hint-placeholder-val="{{ false }}"><span style="color:#808080; font-size:12px"><span style="color:#D75F5F">offline</span> · the poll fails → the cell renders <span style="color:#E6EBF2">nothing</span></span></sc-if>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- PROPOSED -->
+      <div style="width:660px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">PROPOSED · the honest local-clock design — its own follow-up &amp; epic</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-left:2px solid #5F5F87; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.6; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; gap:11px; padding:5px 0"><span style="color:#87AF87; flex-shrink:0; font-weight:700">1</span><div><span style="color:#E6EBF2; font-weight:700">A genuine local clock.</span> A start time + accumulated paused seconds that renders <span style="color:#E6EBF2">and controls</span> locally — start / pause / resume / stop against local state, then <span style="color:#E6EBF2">reconcile</span> when the network returns, rather than refusing the keystroke.</div></div>
+          <div style="display:flex; gap:11px; padding:5px 0"><span style="color:#87AF87; flex-shrink:0; font-weight:700">2</span><div><span style="color:#E6EBF2; font-weight:700">Reads that cache last-known.</span> The header cell and <span style="color:#8787FF">--short</span> are never blank offline — they show the last-known clock with a <span style="color:#E6EBF2">staleness marker</span>, not nothing.</div></div>
+          <div style="display:flex; gap:11px; padding:5px 0"><span style="color:#87AF87; flex-shrink:0; font-weight:700">3</span><div><span style="color:#E6EBF2; font-weight:700">Optimistic action + sync queue.</span> Honestly surfaced when local and server <span style="color:#E6EBF2">diverge</span> — a reconciliation that has to drop or merge says so; it never silently loses a segment.</div></div>
+        </div>
+
+        <!-- proposed cached cell -->
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">the proposed cell offline — <span style="color:#5F5F87">not built</span></span>
+          </div>
+          <div style="padding:14px 16px; font-size:13px; color:#808080; line-height:1.5">
+            <div style="display:flex; align-items:baseline; font-size:14px">
+              <span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Progress</span>
+              <span style="flex:1"></span>
+              <span><span style="color:#D7AF5F">◔</span>&nbsp;<span style="font-weight:700; color:#E6EBF2">24:41</span>&nbsp;<span style="color:#808080">build · Raft</span>&nbsp;&nbsp;<span style="background:#D7AF5F; color:#0B0E14; font-weight:700; white-space:pre"> stale 12s </span></span>
+            </div>
+            <div style="margin-top:10px; padding-top:9px; border-top:1px solid #121826; font-size:12px"><span style="color:#D7AF5F">◔</span> local clock, reconcile pending · the number keeps counting; the marker says it hasn't been confirmed by the server.</div>
+          </div>
+        </div>
+
+        <!-- train reconcile flow -->
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:15px 17px; font-size:12px; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="color:#E6EBF2; font-weight:700; font-size:12.5px; margin-bottom:9px">THE TRAIN CASE · one write path, queued &amp; reconciled</div>
+          <div style="white-space:pre; line-height:1.6; color:#808080; font-size:12px"><span style="color:#87AF87">local action</span>  ──►  <span style="color:#8787FF">optimistic state</span>  ──►  <span style="color:#D7AF5F">sync queue</span>
+                                        │  <span style="color:#585858">(wire down)</span>
+                                        ▼
+   network returns  ──►  <span style="color:#8787FF">reconcile</span>  ──►  <span style="color:#87AF87">merged</span> / <span style="color:#D75F5F">conflict surfaced</span></div>
+          <div style="margin-top:10px; padding-top:9px; border-top:1px solid #1A2230; color:#585858; line-height:1.55">Acute for the <span style="color:#808080">timer</span>, but the same queue-and-reconcile shape a <span style="color:#808080">target</span> adjust, a <span style="color:#808080">log</span>, or a note write rides — so it's briefed here, not smuggled into one module. When it lands it's the largest change to the client's I/O model: its own gap brief → epic.</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============================ §B · FUZZY PICKERS ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">§B</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">FUZZY PICKERS — one reusable widget, Telescope-flavoured</span>
+      <span style="color:#808080; font-size:12.5px">click <span style="color:#8787FF">◧ type “dda”</span> to watch the subsequence rank narrow the corpus</span>
+    </div>
+
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- the picker mock -->
+      <div style="width:760px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">THE WIDGET · an overlay any screen invokes with a source + a callback · 72×16</div>
+        <div data-screen-label="Fuzzy picker" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">engineer-cli — bind a book · pick a repo · choose a domain</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.4">
+            <!-- input line -->
+            <div style="display:flex; align-items:center; margin-bottom:2px">
+              <span style="color:#585858">┌</span>
+              <span style="color:#8787FF; font-weight:700; white-space:pre"> Pick a book </span>
+              <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────</div>
+              <span style="color:#585858">┐</span>
+            </div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px; display:flex; align-items:center">
+              <span style="color:#8787FF; font-weight:700">&gt;&nbsp;</span>
+              <sc-if value="{{ typed }}" hint-placeholder-val="{{ true }}"><span style="color:#E6EBF2">dda</span></sc-if>
+              <span style="width:8px; height:17px; background:#E6EBF2; display:inline-block; margin-left:1px"></span>
+              <span style="flex:1"></span>
+              <span style="color:#808080; font-size:12px"><sc-if value="{{ typed }}" hint-placeholder-val="{{ true }}"><span>2/5</span></sc-if><sc-if value="{{ empty }}" hint-placeholder-val="{{ false }}"><span>5/5</span></sc-if></span>
+            </div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">├</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────</div><span style="color:#585858">┤</span></div>
+
+            <!-- EMPTY: full corpus -->
+            <sc-if value="{{ empty }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; background:#5F5F87; color:#E6EBF2; font-weight:700"><span style="white-space:pre; color:#8787FF">▌ </span><span>Designing Data-Intensive Applications</span><span style="flex:1"></span><span style="color:#C7CBF0; font-weight:400; font-size:12px">Kleppmann</span></div><span style="color:#585858">│</span></div>
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; color:#E6EBF2"><span style="white-space:pre; color:#585858">  </span><span>Data-Driven Algorithms</span><span style="flex:1"></span><span style="color:#808080; font-size:12px">Vytiniotis</span></div><span style="color:#585858">│</span></div>
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; color:#E6EBF2"><span style="white-space:pre; color:#585858">  </span><span>Crafting Interpreters</span><span style="flex:1"></span><span style="color:#808080; font-size:12px">Nystrom</span></div><span style="color:#585858">│</span></div>
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; color:#E6EBF2"><span style="white-space:pre; color:#585858">  </span><span>Database Internals</span><span style="flex:1"></span><span style="color:#808080; font-size:12px">Petrov</span></div><span style="color:#585858">│</span></div>
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; display:flex; align-items:center; color:#E6EBF2"><span style="white-space:pre; color:#585858">  </span><span>Distributed Systems</span><span style="flex:1"></span><span style="color:#808080; font-size:12px">van Steen</span></div><span style="color:#585858">│</span></div>
+            </sc-if>
+
+            <!-- TYPED "dda": ranked matches, subsequence highlighted -->
+            <sc-if value="{{ typed }}" hint-placeholder-val="{{ true }}">
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; background:#5F5F87; color:#E6EBF2; font-weight:700"><span style="white-space:pre; color:#8787FF">▌ </span><span><span style="color:#0B0E14; background:#C7CBF0; padding:0 1px">D</span>esigning <span style="color:#0B0E14; background:#C7CBF0; padding:0 1px">D</span>ata-Intensive <span style="color:#0B0E14; background:#C7CBF0; padding:0 1px">A</span>pplications</span><span style="flex:1"></span><span style="color:#C7CBF0; font-weight:400; font-size:12px">98</span></div><span style="color:#585858">│</span></div>
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; color:#E6EBF2"><span style="white-space:pre; color:#585858">  </span><span><span style="color:#8787FF; font-weight:700">D</span>ata-<span style="color:#8787FF; font-weight:700">D</span>riven <span style="color:#8787FF; font-weight:700">A</span>lgorithms</span><span style="flex:1"></span><span style="color:#808080; font-size:12px">72</span></div><span style="color:#585858">│</span></div>
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; color:#585858">&nbsp;&nbsp;<span style="font-style:normal">— 3 filtered by the rank —</span></div><span style="color:#585858">│</span></div>
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; color:#585858">&nbsp;</div><span style="color:#585858">│</span></div>
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; color:#585858">&nbsp;</div><span style="color:#585858">│</span></div>
+            </sc-if>
+
+            <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+
+            <!-- footer + toggle -->
+            <div style="display:flex; align-items:center; flex-wrap:wrap; margin-top:9px">
+              <span onclick="{{ toggleQuery }}" title="type / clear the query" style="cursor:pointer; user-select:none; color:#8787FF; border:1px solid #1A2230; border-radius:5px; padding:1px 9px; white-space:pre; font-size:12px; margin-right:14px"><sc-if value="{{ empty }}" hint-placeholder-val="{{ false }}"><span>◧ type “dda”</span></sc-if><sc-if value="{{ typed }}" hint-placeholder-val="{{ true }}"><span>◧ clear</span></sc-if></span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> type </span><span>&nbsp;filter</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ⏎ </span><span>&nbsp;pick</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Esc </span><span>&nbsp;cancel</span>
+            </div>
+          </div>
+        </div>
+        <div style="font-size:12px; color:#808080; line-height:1.5"><span style="color:#8787FF">dda</span> finds <span style="color:#E6EBF2">Designing Data-Intensive Applications</span> — a subsequence match with a score, not the substring <span style="color:#8787FF">contains</span> the lists narrow with today. Rendered from shipped atoms only: full-row inverse selection with <span style="color:#8787FF">▌</span>, dim-vs-bright contrast, one font size — it reads as the same app in every module that mounts it.</div>
+      </div>
+
+      <!-- today's two surfaces + the concern -->
+      <div style="width:660px; display:flex; flex-direction:column; gap:16px">
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.55; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="color:#E6EBF2; font-weight:700; margin-bottom:10px">Today: two unrelated match surfaces — neither is a local fuzzy finder</div>
+          <div style="display:flex; padding:6px 0; border-top:1px solid #121826"><span style="color:#8787FF; width:170px; flex-shrink:0; font-weight:700">server candidates</span><span>the timer bind — <span style="color:#E6EBF2">GET /api/v1/timer/candidates?q=…</span>. A round-trip per keystroke.</span></div>
+          <div style="display:flex; padding:6px 0; border-top:1px solid #121826"><span style="color:#8787FF; width:170px; flex-shrink:0; font-weight:700">/ substring filter</span><span>Activities &amp; Notes lists — plain <span style="color:#E6EBF2">to_ascii_lowercase().contains(q)</span> over the loaded page. Narrows what's on screen; doesn't <span style="color:#E6EBF2">find</span> across a corpus.</span></div>
+          <div style="margin-top:10px; padding-top:9px; border-top:1px solid #1A2230; color:#585858"><span style="color:#D75F5F">No local fuzzy finder over books / repos / domains anywhere.</span> Choosing is either a server round-trip or an arrow-through list — the two things the kit's “fuzzy over navigate” exists to replace.</div>
+        </div>
+
+        <div style="background:#05080F; border:1px solid #1A2230; border-left:2px solid #8787FF; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.6; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="color:#E6EBF2; font-weight:700; margin-bottom:9px">Specify it once, like <span style="color:#8787FF">bordered()</span> and <span style="color:#8787FF">pace_bar</span></div>
+          <div style="display:flex; gap:10px; padding:4px 0"><span style="color:#8787FF">●</span><div><span style="color:#E6EBF2">One overlay</span>, the neovim grammar the footer already advertises: <span style="color:#8787FF">j/k</span> move · type filter · <span style="color:#8787FF">⏎</span> pick · <span style="color:#8787FF">Esc</span> cancel.</div></div>
+          <div style="display:flex; gap:10px; padding:4px 0"><span style="color:#8787FF">●</span><div><span style="color:#E6EBF2">A fuzzy rank</span> — subsequence + sensible score, not the substring the lists use today.</div></div>
+          <div style="display:flex; gap:10px; padding:4px 0"><span style="color:#8787FF">●</span><div><span style="color:#E6EBF2">Source-agnostic</span> — a local slice (books, repos, domains, loaded activities) <span style="color:#E6EBF2">or</span> a server candidate stream, behind one interface. A module picks a source, not a bespoke screen.</div></div>
+          <div style="margin-top:9px; padding-top:9px; border-top:1px solid #1A2230; color:#585858">Owning this as a widget is what lets progress's “choose a domain”, timer's bind, and week-planning's “pick a planned item” feel identical — without four copies of the logic.</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============================ §C · TUI ↔ HEADLESS CONTRACT ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">§C</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">THE TUI ↔ HEADLESS CONTRACT</span>
+      <span style="color:#808080; font-size:12.5px">every read the TUI shows is also a one-shot · <span style="color:#8787FF">engineer timer</span> is the reference — copy it</span>
+    </div>
+
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- the reference outputs -->
+      <div style="width:840px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">THE REFERENCE · src/timer_cli.rs — a machine form and a pipe form</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">bash — piped, NO_COLOR-respecting, TTY-detected</span>
+          </div>
+          <div style="padding:15px 17px; font-size:12.5px; line-height:1.75; color:#E6EBF2; white-space:pre-wrap"><span style="color:#585858">$</span> engineer timer <span style="color:#8787FF">--json</span>
+{ <span style="color:#8787FF">"state"</span>:<span style="color:#87AF87">"running"</span>, <span style="color:#8787FF">"elapsed_s"</span>:<span style="color:#D7AF5F">1453</span>, <span style="color:#8787FF">"mode"</span>:<span style="color:#87AF87">"work"</span>, <span style="color:#8787FF">"activity_id"</span>:<span style="color:#D7AF5F">418</span>, <span style="color:#8787FF">"kind"</span>:<span style="color:#87AF87">"build"</span>, <span style="color:#8787FF">"title"</span>:<span style="color:#87AF87">"Raft…"</span> }
+
+<span style="color:#585858">$</span> engineer timer            <span style="color:#585858"># stable, field-ordered plain line</span>
+running 1453 work 418 build <span style="color:#87AF87">"Raft leader election"</span>
+<span style="color:#585858">└─ state ─┘ └s┘ └md┘ └id┘ └knd┘ └───── title ─────┘   · absent field = -</span>
+
+<span style="color:#585858">$</span> engineer timer <span style="color:#8787FF">--short</span>     <span style="color:#585858"># the status-bar reduction</span>
+<span style="color:#87AF87">●</span> 24:13                     <span style="color:#585858"># empty when nothing runs</span>
+
+<span style="color:#585858">$</span> engineer timer <span style="color:#8787FF">--json</span> | jq -r .elapsed_s
+<span style="color:#E6EBF2">1453</span>                        <span style="color:#585858"># clean text: no ANSI when piped</span></div>
+        </div>
+        <div style="font-size:12px; color:#808080; line-height:1.5">Colour is gated on <span style="color:#8787FF">stdout().is_terminal()</span> AND <span style="color:#8787FF">NO_COLOR</span> being unset — a pipe or <span style="color:#8787FF">NO_COLOR=1</span> gets clean text. The plain line's column order <span style="color:#E6EBF2">never changes</span> and uses <span style="color:#E6EBF2">-</span> placeholders, so <span style="color:#8787FF">awk</span>/<span style="color:#8787FF">cut</span> scripts don't break.</div>
+      </div>
+
+      <!-- exit codes + inheritance -->
+      <div style="width:640px; display:flex; flex-direction:column; gap:16px">
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:16px 18px; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="color:#E6EBF2; font-weight:700; font-size:12.5px; margin-bottom:4px">EXIT CODES · they answer one question — is the clock counting?</div>
+          <div style="font-size:12.5px; line-height:1.5; color:#808080; margin-top:8px">
+            <div style="display:flex; padding:4px 0; border-top:1px solid #121826"><span style="color:#87AF87; font-weight:700; width:34px; flex-shrink:0">0</span><span>counting</span></div>
+            <div style="display:flex; padding:4px 0; border-top:1px solid #121826"><span style="color:#D7AF5F; font-weight:700; width:34px; flex-shrink:0">1</span><span>nothing running</span></div>
+            <div style="display:flex; padding:4px 0; border-top:1px solid #121826"><span style="color:#D7AF5F; font-weight:700; width:34px; flex-shrink:0">3</span><span>idle, reclaim pending</span></div>
+            <div style="display:flex; padding:4px 0; border-top:1px solid #121826"><span style="color:#D7AF5F; font-weight:700; width:34px; flex-shrink:0">4</span><span>not counting (paused / focus break)</span></div>
+          </div>
+          <div style="margin-top:9px; padding-top:9px; border-top:1px solid #1A2230; font-size:12px; color:#585858">Write verbs exit <span style="color:#87AF87">0</span> on success, <span style="color:#D75F5F">1</span> on refusal, reason on <span style="color:#808080">stderr</span> — and that refusal copy <span style="color:#E6EBF2">matches the notify-tile the screen shows</span> for the same mistake. One spelling of every outcome.</div>
+        </div>
+
+        <div style="background:#05080F; border:1px solid #1A2230; border-left:2px solid #87AF87; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.6; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="color:#E6EBF2; font-weight:700; margin-bottom:8px">Every NEW verb inherits this — no exceptions</div>
+          <div style="display:flex; padding:4px 0; border-top:1px solid #121826"><span style="color:#8787FF; width:150px; flex-shrink:0; font-weight:700">engineer target</span><span>declare / adjust / retire + a <span style="color:#E6EBF2">list</span> read — each <span style="color:#8787FF">--json</span> + a piped row.</span></div>
+          <div style="display:flex; padding:4px 0; border-top:1px solid #121826"><span style="color:#8787FF; width:150px; flex-shrink:0; font-weight:700">engineer log</span><span>the after-the-fact capture verb (owned by activities).</span></div>
+          <div style="display:flex; padding:4px 0; border-top:1px solid #121826"><span style="color:#8787FF; width:150px; flex-shrink:0; font-weight:700">engineer pace</span><span>the headless twin of the pace meters — one line piped + one status-bar reduction, quiet by default.</span></div>
+          <div style="margin-top:9px; padding-top:9px; border-top:1px solid #1A2230; color:#585858">If a module adds a read the TUI renders, it adds the one-shot <span style="color:#E6EBF2">in the same slice</span> — the twin isn't a follow-up, it's half the feature. This is the definition of done those briefs cite.</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============================ §D · ACCENT DECISION ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">§D</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">THE ACCENT-HUE DECISION</span>
+      <span style="background:#87AF87; color:#0B0E14; font-weight:700; padding:2px 9px; border-radius:4px; font-size:11.5px">RATIFIED</span>
+      <span style="color:#808080; font-size:12.5px">was “raise, don't resolve” — now settled: adopt <span style="color:#8787FF">105</span></span>
+    </div>
+
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- the three hues -->
+      <div style="width:840px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">THE HUES · lighten the indigo brand along its own hue, not into cyan</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:8px 8px; box-shadow:0 18px 50px rgba(0,0,0,.55); font-size:13px">
+
+          <div style="display:flex; align-items:center; gap:14px; padding:12px 12px; border-radius:6px">
+            <span style="width:120px; height:34px; border-radius:5px; background:#3B40CC; flex-shrink:0; display:flex; align-items:center; justify-content:center; color:#E6EBF2; font-weight:700; font-size:12px">web brand</span>
+            <div style="flex:1; min-width:0"><span style="color:#E6EBF2; font-weight:700">indigo #3B40CC</span> <span style="color:#808080">· ~237° violet</span><div style="color:#808080; font-size:12px; margin-top:2px">the source of truth — but <span style="color:#D75F5F">too dark to read on a dark terminal</span>. Must be lightened.</div></div>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:14px; padding:12px 12px; border-radius:6px; background:#0C0F17; border:1px solid #1A2230; margin-top:6px">
+            <span style="width:120px; height:34px; border-radius:5px; background:#5FAFFF; flex-shrink:0; display:flex; align-items:center; justify-content:center; color:#0B0E14; font-weight:700; font-size:12px">shipped 75</span>
+            <div style="flex:1; min-width:0"><span style="color:#E6EBF2; font-weight:700">sky-blue #5FAFFF</span> <span style="color:#808080">· ~210° cyan</span> <span style="background:#D75F5F; color:#0B0E14; font-weight:700; white-space:pre; font-size:11px; padding:0 6px; border-radius:3px">wrong hue</span><div style="color:#808080; font-size:12px; margin-top:2px">what <span style="color:#8787FF">theme.rs</span> lightens to today — a <span style="color:#D75F5F">different brand colour</span> than the web (cyan, not violet).</div></div>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:14px; padding:12px 12px; border-radius:6px; background:#0C0F17; border:1px solid #2B2B5A; margin-top:6px">
+            <span style="width:120px; height:34px; border-radius:5px; background:#8787FF; flex-shrink:0; display:flex; align-items:center; justify-content:center; color:#0B0E14; font-weight:700; font-size:12px">adopt 105</span>
+            <div style="flex:1; min-width:0"><span style="color:#8787FF; font-weight:700">periwinkle #8787FF</span> <span style="color:#808080">· ~237° violet</span> <span style="background:#87AF87; color:#0B0E14; font-weight:700; white-space:pre; font-size:11px; padding:0 6px; border-radius:3px">✓ adopted</span><div style="color:#808080; font-size:12px; margin-top:2px">lightened <span style="color:#E6EBF2">along the indigo hue</span> — keeps the brand identity while staying bright on dark. The mockups already use it.</div></div>
+          </div>
+
+        </div>
+        <div style="font-size:12px; color:#808080; line-height:1.5">Selection background moves in step: steel <span style="color:#585858">67</span> → indigo-dim <span style="color:#5F5F87; font-weight:700">61</span> <span style="color:#585858">(#5F5F87)</span>, to match. Full reasoning — hue math, the palette table — lives in <span style="color:#8787FF">README.md</span> under “The accent decision”.</div>
+      </div>
+
+      <!-- the one-line change -->
+      <div style="width:640px; display:flex; flex-direction:column; gap:16px">
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">src/ui/theme.rs — a one-line change per token</span>
+          </div>
+          <div style="padding:15px 17px; font-size:12.5px; line-height:1.85; color:#E6EBF2; white-space:pre-wrap"><span style="color:#D75F5F">- </span><span style="color:#808080">const ACCENT&nbsp;&nbsp;&nbsp;&nbsp;: Color = Color::Indexed(</span><span style="color:#5FAFFF; font-weight:700">75</span><span style="color:#808080">);&nbsp; </span><span style="color:#585858">// sky-blue</span>
+<span style="color:#87AF87">+ </span><span style="color:#808080">const ACCENT&nbsp;&nbsp;&nbsp;&nbsp;: Color = Color::Indexed(</span><span style="color:#8787FF; font-weight:700">105</span><span style="color:#808080">); </span><span style="color:#585858">// periwinkle</span>
+<span style="color:#D75F5F">- </span><span style="color:#808080">const ACCENT_DIM: Color = Color::Indexed(</span><span style="color:#808080; font-weight:700">67</span><span style="color:#808080">);&nbsp; </span><span style="color:#585858">// steel</span>
+<span style="color:#87AF87">+ </span><span style="color:#808080">const ACCENT_DIM: Color = Color::Indexed(</span><span style="color:#5F5F87; font-weight:700">61</span><span style="color:#808080">);&nbsp; </span><span style="color:#585858">// indigo-dim</span></div>
+        </div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-left:2px solid #87AF87; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.6; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="color:#E6EBF2; font-weight:700; margin-bottom:8px">Now that it's ratified</div>
+          <div>Every screen inherits the accent, so it was raised here, not silently resolved by any one module. The decision is recorded in <span style="color:#8787FF">CLAUDE.md</span>; the module briefs stop flagging <span style="color:#5FAFFF">75</span> as an open divergence and design straight to <span style="color:#8787FF">105</span> — which the mockups already do.</div>
+          <div style="margin-top:9px; padding-top:9px; border-top:1px solid #1A2230; color:#585858">Follow-up to <span style="color:#E6EBF2">schedule</span>: apply the <span style="color:#8787FF">theme.rs</span> edit in code — the mockups and the shipped binary converge.</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============================ §E · $EDITOR FOR PROSE ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">§E</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">$EDITOR FOR PROSE</span>
+      <span style="color:#808080; font-size:12.5px">the git commit pattern · never rebuild a textarea inside ratatui</span>
+    </div>
+
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- the handoff flow -->
+      <div style="width:760px; display:flex; flex-direction:column; gap:10px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; letter-spacing:.06em">THE HANDOFF · spawn $EDITOR on a temp file, read it back on save</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">note body — press i → the TUI suspends, $EDITOR takes over</span>
+          </div>
+          <div style="padding:15px 17px; font-size:12.5px; line-height:1.7; color:#808080; white-space:pre-wrap"><span style="color:#585858">┌─ ratatui ──────────────────────────────────────────┐</span>
+<span style="color:#585858">│</span>  title  <span style="color:#E6EBF2">Raft consensus summary</span>                     <span style="color:#585858">│</span>  <span style="color:#585858">← single-line: i/Esc</span>
+<span style="color:#585858">│</span>  body   <span style="color:#8787FF">[ i ] open $EDITOR ▾</span>                        <span style="color:#585858">│</span>
+<span style="color:#585858">└────────────────────────────────────────────────────┘</span>
+                     │  <span style="color:#8787FF">i</span>
+                     ▼
+        <span style="color:#87AF87">nvim</span> /tmp/engineer-note-4f2a.md      <span style="color:#585858"># suspend TUI, spawn</span>
+                     │  <span style="color:#8787FF">:wq</span> save        <span style="color:#585858"># read the temp file back</span>
+                     │  <span style="color:#D75F5F">empty buffer</span>       <span style="color:#585858"># → cancels, no write</span>
+                     ▼
+        <span style="color:#87AF87">✓</span> body attached, TUI resumes</div>
+        </div>
+        <div style="font-size:12px; color:#808080; line-height:1.5">A TUI is a character grid with a one-line input idiom; a multi-line editor with the user's own keymaps, syntax and muscle memory <span style="color:#E6EBF2">already exists in $EDITOR</span>. Reimplementing a worse one is the wrong medium. Save-vs-abort and the <span style="color:#E6EBF2">empty-buffer-cancels</span> convention are owned in detail by notes &amp; week-planning.</div>
+      </div>
+
+      <!-- the boundary -->
+      <div style="width:660px; display:flex; flex-direction:column; gap:16px">
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:16px 18px; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="color:#E6EBF2; font-weight:700; font-size:12.5px; margin-bottom:10px">The line — body vs label</div>
+          <div style="display:flex; gap:14px; padding:8px 0; border-top:1px solid #121826; align-items:flex-start">
+            <span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre; font-size:11.5px; padding:1px 7px; border-radius:3px; flex-shrink:0; margin-top:1px">$EDITOR</span>
+            <span style="color:#808080; font-size:12.5px; line-height:1.5"><span style="color:#E6EBF2">the body.</span> Note bodies, retro reflections — anything past a single line. Spawn the editor, read it back.</span>
+          </div>
+          <div style="display:flex; gap:14px; padding:8px 0; border-top:1px solid #121826; align-items:flex-start">
+            <span style="background:#585858; color:#0B0E14; font-weight:700; white-space:pre; font-size:11.5px; padding:1px 7px; border-radius:3px; flex-shrink:0; margin-top:1px">i / Esc</span>
+            <span style="color:#808080; font-size:12.5px; line-height:1.5"><span style="color:#E6EBF2">the label.</span> A title, a query, an activity name — short single-line inputs stay in the app's insert grammar.</span>
+          </div>
+        </div>
+
+        <div style="background:#05080F; border:1px solid #1A2230; border-left:2px solid #5F5F87; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.6; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="color:#E6EBF2; font-weight:700; margin-bottom:6px">Stated here only as the shared principle</div>
+          <div>So no module invents an in-TUI textarea. The temp-file handoff, save-vs-abort semantics, and empty-buffer-cancels convention are specified where they're used — <span style="color:#E6EBF2">notes</span> and <span style="color:#E6EBF2">week-planning</span>.</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+</div>
+
+<template id="__bundler_thumbnail">
+  <svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+    <rect width="80" height="80" rx="16" fill="#05080F"/>
+    <rect x="16" y="18" width="34" height="8" rx="2" fill="#8787FF"/>
+    <rect x="16" y="32" width="48" height="6" rx="2" fill="#585858"/>
+    <rect x="16" y="43" width="40" height="6" rx="2" fill="#585858"/>
+    <rect x="16" y="56" width="14" height="8" rx="2" fill="#87AF87"/>
+    <rect x="34" y="56" width="14" height="8" rx="2" fill="#D7AF5F"/>
+    <rect x="52" y="56" width="12" height="8" rx="2" fill="#8787FF"/>
+  </svg>
+</template>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { typed: true, offline: false };
+  renderVals() {
+    return {
+      typed: this.state.typed,
+      empty: !this.state.typed,
+      toggleQuery: () => this.setState(s => ({ typed: !s.typed })),
+      offline: this.state.offline,
+      online: !this.state.offline,
+      toggleNet: () => this.setState(s => ({ offline: !s.offline })),
+    };
+  }
+}
+</script>
+</body>
+</html>

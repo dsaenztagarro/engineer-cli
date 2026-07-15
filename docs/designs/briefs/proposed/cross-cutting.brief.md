@@ -1,7 +1,7 @@
 # Design brief — engineer-cli · Cross-cutting concerns (the things every module inherits)
 
 **For:** Claude Design (the **engineer-cli** terminal project — not the web `engineer` project; see `../../README.md` for why they're kept apart).
-**Produces:** not a screen — the shared concerns every module brief inherits rather than owns: **the governing product principle** (sterling, not a replica), offline-tolerance / local-clock reconciliation, one reusable fuzzy picker, the TUI ↔ headless contract, the accent-hue decision, and the `$EDITOR` handoff for prose. There's no `.dc.html` board of its own; this brief constrains all the others. Kit anchor is `../../design-system.dc.html`.
+**Produces:** not a screen — the shared concerns every module brief inherits rather than owns: **the governing product principle** (sterling, not a replica), offline-tolerance / local-clock reconciliation (the read half shipped; the write half is now owned in detail by `offline-write.brief.md`), one reusable fuzzy picker, the TUI ↔ headless contract, the accent-hue decision, and the `$EDITOR` handoff for prose. There's no `.dc.html` board of its own; this brief constrains all the others. Kit anchor is `../../design-system.dc.html`.
 **Status:** proposed. These are decisions to **ratify** and follow-ups to **schedule** — not one shippable screen.
 
 > **Module note.** Unlike the other per-module briefs (see `../README.md`), this one is not a screen. It collects the concerns that cut across [progress](progress.brief.md), [timer](../shipped/timer.brief.md), [notes](notes.brief.md), and [week-planning](week-planning.brief.md) — the things each of them leans on rather than defines. Where a concern is owned in detail by a single module, this brief states the shared principle and points there. It uses section headers (§A…§E) in place of the house workflow → jobs → API skeleton, but keeps the same voice and the same kit constraints (`../../README.md`, `../../design-system.dc.html`): character grid, keyboard-only, dark-first, ASCII-only diagrams, and the shipped chrome and widget idioms.
@@ -37,21 +37,9 @@ Every new feature, and every growth of an existing one, is checked against this 
 
 > "It has to survive a dropped connection — I study on trains: the timer is a local clock; reconcile it with the server when the network comes back, don't lose my session." — the timer workflow (`../shipped/timer.brief.md`)
 
-**What exists today is display-smoothing, not offline-tolerance.** Three mechanisms give the running app the *feel* of a local clock, but none of them is a cache or a queue:
+Offline-tolerance splits in two halves. The **read** half **shipped** (#91 → v0.7.0): reads cache their last-known value, so the header cell and the `--short` string show the last-known clock with a staleness marker — never blank offline (`src/timer_cache.rs`; `stale` / `stale_age_s` in `--json`). The **write** half is **not built**: the timer is not yet a controlling local clock, and there is **no offline write queue** — a `start`/`pause`/`stop` with no network is just an error, not a deferred intent. What smooths the running clock today (`live_elapsed`, the ~15s `TIMER_POLL_INTERVAL`, the ~60s `HEARTBEAT_INTERVAL`, all in `src/app/`) is *display-smoothing, not a source of truth*.
 
-- **`live_elapsed`** (`src/app/screens/timer.rs`) ticks the *displayed* elapsed from the last server snapshot's `elapsed_seconds` plus the monotonic time since it was fetched (a `std::time::Instant` base), and freezes while `paused`. It smooths the seconds between polls; it is not a source of truth.
-- **`TIMER_POLL_INTERVAL`** (`src/app/mod.rs`, ~15s) re-polls `GET /api/v1/timer` for the header cell. Between polls `live_elapsed` fills the gap; each poll overwrites the snapshot from the server.
-- **`HEARTBEAT_INTERVAL`** (`src/app/mod.rs`, ~60s) POSTs a presence beat so in-TUI keystrokes hold off the idle guard.
-
-Everything else is a **live round-trip**: every read and every write is an API call, and app state is entirely in-memory — it is **lost on exit**. There is **no read cache** (the status bar goes blank the moment the network drops mid-poll) and **no offline write queue** (a `start`/`pause`/`stop` with no network is just an error, not a deferred intent).
-
-**What the omnibus §3 promised, and this brief does not pretend exists:**
-
-- **The timer as a genuine local clock** — a start time plus accumulated paused seconds that renders *and controls* locally (start / pause / resume / stop happen against local state), then **reconciles** with the server when the network returns, rather than refusing the keystroke.
-- **Reads that cache their last-known value**, so the header cell and the `--short` status string are never blank offline — they show the last-known clock with a staleness marker, not nothing.
-- **Optimistic local action with a sync queue**, honestly surfaced when local and server **diverge** (a reconciliation that has to drop or merge something says so; it never silently loses a segment).
-
-This is most acute for the **timer** (the train case), but the design touches **every write path** — the same queue-and-reconcile shape a `target` adjust, a `log`, or a note write would ride. So it is briefed here, as its own follow-up, rather than smuggled into any one module. **Do not draw it as shipped.** The honest status quo is: smooth locally, poll on a short interval, and fail the write when the wire is down. Ratifying the local-clock design is a decision on its own timeline; when it lands it will be the largest single change to the client's I/O model, and it deserves its own gap brief and epic (the repo pattern: a `.dc.html` pass → brief → epic).
+This concern is now **owned in detail** by [`offline-write.brief.md`](offline-write.brief.md) (which specifies the timer as a genuine local clock, the persisted optimistic write queue every mutation rides, and the reconcile/divergence surfaces — the largest single change to the client's I/O model, tracked as its own epic, #96). It is stated here only as the shared principle, because it constrains every module: **the design never draws the write side as shipped, and a reconciliation that has to drop or merge something says so — it never silently loses a segment.** The same queue-and-reconcile shape a `target` adjust, a `log`, or a note write will ride is *one* mechanism, briefed there rather than smuggled into any one module (the repo pattern: a `.dc.html` pass → brief → epic).
 
 ---
 

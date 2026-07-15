@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <meta name="design_doc_mode" content="canvas">
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#0B0E14; }
+    a { color:#8787FF; text-decoration:none; }
+    a:hover { color:#A5A5FF; }
+    @keyframes blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
+  </style>
+</helmet>
+
+<div style="padding:44px 48px 100px; display:flex; flex-direction:column; gap:58px; width:2680px; color:#E6EBF2">
+
+  <!-- ============================ INTRO ============================ -->
+  <div style="display:flex; flex-direction:column; gap:16px; width:1280px">
+    <div data-drags-parent="1" style="font-weight:700; font-size:12px; color:#9aa4b2; letter-spacing:.10em">NOTES · engineer-cli · the Capture pillar</div>
+    <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:18px 20px; font-size:13.5px; line-height:1.6; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+      <div><span style="color:#8787FF; font-weight:700">Capture in five seconds; find it later; write prose in your editor.</span> <span style="color:#808080">Type the thought from any screen, maybe pin the book and the page — save, gone. Browse it back with </span><span style="color:#8787FF">/</span><span style="color:#808080">-search, and a note pinned to </span><span style="color:#E6EBF2; white-space:pre">SICP · ch 3 · p.142</span><span style="color:#808080"> reads exactly that in one row, so you never open it just to recall where it lives. When the thought outgrows a line, drop into </span><span style="color:#8787FF">$EDITOR</span><span style="color:#808080"> the way </span><span style="color:#E6EBF2">git commit</span><span style="color:#808080"> does — and take back what you write.</span></div>
+      <div style="margin-top:12px; color:#808080; font-size:12.5px">This canvas reads top to bottom: <span style="color:#E6EBF2">the browser → quick-capture → $EDITOR-for-prose (the open slice) → read &amp; archive → the headless twins → the decision record.</span></div>
+      <div style="margin-top:14px; color:#808080; display:flex; gap:22px; flex-wrap:wrap; font-size:12.5px; border-top:1px solid #1A2230; padding-top:12px">
+        <span><span style="color:#8787FF">████</span> accent · anchor · keys</span>
+        <span><span style="color:#87AF87">████</span> saved · success</span>
+        <span><span style="color:#D7AF5F">████</span> warn · armed discard</span>
+        <span><span style="color:#D75F5F">████</span> destructive</span>
+        <span><span style="color:#808080">████</span> muted · dimmed · archived</span>
+        <span><span style="color:#5F5FAF">████</span> row selection</span>
+      </div>
+      <div style="margin-top:12px; color:#808080; font-size:12px; border-top:1px solid #1A2230; padding-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+        <span style="background:#87AF87; color:#0B0E14; font-weight:700; padding:1px 7px; border-radius:4px; font-size:11px">SHIPPED</span>
+        <span>quick-capture overlay · <span style="color:#E6EBF2">&lt;Space&gt;c</span> · the browser (list · <span style="color:#8787FF">/</span>-search · read · archive · edit)</span>
+        <span style="color:#585858">·</span>
+        <span style="background:#5F5F87; color:#E6EBF2; font-weight:700; padding:1px 7px; border-radius:4px; font-size:11px">OPEN</span>
+        <span><span style="color:#E6EBF2">$EDITOR</span>-for-prose (first to build) · <span style="color:#E6EBF2">engineer note</span> headless twin · chapter/section anchor picker</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ ACT 1 · THE BROWSER ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">1</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">THE BROWSER — list, search, one-line anchor read-back <span style="color:#87AF87; font-size:12px">· job 3 · shipped</span></span>
+      <span style="color:#808080; font-size:12.5px">a note's place reads back in one row · <span style="color:#8787FF">/</span> search · <span style="color:#8787FF">t</span> reveals archived (dimmed, not hidden)</span>
+    </div>
+
+    <!-- centerpiece: notes list -->
+    <div style="width:1280px">
+      <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">NOTES · LIST (<code style="color:#8787FF">GET /api/v1/notes</code> · archived=<span style="color:#E6EBF2">{{ archivedParam }}</span>)</div>
+      <div data-screen-label="Notes · browser" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+        <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+          <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+          <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Notes · 100×30</span>
+        </div>
+        <div style="padding:14px 16px; font-size:14px; color:#E6EBF2">
+          <div style="display:flex; align-items:baseline; margin-bottom:10px">
+            <span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Notes</span>
+            <span style="flex:1"></span>
+            <span onclick="{{ toggleSearch }}" title="search" style="cursor:pointer; user-select:none; color:#8787FF; border:1px solid #1A2230; border-radius:5px; padding:1px 8px; white-space:pre">/ search</span>
+            <span style="color:#808080">&nbsp;&nbsp;·&nbsp;&nbsp;alice</span>
+          </div>
+
+          <!-- panel head: title carries filter/search -->
+          <sc-if value="{{ searchOff }}" hint-placeholder-val="{{ true }}">
+            <div style="display:flex"><span style="color:#585858">┌</span><span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Notes · </span><span style="color:#E6EBF2; font-weight:700">{{ countLabel }}</span><span style="color:#808080"> · {{ scopeLabel }} </span></span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────</div><span style="color:#585858">┐</span></div>
+          </sc-if>
+          <sc-if value="{{ searchOn }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex"><span style="color:#585858">┌</span><span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Notes · /</span><span style="color:#E6EBF2">mvcc</span><span style="width:8px; background:#8787FF; display:inline-block; height:15px; margin:0 1px; vertical-align:-2px; animation:blink 1s step-end infinite"></span><span style="color:#808080"> · 2 matches </span></span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────</div><span style="color:#585858">┐</span></div>
+          </sc-if>
+
+          <!-- column head -->
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 12px 4px; display:flex; align-items:center; color:#808080; font-size:11px; letter-spacing:.06em"><span style="flex:1">NOTE · first line</span><span style="width:320px">ANCHOR · address_label</span><span style="width:52px; text-align:right">AGE</span></div><span style="color:#585858">│</span></div>
+
+          <!-- row 1: selected, anchored -->
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 12px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ </span><span style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis">MVCC keeps one version per read-transaction</span><span style="width:300px; white-space:pre">▪ SICP · ch 3 · p.142</span><span style="width:44px; text-align:right">2h</span></div><span style="color:#585858">│</span></div>
+
+          <!-- row 2: anchored -->
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 12px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis">Raft leader election needs randomized timeouts</span><span style="width:300px; white-space:pre; color:#808080">▪ DDIA · ch 9 · p.367</span><span style="width:44px; text-align:right; color:#808080">1d</span></div><span style="color:#585858">│</span></div>
+
+          <!-- row 3: loose thought, no anchor -->
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 12px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis">Try teaching CAP via a live partition demo</span><span style="width:300px; white-space:pre; color:#585858">— loose thought —</span><span style="width:44px; text-align:right; color:#808080">1d</span></div><span style="color:#585858">│</span></div>
+
+          <!-- row 4: physical paper anchor -->
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 12px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis">Substitution model breaks once you allow assignment</span><span style="width:300px; white-space:pre; color:#808080">▪ SICP · §3.1 · notebook p.4</span><span style="width:44px; text-align:right; color:#808080">3d</span></div><span style="color:#585858">│</span></div>
+
+          <!-- row 5: multi-line body, title derived -->
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 12px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis">Retro · week 27 — shipped the timer, capture still typed in a box</span><span style="width:300px; white-space:pre; color:#585858">— loose thought · ¶ —</span><span style="width:44px; text-align:right; color:#808080">4d</span></div><span style="color:#585858">│</span></div>
+
+          <!-- archived rows, revealed with t -->
+          <sc-if value="{{ revealArchived }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 12px; display:flex; align-items:center; color:#585858"><span style="white-space:pre">  </span><span style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis">Old highlight — reread ch 2 before the exam</span><span style="width:300px; white-space:pre">▪ SICP · ch 2 · p.79 · archived</span><span style="width:44px; text-align:right">2w</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 12px; display:flex; align-items:center; color:#585858"><span style="white-space:pre">  </span><span style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis">Scratch idea that went nowhere</span><span style="width:300px; white-space:pre">— loose · archived —</span><span style="width:44px; text-align:right">1mo</span></div><span style="color:#585858">│</span></div>
+          </sc-if>
+
+          <div style="display:flex"><span style="color:#585858">├</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┤</span></div>
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 12px; display:flex; align-items:center; color:#808080"><span>{{ footLine }}</span><span style="flex:1"></span><span style="color:#585858">sorted newest first · archived fold in dimmed</span></div><span style="color:#585858">│</span></div>
+          <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+
+          <!-- footer keys -->
+          <div style="border-top:1px solid #1A2230; padding-top:10px; margin-top:11px; display:flex; align-items:center; flex-wrap:wrap">
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ⏎ </span><span>&nbsp;read</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> / </span><span>&nbsp;search</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> e </span><span>&nbsp;edit</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> a </span><span>&nbsp;archive</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span onclick="{{ toggleArchived }}" style="cursor:pointer"><span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> t </span><span>&nbsp;{{ revealLabel }}</span></span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> &lt;Spc&gt;c </span><span>&nbsp;capture</span>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:8px; font-size:12px; color:#808080; line-height:1.5">Every row is one line of grid: the derived title, the server-rendered <span style="color:#E6EBF2">address_label</span> (<span style="color:#808080">▪ book · chapter/§ · page</span>), and an age. A loose thought shows <span style="color:#585858">— loose thought —</span> instead — never a blank column, never a reason to open it just to remember where it lives. <span style="color:#585858">¶</span> marks a body longer than its title.</div>
+    </div>
+
+    <!-- reduction + read-back panels -->
+    <div style="display:flex; flex-wrap:wrap; gap:28px; align-items:flex-start">
+      <!-- one-line anchor read-back -->
+      <div style="width:626px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">THE ONE-LINE ANCHOR READ-BACK · <span style="color:#585858">notes.rs::anchor_line, from address_label</span></div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">one row is enough — the place, without opening the note</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13.5px; line-height:1.7">
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin-bottom:4px">ANCHORED — book · chapter · page</div>
+            <div style="white-space:pre"><span style="color:#808080">▪ </span><span style="color:#E6EBF2">SICP · ch 3 · p.142</span></div>
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:12px 0 4px">RICHER — chapter · section (grows over anchor_data)</div>
+            <div style="white-space:pre"><span style="color:#808080">▪ </span><span style="color:#E6EBF2">SICP · ch 3 · §3.2 · p.294</span></div>
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:12px 0 4px">LOOSE — a thought with no place</div>
+            <div style="white-space:pre"><span style="color:#585858">— loose thought —</span></div>
+            <div style="margin-top:13px; border-top:1px solid #1A2230; padding-top:9px; color:#808080; font-size:12px; line-height:1.6">The server renders each citation's <span style="color:#8787FF">address_label</span>; the CLI reads it back rather than re-deriving the place string — so a richer anchor becomes a one-line read for free once it's written.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- three footprints -->
+      <div style="width:626px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">SAME NOTE, THREE FOOTPRINTS · full read → list row → piped line</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">one read survives being a row, a line, and a screen</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13px; line-height:1.6">
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin-bottom:4px">LIST ROW</div>
+            <div style="white-space:pre"><span style="color:#E6EBF2">MVCC keeps one version…</span><span style="color:#808080">  ▪ SICP · ch 3 · p.142</span></div>
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:12px 0 4px">STATUS / QUICKLIST</div>
+            <div><span style="color:#808080">◧ engineer</span>&nbsp;&nbsp;<span style="color:#E6EBF2">6 notes</span>&nbsp;<span style="color:#585858">·</span>&nbsp;<span style="color:#8787FF">last: MVCC…</span></div>
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:12px 0 4px">PIPED · engineer note show a_9f | cat</div>
+            <div style="color:#E6EBF2; white-space:pre">MVCC keeps one version per read-transaction</div>
+            <div style="color:#808080; white-space:pre">SICP · ch 3 · p.142</div>
+            <div style="margin-top:13px; border-top:1px solid #1A2230; padding-top:9px; color:#808080; font-size:12px; line-height:1.6">The anchor is the payoff line — it survives as a TUI row, a status string, and a plain piped line, all from the one <span style="color:#8787FF">address_label</span>.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ ACT 2 · QUICK-CAPTURE ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">2</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">QUICK-CAPTURE — the five-second overlay <span style="color:#87AF87; font-size:12px">· job 3 · shipped</span></span>
+      <span style="color:#808080; font-size:12.5px"><span style="color:#8787FF">&lt;Space&gt;c</span> from anywhere · content-first · optional book + page · <span style="color:#8787FF">Ctrl-S</span> save · capture is sacred</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- the overlay -->
+      <div style="width:720px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">CAPTURE OVERLAY · centered modal (<code style="color:#8787FF">POST /notes</code> · <code style="color:#8787FF">capture.rs</code>)</div>
+        <div data-screen-label="Quick-capture" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">engineer-cli — Capture · &lt;Space&gt;c · 76×22</span>
+          </div>
+          <!-- dim scrim behind the modal -->
+          <div style="padding:20px 22px; background:#080B12">
+            <div style="display:flex; align-items:baseline; margin-bottom:10px"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;capture</span><span style="flex:1"></span><span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre"> INSERT </span></div>
+
+            <!-- content field (the star) -->
+            <div style="display:flex"><span style="color:#8787FF">┌</span><span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> New note · content </span></span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#8787FF">──────────────────────────────</div><span style="color:#8787FF">┐</span></div>
+            <div style="display:flex"><span style="color:#8787FF">│</span><div style="flex:1; min-width:0; padding:3px 10px 1px"><span style="color:#E6EBF2">MVCC keeps one version per read-transaction</span></div><span style="color:#8787FF">│</span></div>
+            <div style="display:flex"><span style="color:#8787FF">│</span><div style="flex:1; min-width:0; padding:1px 10px"><span style="color:#E6EBF2">so a long read never blocks a write</span><span style="width:8px; background:#8787FF; display:inline-block; height:15px; margin-left:1px; vertical-align:-2px; animation:blink 1s step-end infinite"></span></div><span style="color:#8787FF">│</span></div>
+            <div style="display:flex"><span style="color:#8787FF">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px; color:#585858">first non-empty line becomes the title · ⏎ = newline</div><span style="color:#8787FF">│</span></div>
+            <div style="display:flex"><span style="color:#8787FF">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#8787FF">────────────────────────────────────────────────────</div><span style="color:#8787FF">┘</span></div>
+
+            <!-- book anchor (optional) -->
+            <div style="display:flex; margin-top:6px"><span style="color:#585858">┌</span><span style="white-space:pre"><span style="color:#808080; font-weight:700"> book · /</span><span style="color:#E6EBF2">sicp</span><span style="width:7px; background:#585858; display:inline-block; height:14px; margin:0 1px; vertical-align:-2px"></span><span style="color:#585858"> · optional </span></span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────</div><span style="color:#585858">┐</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ </span><span><span style="color:#0B0E14">Structure &amp; Interpretation of Computer Programs</span></span><span style="flex:1"></span><span style="color:#0B0E14">SICP</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px; display:flex; align-items:center; color:#808080"><span style="white-space:pre">  </span><span>SICP: Distilled</span><span style="flex:1"></span><span style="color:#585858">2 filtered</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+
+            <!-- page -->
+            <div style="display:flex; align-items:center; margin-top:6px; padding:0 2px"><span style="color:#808080">page</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;optional&nbsp;&nbsp;</span><span style="flex:1"></span><span style="background:#0B0E14; color:#8787FF; font-weight:700; white-space:pre; border:1px solid #1A2230; padding:0 4px"> 142▏ </span></div>
+
+            <!-- footer -->
+            <div style="border-top:1px solid #1A2230; margin-top:12px; padding-top:10px; display:flex; align-items:center; flex-wrap:wrap">
+              <span style="background:#87AF87; color:#0B0E14; font-weight:600; white-space:pre"> ⌃S </span><span>&nbsp;save</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Tab </span><span>&nbsp;next field</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ⌃E </span><span>&nbsp;open in $EDITOR</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Esc </span><span>&nbsp;discard</span>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:7px; font-size:12px; color:#808080; line-height:1.5">Content-first: the title is lifted from the first non-empty line (<span style="color:#8787FF">derive_title_content</span>) and the full text kept verbatim, so truncating the title never loses input. The book field is the same live picker the timer's bind panel uses. Save is <span style="color:#E6EBF2">⌃S</span>, never autosave. The same overlay opens pre-filled for <span style="color:#8787FF">e</span> on the browser — one editor, two verbs (POST new, PATCH existing).</div>
+      </div>
+
+      <!-- capture is sacred -->
+      <div style="width:600px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">CAPTURE IS SACRED · Esc arms, never drops <span style="color:#585858">(capture.rs)</span></div>
+        <div data-screen-label="Discard guard" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">a stray Esc on a non-empty draft only arms a discard</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.5">
+            <sc-if value="{{ armed }}" hint-placeholder-val="{{ true }}">
+              <div style="padding:3px 10px; background:#D7AF5F; color:#0B0E14; font-weight:700; white-space:pre">⚠ discard this draft? Esc again to confirm</div>
+              <div style="margin-top:8px; color:#808080; line-height:1.6">Your <span style="color:#E6EBF2">2 lines</span> are still here. Any other key resumes editing — the draft is only dropped on a <span style="color:#E6EBF2">second</span> Esc.</div>
+              <div style="border-top:1px solid #1A2230; margin-top:11px; padding-top:10px; display:flex; align-items:center; flex-wrap:wrap">
+                <span style="background:#D75F5F; color:#0B0E14; font-weight:600; white-space:pre"> Esc </span><span>&nbsp;discard for real</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+                <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> any </span><span>&nbsp;resume editing</span>
+              </div>
+            </sc-if>
+            <sc-if value="{{ notArmed }}" hint-placeholder-val="{{ false }}">
+              <div style="color:#808080; line-height:1.6">Draft is clean / empty — <span style="color:#E6EBF2">Esc closes immediately</span>. Nothing to protect.</div>
+              <div style="border-top:1px solid #1A2230; margin-top:11px; padding-top:10px; display:flex; align-items:center; flex-wrap:wrap">
+                <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Esc </span><span>&nbsp;close</span>
+              </div>
+            </sc-if>
+            <div onclick="{{ toggleArmed }}" style="margin-top:12px; border-top:1px solid #1A2230; padding-top:9px; color:#585858; font-size:12px; cursor:pointer; user-select:none">▸ toggle: <span style="color:#8787FF">{{ armToggleLabel }}</span></div>
+          </div>
+        </div>
+        <div style="margin-top:7px; font-size:12px; color:#808080; line-height:1.5">This rule must survive the new <span style="color:#8787FF">$EDITOR</span> boundary (Act 3): a user who quits the spawned editor without writing must not silently lose the draft.</div>
+      </div>
+
+      <!-- chapter/section anchor picker (proposed growth) -->
+      <div style="width:660px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">ANCHOR PICKER · book + page → chapter/§ <span style="color:#5F5F87; background:#5F5F87; color:#E6EBF2; font-size:11px; padding:1px 6px; border-radius:4px">OPEN · §8 phase 3</span></div>
+        <div data-screen-label="Anchor picker" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">Anchor › SICP · anchor_data · 66×18</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.4">
+            <sc-if value="{{ anchorPage }}" hint-placeholder-val="{{ false }}">
+              <div style="color:#808080; margin-bottom:8px">Today · a bare page under the book:</div>
+              <div style="display:flex; align-items:center; padding:0 2px"><span style="color:#808080">book</span> <span style="color:#E6EBF2; font-weight:700">SICP</span><span style="flex:1"></span><span style="color:#808080">page&nbsp;</span><span style="background:#0B0E14; color:#8787FF; font-weight:700; white-space:pre; border:1px solid #1A2230; padding:0 4px"> 142▏ </span></div>
+              <div style="margin-top:10px; white-space:pre; color:#808080">reads back → <span style="color:#E6EBF2">▪ SICP · p.142</span></div>
+            </sc-if>
+            <sc-if value="{{ anchorChapter }}" hint-placeholder-val="{{ true }}">
+              <div style="display:flex"><span style="color:#585858">┌</span><span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Chapter · SICP </span></span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────</div><span style="color:#585858">┐</span></div>
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span>2 · Building Abstractions with Data</span></div><span style="color:#585858">│</span></div>
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center; background:#5F5F87; color:#E6EBF2; font-weight:700"><span style="white-space:pre">▌ </span><span>3 · Modularity, Objects, and State</span></div><span style="color:#585858">│</span></div>
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 2px 22px; display:flex; align-items:center; color:#808080"><span>§3.1 · Assignment and Local State</span></div><span style="color:#585858">│</span></div>
+              <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 3px 22px; display:flex; align-items:center; color:#8787FF"><span>§3.2 · The Environment Model  ✓</span></div><span style="color:#585858">│</span></div>
+              <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+              <div style="margin-top:8px; white-space:pre; color:#808080">reads back → <span style="color:#E6EBF2">▪ SICP · ch 3 · §3.2 · p.294</span></div>
+            </sc-if>
+            <div onclick="{{ toggleAnchor }}" style="margin-top:11px; border-top:1px solid #1A2230; padding-top:9px; color:#585858; font-size:12px; cursor:pointer; user-select:none">▸ <span style="color:#8787FF">{{ anchorToggleLabel }}</span></div>
+          </div>
+        </div>
+        <div style="margin-top:7px; font-size:12px; color:#808080; line-height:1.5">The client already has <span style="color:#8787FF">book_anchor_data</span> (editions · chapters · sections) — no face yet. Wiring it lets a note pin <span style="color:#E6EBF2">ch 3 · §3.2</span>, not just a bare page, and the richer place reads back for free.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ ACT 3 · $EDITOR FOR PROSE ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">3</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">$EDITOR FOR PROSE — the git-commit pattern <span style="color:#5F5F87; background:#5F5F87; color:#E6EBF2; font-size:12px; padding:1px 7px; border-radius:4px">OPEN · HEADLINE SLICE · first to build</span></span>
+      <span style="color:#808080; font-size:12.5px">a line stays in the overlay · a paragraph opens your editor · the one surface with no in-TUI face</span>
+    </div>
+
+    <!-- the boundary: three states -->
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+      <!-- 1. outgrows a line -->
+      <div style="width:560px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">1 · THE THOUGHT OUTGROWS A LINE · ⌃E in the overlay</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">Capture · a paragraph is coming · 60×12</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.45">
+            <div style="display:flex"><span style="color:#8787FF">┌</span><span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> content </span></span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#8787FF">──────────────────────────────</div><span style="color:#8787FF">┐</span></div>
+            <div style="display:flex"><span style="color:#8787FF">│</span><div style="flex:1; min-width:0; padding:3px 10px 1px"><span style="color:#E6EBF2">Retro · week 27</span></div><span style="color:#8787FF">│</span></div>
+            <div style="display:flex"><span style="color:#8787FF">│</span><div style="flex:1; min-width:0; padding:1px 10px"><span style="color:#E6EBF2">The timer shipped but capture still…</span><span style="width:8px; background:#8787FF; display:inline-block; height:15px; margin-left:1px; vertical-align:-2px; animation:blink 1s step-end infinite"></span></div><span style="color:#8787FF">│</span></div>
+            <div style="display:flex"><span style="color:#8787FF">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#8787FF">────────────────────────────────────────</div><span style="color:#8787FF">┘</span></div>
+            <div style="margin-top:9px; padding:4px 10px; background:#0C111A; border:1px solid #1A2230; border-radius:5px; color:#808080; font-size:12.5px">This is turning into prose. <span style="color:#8787FF; font-weight:700">⌃E</span> opens it in <span style="color:#E6EBF2">$EDITOR</span> — the buffer comes back into <span style="color:#8787FF">content</span>.</div>
+          </div>
+        </div>
+        <div style="margin-top:7px; font-size:12px; color:#808080; line-height:1.5">The one-line quick thought never leaves the overlay. The <span style="color:#8787FF">⌃E</span> affordance appears when the body wants room — and the browser's <span style="color:#8787FF">e</span> can open straight into the editor too.</div>
+      </div>
+
+      <!-- 2. the editor takes over -->
+      <div style="width:820px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">2 · THE TUI SUSPENDS · your $EDITOR owns the terminal</div>
+        <div data-screen-label="$EDITOR session" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">nvim  NOTE_EDITMSG  — spawned by engineer-cli · 96×22</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13.5px; line-height:1.5">
+            <div style="display:flex"><span style="width:34px; text-align:right; color:#585858; padding-right:12px">1</span><span style="color:#E6EBF2">Retro · week 27</span></div>
+            <div style="display:flex"><span style="width:34px; text-align:right; color:#585858; padding-right:12px">2</span><span></span></div>
+            <div style="display:flex"><span style="width:34px; text-align:right; color:#585858; padding-right:12px">3</span><span style="color:#E6EBF2">The timer shipped but capture still typed prose into a</span></div>
+            <div style="display:flex"><span style="width:34px; text-align:right; color:#585858; padding-right:12px">4</span><span style="color:#E6EBF2">ratatui box. This slice closes that — $EDITOR owns long</span></div>
+            <div style="display:flex"><span style="width:34px; text-align:right; color:#585858; padding-right:12px">5</span><span style="color:#E6EBF2">form; the overlay keeps the five-second thought.</span><span style="width:8px; background:#87AF87; display:inline-block; height:15px; margin-left:1px; vertical-align:-2px"></span></div>
+            <div style="display:flex"><span style="width:34px; text-align:right; color:#585858; padding-right:12px">6</span><span></span></div>
+            <div style="display:flex"><span style="width:34px; text-align:right; color:#585858; padding-right:12px">7</span><span style="color:#585858"># Write your note. The first non-empty line becomes the title.</span></div>
+            <div style="display:flex"><span style="width:34px; text-align:right; color:#585858; padding-right:12px">8</span><span style="color:#585858"># Lines starting with '#' are ignored. An empty file aborts —</span></div>
+            <div style="display:flex"><span style="width:34px; text-align:right; color:#585858; padding-right:12px">9</span><span style="color:#585858"># the draft is kept, nothing is saved.</span></div>
+            <div style="display:flex"><span style="width:34px; text-align:right; color:#585858; padding-right:12px">10</span><span style="color:#585858"># anchor: SICP · ch 3   (edit above the # lines only)</span></div>
+            <div style="margin-top:8px; border-top:1px solid #1A2230; padding-top:7px; display:flex; align-items:center"><span style="background:#87AF87; color:#0B0E14; font-weight:700; white-space:pre"> NORMAL </span><span style="color:#808080">&nbsp;&nbsp;NOTE_EDITMSG</span><span style="flex:1"></span><span style="color:#808080">10L, 512B</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span><span style="color:#8787FF">:wq</span><span style="color:#808080"> writes &amp; returns</span></div>
+          </div>
+        </div>
+        <div style="margin-top:7px; font-size:12px; color:#808080; line-height:1.5">There is <span style="color:#E6EBF2">no in-TUI text panel</span> here — this is a real editor session. The CLI honours <span style="color:#8787FF">$VISUAL</span> then <span style="color:#8787FF">$EDITOR</span> (the git-commit precedence), writes the current draft into a temp buffer with a commented scaffold, and hands over the terminal.</div>
+      </div>
+    </div>
+
+    <!-- suspend/restore spec + return -->
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+      <!-- lifecycle spec -->
+      <div style="width:720px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">3 · SUSPEND / RESTORE · how the TUI hands off and comes back <span style="color:#585858">(shared machinery · cross-cutting)</span></div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">ASCII lifecycle — no widget, just terminal handoff</span>
+          </div>
+          <div style="padding:16px 18px; font-size:13px; line-height:1.7; color:#808080">
+            <div style="white-space:pre"><span style="color:#8787FF">⌃E / e</span>  ─▸  leave alt-screen · disable raw mode · show cursor</div>
+            <div style="white-space:pre">        │</div>
+            <div style="white-space:pre">        ▾</div>
+            <div style="white-space:pre">   write draft ─▸ <span style="color:#E6EBF2">$TMPDIR/engineer-note-XXXX.md</span>  (content + # scaffold)</div>
+            <div style="white-space:pre">        │</div>
+            <div style="white-space:pre">        ▾</div>
+            <div style="white-space:pre">   spawn <span style="color:#8787FF">$VISUAL</span> ?? <span style="color:#8787FF">$EDITOR</span> ?? <span style="color:#E6EBF2">vi</span>  ─▸  wait for exit</div>
+            <div style="white-space:pre">        │</div>
+            <div style="white-space:pre">        ▾</div>
+            <div style="white-space:pre">   read buffer · strip # lines · <span style="color:#87AF87">into content</span></div>
+            <div style="white-space:pre">        │</div>
+            <div style="white-space:pre">        ▾</div>
+            <div style="white-space:pre"><span style="color:#87AF87">restore</span> ─▸ re-enter alt-screen · raw mode · full redraw</div>
+            <div style="margin-top:11px; border-top:1px solid #1A2230; padding-top:9px; color:#808080; font-size:12px; line-height:1.6">The same suspend/spawn/restore plumbing week-planning's retro reflections reuse. On a clean exit the buffer round-trips into <span style="color:#8787FF">content</span>; the TUI redraws exactly where it left.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- return + sacred across boundary -->
+      <div style="width:660px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">4 · BACK IN engineer · save = writing the buffer</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">the round-trip · two exits, two outcomes</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13.5px; line-height:1.55">
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin-bottom:5px">WROTE &amp; QUIT (:wq)</div>
+            <div style="padding:2px 2px"><span style="color:#87AF87">✓ note saved</span><span style="color:#808080"> · “Retro · week 27” · 512B · <span style="color:#585858">201</span></span></div>
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:14px 0 5px">QUIT WITHOUT WRITING (:q!) — capture is sacred</div>
+            <div style="padding:3px 10px; background:#D7AF5F; color:#0B0E14; font-weight:700; white-space:pre">⚠ editor closed unchanged — draft kept in the overlay</div>
+            <div style="margin-top:6px; color:#808080; line-height:1.6">The draft is <span style="color:#E6EBF2">not</span> dropped. You land back on the capture overlay with every line intact — the same guarantee a stray Esc gets.</div>
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:14px 0 5px">EMPTY FILE</div>
+            <div style="padding:2px 2px"><span style="color:#808080">aborted · nothing written · draft kept</span></div>
+            <div style="margin-top:13px; border-top:1px solid #1A2230; padding-top:9px; color:#808080; font-size:12px; line-height:1.6">Writing the buffer <span style="color:#E6EBF2">is</span> the save — the product's explicit-save model holds across the boundary. Editing an existing note omits <span style="color:#8787FF">anchors</span> on the PATCH, so its citations stay untouched.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ ACT 4 · READ & ARCHIVE ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">4</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">READ &amp; ARCHIVE — the full note, shelved not shredded <span style="color:#87AF87; font-size:12px">· shipped</span></span>
+      <span style="color:#808080; font-size:12.5px"><span style="color:#8787FF">⏎</span> opens content + citations · <span style="color:#8787FF">a</span> archives (reversible, dims in place) · no destroy in the browse default</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- detail read -->
+      <div style="width:720px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">DETAIL READ · content + citations (<code style="color:#8787FF">GET /notes/:id</code>)</div>
+        <div data-screen-label="Note detail" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">engineer-cli — Note · read · 80×24</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.5">
+            <div style="display:flex; align-items:baseline; margin-bottom:8px"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Notes&nbsp;›&nbsp;</span><span>read</span><span style="flex:1"></span><span style="color:#808080">updated 2h ago</span></div>
+            <div style="display:flex"><span style="color:#585858">┌</span><span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> MVCC keeps one version per read-transaction </span></span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────</div><span style="color:#585858">┐</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:5px 12px 1px; color:#E6EBF2">so a long-running read never blocks a write, and a</div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 12px; color:#E6EBF2">write never blocks a read — snapshot isolation falls</div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 12px 5px; color:#E6EBF2">out of keeping the old version around.</div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 12px; color:#808080; font-size:12.5px">─ anchored to ───────────────────────────────</div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 12px; display:flex; align-items:center"><span style="color:#808080">▪&nbsp;</span><span style="color:#E6EBF2">SICP · ch 3 · p.142</span><span style="flex:1"></span><span style="color:#585858">Designing Data-Intensive Applications</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 12px 3px; display:flex; align-items:center"><span style="color:#808080">▪&nbsp;</span><span style="color:#E6EBF2">notebook · p.4</span><span style="flex:1"></span><span style="color:#585858">physical paper</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+            <div style="border-top:1px solid #1A2230; margin-top:10px; padding-top:10px; display:flex; align-items:center; flex-wrap:wrap">
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> e </span><span>&nbsp;edit ($EDITOR)</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> a </span><span>&nbsp;archive</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> u </span><span>&nbsp;detach book</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> q </span><span>&nbsp;back</span>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:7px; font-size:12px; color:#808080; line-height:1.5">The detail read pulls the fields a list row omits — full content and every citation. <span style="color:#8787FF">u</span> = detach from book (<span style="color:#8787FF">unlink</span>) keeps the note but severs the anchor — a different intent from archiving the whole note, so it lives here, never conflated with <span style="color:#8787FF">a</span>.</div>
+      </div>
+
+      <!-- archive confirm + notify -->
+      <div style="width:600px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">ARCHIVE · reversible shelve (<code style="color:#8787FF">PATCH /notes/:id/archive</code>)</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">archive shelves · one key · instantly reversible</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13.5px; line-height:1.55">
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin-bottom:5px">AFTER a — the row dims in place</div>
+            <div style="display:flex; align-items:center; padding:2px 2px; color:#585858"><span style="white-space:pre">  Old highlight — reread ch 2</span><span style="flex:1"></span><span style="white-space:pre">▪ SICP · ch 2 · archived</span></div>
+            <div style="margin-top:6px; padding:2px 2px"><span style="color:#87AF87">✓ archived</span><span style="color:#808080"> · <span style="color:#8787FF">u</span> to unarchive · <span style="color:#8787FF">t</span> to reveal shelved</span></div>
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:14px 0 5px">NO DESTROY IN THE BROWSE DEFAULT</div>
+            <div style="color:#808080; line-height:1.6">A study note is a record you <span style="color:#E6EBF2">shelve, not shred</span>. There is no <span style="color:#8787FF">a</span>-adjacent delete — the same reasoning as progress's “a target is a promise, not a record you delete.”</div>
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:14px 0 5px">IF A HARD DELETE EVER LANDS</div>
+            <div style="padding:3px 10px; background:#D75F5F; color:#0B0E14; font-weight:700; white-space:pre">✖ delete (permanent) — cannot be undone</div>
+            <div style="margin-top:6px; color:#585858; line-height:1.6">…as a deliberate, confirmed <span style="color:#8787FF">:note delete</span> verb, visibly distinct from archive — never a bare key in the list.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ ACT 5 · HEADLESS ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">5</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">HEADLESS — <code style="color:#8787FF">engineer note</code>, the one-shot twin <span style="color:#5F5F87; background:#5F5F87; color:#E6EBF2; font-size:12px; padding:1px 7px; border-radius:4px">OPEN · §8 phase 2</span></span>
+      <span style="color:#808080; font-size:12.5px">TTY-detected · <span style="color:#8787FF">NO_COLOR</span> respected · no ANSI when piped · meaningful exit codes</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- capture + reads -->
+      <div style="width:900px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">CAPTURE &amp; READ · <code style="color:#8787FF">note capture / list / search / show</code></div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">zsh — the note verb suite</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13px; line-height:1.55">
+            <div><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> note capture <span style="color:#87AF87">"MVCC keeps one version per read-tx"</span> <span style="color:#D7AF5F">--book sicp --page 142</span></div>
+            <div style="color:#808080">✓ captured · “MVCC keeps one version…” · SICP · p.142 · <span style="color:#585858">201</span></div>
+            <div style="margin-top:8px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">git</span> log -1 --format=%B <span style="color:#808080">| engineer note capture -</span>&nbsp;&nbsp;<span style="color:#585858"># from stdin</span></div>
+            <div style="color:#808080">✓ captured · from stdin · loose</div>
+            <div style="margin-top:8px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> note capture&nbsp;&nbsp;<span style="color:#585858"># no text → opens $EDITOR, git-commit style</span></div>
+            <div style="margin-top:8px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> note list <span style="color:#808080"># --book · --archived all · --json</span></div>
+            <div style="color:#808080; white-space:pre">MVCC keeps one version…      SICP · ch 3 · p.142   2h</div>
+            <div style="color:#808080; white-space:pre">Raft leader election…        DDIA · ch 9 · p.367   1d</div>
+            <div style="color:#808080; white-space:pre">Try teaching CAP via…        —                     1d</div>
+            <div style="margin-top:8px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> note search <span style="color:#87AF87">mvcc</span> <span style="color:#D7AF5F">--json</span></div>
+            <div style="color:#808080; white-space:pre">[ { <span style="color:#8787FF">"id"</span>:<span style="color:#87AF87">"a_9f3c"</span>, <span style="color:#8787FF">"title"</span>:<span style="color:#87AF87">"MVCC keeps one version…"</span>,
+    <span style="color:#8787FF">"anchor"</span>:<span style="color:#87AF87">"SICP · ch 3 · p.142"</span>, <span style="color:#8787FF">"book_id"</span>:<span style="color:#87AF87">"b_11"</span>, <span style="color:#8787FF">"archived"</span>:<span style="color:#D7AF5F">false</span> } ]</div>
+            <div style="margin-top:8px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> note show a_9f3c <span style="color:#808080">| cat</span>&nbsp;&nbsp;<span style="color:#585858"># plain, no ANSI</span></div>
+            <div style="color:#E6EBF2; white-space:pre">MVCC keeps one version per read-transaction</div>
+            <div style="color:#808080; white-space:pre">SICP · ch 3 · p.142</div>
+          </div>
+        </div>
+        <div style="margin-top:7px; font-size:12px; color:#808080; line-height:1.5">Mirrors the TUI↔headless duality <span style="color:#8787FF">engineer timer</span> already ships. <span style="color:#8787FF">note capture</span> with no text opens <span style="color:#E6EBF2">$EDITOR</span> — the same round-trip as the TUI, so long-form works headless too.</div>
+      </div>
+
+      <!-- exit codes -->
+      <div style="width:520px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">EXIT CODES · scripts branch on the code</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">$? after engineer note</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13.5px; line-height:1.85">
+            <div style="display:flex; align-items:baseline"><span style="color:#87AF87; font-weight:700; width:34px">0</span><span>captured / found / shown</span></div>
+            <div style="display:flex; align-items:baseline"><span style="color:#808080; font-weight:700; width:34px">2</span><span>no notes match <span style="color:#585858">(empty result)</span></span></div>
+            <div style="display:flex; align-items:baseline"><span style="color:#808080; font-weight:700; width:34px">3</span><span>note not found <span style="color:#585858">(bad id)</span></span></div>
+            <div style="display:flex; align-items:baseline"><span style="color:#D7AF5F; font-weight:700; width:34px">4</span><span>editor aborted <span style="color:#585858">· empty / :q! · draft kept</span></span></div>
+            <div style="display:flex; align-items:baseline"><span style="color:#D75F5F; font-weight:700; width:34px">5</span><span>no $EDITOR &amp; no tty <span style="color:#585858">· can't prompt</span></span></div>
+            <div style="margin-top:10px; border-top:1px solid #1A2230; padding-top:9px; color:#808080; font-size:12px">Humans read the glyph; scripts read <span style="color:#8787FF">$?</span> — a wrapper can retry, or fall back to <span style="color:#8787FF">--message</span> when there's no editor.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ CLOSING · DECISION RECORD ============================ -->
+  <div style="width:1280px; background:#05080F; border:1px solid #1A2230; border-left:2px solid #D7AF5F; border-radius:8px; padding:16px 20px; font-size:12.5px; line-height:1.65; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="color:#E6EBF2; font-weight:700; margin-bottom:8px">Decision record — archive is the default shelf; delete &amp; unlink stay deliberate</div>
+    <div style="display:flex; padding:6px 0; border-top:1px solid #121826"><span style="color:#8787FF; width:220px; flex-shrink:0; font-weight:700">Archive, not delete</span><span>The browser offers <span style="color:#E6EBF2">a</span> = archive/unarchive (reversible, dims in place) and never a destroy. <span style="color:#E6EBF2">DELETE /notes/:id</span> (<span style="color:#8787FF">delete_note</span>) exists but has no face — a study note is shelved, not shredded. A hard delete, if it lands, is a confirmed <span style="color:#8787FF">:note delete</span> reading “delete (permanent),” visibly distinct from <span style="color:#E6EBF2">a</span>.</span></div>
+    <div style="display:flex; padding:6px 0; border-top:1px solid #121826"><span style="color:#8787FF; width:220px; flex-shrink:0; font-weight:700">Unlink is a book-detach</span><span><span style="color:#E6EBF2">PATCH /notes/:id/unlink</span> (<span style="color:#8787FF">unlink_note</span>) severs the book anchor while keeping the note — a different intent from archiving. It lives on the detail read as <span style="color:#E6EBF2">u · detach from book</span>, never conflated with <span style="color:#E6EBF2">a</span>.</span></div>
+    <div style="display:flex; padding:6px 0; border-top:1px solid #121826"><span style="color:#8787FF; width:220px; flex-shrink:0; font-weight:700">$EDITOR for prose</span><span>Long-form bodies (and week-planning's retro reflections) open <span style="color:#8787FF">$VISUAL</span> then <span style="color:#8787FF">$EDITOR</span> (git-commit precedence) — never a rebuilt rich editor in ratatui. Writing the buffer <span style="color:#E6EBF2">is</span> the save; a quit-without-write keeps the draft. The one-line thought stays in the overlay.</span></div>
+    <div style="display:flex; padding:6px 0; border-top:1px solid #121826"><span style="color:#8787FF; width:220px; flex-shrink:0; font-weight:700">Content-first, title derived</span><span>The title is lifted from the first non-empty line (<span style="color:#8787FF">derive_title_content</span>); full text kept verbatim in <span style="color:#E6EBF2">content</span>. A PATCH that omits <span style="color:#8787FF">anchors</span> leaves existing citations untouched — only sending anchors replaces them.</span></div>
+    <div style="margin-top:10px; padding-top:9px; border-top:1px solid #1A2230; display:flex; gap:12px; flex-wrap:wrap; align-items:center">
+      <span style="background:#87AF87; color:#0B0E14; font-weight:700; padding:1px 7px; border-radius:4px; font-size:11px">SHIPPED</span>
+      <span>quick-capture · the browser · read · archive/unarchive · edit</span>
+      <span style="color:#585858">·</span>
+      <span style="background:#5F5F87; color:#E6EBF2; font-weight:700; padding:1px 7px; border-radius:4px; font-size:11px">OPEN</span>
+      <span><span style="color:#E6EBF2">$EDITOR</span>-for-prose (first) · the <span style="color:#E6EBF2">engineer note</span> twin · wire delete / unlink / chapter-section anchor picker</span>
+    </div>
+  </div>
+
+</div>
+
+<template id="__bundler_thumbnail">
+  <svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+    <rect width="80" height="80" rx="16" fill="#05080F"/>
+    <rect x="16" y="22" width="34" height="6" rx="3" fill="#8787FF"/>
+    <rect x="16" y="34" width="48" height="4" rx="2" fill="#585858"/>
+    <rect x="16" y="42" width="42" height="4" rx="2" fill="#585858"/>
+    <rect x="16" y="54" width="26" height="6" rx="3" fill="#87AF87"/>
+  </svg>
+</template>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: { &quot;width&quot;: &quot;100%&quot;, &quot;height&quot;: &quot;100%&quot; },
+  &quot;revealArchived&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Notes&quot;, &quot;label&quot;: &quot;Browser: reveal archived (dimmed)&quot; },
+  &quot;discardArmed&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Notes&quot;, &quot;label&quot;: &quot;Capture: Esc-armed discard guard&quot; },
+  &quot;anchorDepth&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;page&quot;, &quot;chapter&quot;], &quot;default&quot;: &quot;chapter&quot;, &quot;tsType&quot;: &quot;\&quot;page\&quot; | \&quot;chapter\&quot;&quot;, &quot;section&quot;: &quot;Notes&quot;, &quot;label&quot;: &quot;Anchor picker: bare page vs chapter/section&quot; }
+}">
+class Component extends DCLogic {
+  state = { reveal: null, search: null, armed: null, anchor: null };
+
+  reveal() { return this.state.reveal ?? (this.props.revealArchived ?? false); }
+  armed()  { return this.state.armed  ?? (this.props.discardArmed  ?? true); }
+  anchor() { return this.state.anchor ?? (this.props.anchorDepth   ?? 'chapter'); }
+
+  renderVals() {
+    const reveal = this.reveal();
+    const searchOn = this.state.search ?? false;
+    const armed = this.armed();
+    const anchor = this.anchor();
+    return {
+      // browser
+      revealArchived: reveal,
+      revealLabel: reveal ? 'hide archived' : 'show archived',
+      archivedParam: reveal ? 'all' : 'active',
+      countLabel: reveal ? '7 notes' : '5 notes',
+      scopeLabel: reveal ? '5 active · 2 archived' : 'active',
+      footLine: reveal ? '7 notes · 2 archived (dimmed)' : '5 notes · press t for 2 archived',
+      searchOn: searchOn,
+      searchOff: !searchOn,
+      toggleSearch: () => this.setState({ search: !searchOn }),
+      toggleArchived: () => this.setState({ reveal: !reveal }),
+      // capture
+      armed: armed,
+      notArmed: !armed,
+      armToggleLabel: armed ? 'show clean-draft close' : 'show armed discard',
+      toggleArmed: () => this.setState({ armed: !armed }),
+      // anchor picker
+      anchorPage: anchor === 'page',
+      anchorChapter: anchor === 'chapter',
+      anchorToggleLabel: anchor === 'chapter' ? 'show today: bare page' : 'show proposed: chapter/§ picker',
+      toggleAnchor: () => this.setState({ anchor: anchor === 'chapter' ? 'page' : 'chapter' }),
+    };
+  }
+}
+</script>
+</body>
+</html>

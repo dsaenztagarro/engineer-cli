@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <meta name="design_doc_mode" content="canvas">
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#0B0E14; }
+    a { color:#8787FF; text-decoration:none; }
+    a:hover { color:#A5A5FF; }
+    @keyframes pulse { 0%{opacity:1} 45%{opacity:.28} 100%{opacity:1} }
+  </style>
+</helmet>
+
+<div style="padding:44px 48px 100px; display:flex; flex-direction:column; gap:58px; width:2600px; color:#E6EBF2">
+
+  <!-- ============================ INTRO ============================ -->
+  <div style="display:flex; flex-direction:column; gap:16px; width:1240px">
+    <div data-drags-parent="1" style="font-weight:700; font-size:12px; color:#9aa4b2; letter-spacing:.10em">PROGRESS &amp; TARGETS · engineer-cli · the Measure pillar</div>
+    <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; padding:18px 20px; font-size:13.5px; line-height:1.6; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+      <div><span style="color:#8787FF; font-weight:700">Pace is one honest line per target.</span> <span style="color:#808080">Done-vs-intended and ahead/behind, as an ASCII meter with a now-tick — <span style="color:#E6EBF2; white-space:pre">systems ███▍··┊·· 4.2/6h · behind</span>. That single line is the payoff: it survives being a status-bar string, a </span><span style="color:#8787FF">--json</span><span style="color:#808080"> row, and a full TUI screen. The promises themselves are editable from the terminal now — declare, adjust hours, retire — with near-zero ceremony.</span></div>
+      <div style="margin-top:12px; color:#808080; font-size:12.5px">This canvas reads top to bottom: <span style="color:#E6EBF2">the pace screen → adjust &amp; retire in place → declare (the open slice) → where the week went → the headless twins → the append-only decision record.</span></div>
+      <div style="margin-top:14px; color:#808080; display:flex; gap:22px; flex-wrap:wrap; font-size:12.5px; border-top:1px solid #1A2230; padding-top:12px">
+        <span><span style="color:#8787FF">████</span> accent · meter fill</span>
+        <span><span style="color:#87AF87">████</span> on pace · met ✓</span>
+        <span><span style="color:#D7AF5F">████</span> behind · attention</span>
+        <span><span style="color:#D75F5F">████</span> destructive</span>
+        <span><span style="color:#808080">████</span> muted · now-tick · unfilled</span>
+        <span><span style="color:#5F5FAF">████</span> row selection</span>
+      </div>
+      <div style="margin-top:12px; color:#808080; font-size:12px; border-top:1px solid #1A2230; padding-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+        <span style="background:#87AF87; color:#0B0E14; font-weight:700; padding:1px 7px; border-radius:4px; font-size:11px">SHIPPED</span>
+        <span>pace screen · <span style="color:#E6EBF2">engineer target</span> verbs · interactive adjust / retire</span>
+        <span style="color:#585858">·</span>
+        <span style="background:#5F5F87; color:#E6EBF2; font-weight:700; padding:1px 7px; border-radius:4px; font-size:11px">OPEN</span>
+        <span>interactive declare (needs the shared scope picker) · pace headless twin · the where-it-went fold</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ ACT 1 · THE PACE SCREEN ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">1</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">THE PACE SCREEN — one meter per promise <span style="color:#87AF87; font-size:12px">· job 5 · shipped</span></span>
+      <span style="color:#808080; font-size:12.5px">behind-first, largest-gap-first · a now-tick · a behind total · click <span style="color:#8787FF">◧ behind only</span> to focus</span>
+    </div>
+
+    <!-- centerpiece: the pace board -->
+    <div style="width:1240px">
+      <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">PROGRESS · PACE · the anchor read (<code style="color:#8787FF">GET /api/v1/progress</code>, derived server-side)</div>
+      <div data-screen-label="Progress · pace" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+        <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+          <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+          <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — Progress · pace · 100×32</span>
+        </div>
+        <div style="padding:14px 16px; font-size:14px; color:#E6EBF2">
+          <div style="display:flex; align-items:baseline; margin-bottom:8px">
+            <span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Progress</span>
+            <span style="flex:1"></span>
+            <span onclick="{{ toggleBehind }}" title="behind only" style="cursor:pointer; user-select:none; color:#8787FF; border:1px solid #1A2230; border-radius:5px; padding:1px 8px; white-space:pre">◧ behind only</span>
+            <span style="color:#808080">&nbsp;&nbsp;·&nbsp;&nbsp;alice</span>
+          </div>
+
+          <!-- subtabs -->
+          <div style="display:flex; gap:0; margin-bottom:10px; color:#808080; font-size:12.5px">
+            <span style="padding:0 12px 0 0; color:#8787FF; font-weight:700; border-bottom:2px solid #8787FF">Pace</span>
+            <span style="padding:0 12px; color:#585858">·</span>
+            <span style="padding:0 12px">Where it went</span>
+          </div>
+
+          <!-- week header -->
+          <div style="display:flex; align-items:center; margin-bottom:10px">
+            <span style="color:#E6EBF2; font-weight:700">2026-W27</span>
+            <span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span><span style="color:#808080">fri · day 5 of 7</span>
+            <span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span><span style="color:#808080">now </span><span style="color:#E6EBF2">66%</span>
+            <span style="flex:1"></span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> [ </span><span style="color:#808080">&nbsp;prev</span><span style="color:#585858">&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ] </span><span style="color:#808080">&nbsp;next</span><span style="color:#585858">&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> t </span><span style="color:#808080">&nbsp;this week</span>
+          </div>
+
+          <!-- targets panel -->
+          <div style="display:flex"><span style="color:#585858">┌</span><span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> This week · </span><span style="color:#E6EBF2; font-weight:700">4 targets</span><span style="color:#808080"> · 2 behind </span></span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┐</span></div>
+
+          <!-- column head -->
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px 4px; display:flex; align-items:center; color:#808080; font-size:11px; letter-spacing:.06em"><span style="width:150px">TARGET</span><span style="width:290px">PACE · now-tick ┊ at 66%</span><span style="width:104px">DONE / WK</span><span>STATE</span></div><span style="color:#585858">│</span></div>
+
+          <!-- row 1: systems · behind (selected) -->
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ </span><span style="width:138px">systems</span><span style="white-space:pre; font-weight:400"><span style="color:#0B0E14; font-weight:700">███████████▍</span>···┊········</span><span style="width:104px; padding-left:16px">2.4 / 6h</span><span style="white-space:pre">▾ behind 1.1h</span></div><span style="color:#585858">│</span></div>
+
+          <!-- row 2: write · behind -->
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:138px">write</span><span style="white-space:pre"><span style="color:#8787FF">████████</span><span style="color:#585858">·······</span><span style="color:#808080">┊</span><span style="color:#585858">········</span></span><span style="width:104px; padding-left:16px; color:#808080">1.0 / 3h</span><span style="color:#D7AF5F; white-space:pre">▾ behind 1.0h</span></div><span style="color:#585858">│</span></div>
+
+          <!-- rest (hidden by 'behind only') -->
+          <sc-if value="{{ showRest }}" hint-placeholder-val="{{ true }}">
+            <!-- row 3: deep work · on pace -->
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:138px">deep work</span><span style="white-space:pre"><span style="color:#8787FF">████████████████▊</span><span style="color:#585858">·······</span></span><span style="width:104px; padding-left:16px; color:#808080">5.6 / 8h</span><span style="color:#87AF87; white-space:pre">✓ on pace</span></div><span style="color:#585858">│</span></div>
+            <!-- row 4: read · met -->
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px 4px; display:flex; align-items:center"><span style="white-space:pre">  </span><span style="width:138px">read</span><span style="white-space:pre"><span style="color:#87AF87">████████████████████████</span></span><span style="width:104px; padding-left:16px; color:#808080">4.0 / 4h</span><span style="color:#87AF87; white-space:pre">✓ met</span></div><span style="color:#585858">│</span></div>
+          </sc-if>
+
+          <div style="display:flex"><span style="color:#585858">├</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┤</span></div>
+          <!-- behind total -->
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px; display:flex; align-items:center"><span style="color:#D7AF5F; font-weight:700">▾ 2 behind</span><span style="color:#808080">&nbsp;&nbsp;·&nbsp;&nbsp;2.1h to catch up by sunday</span><span style="flex:1"></span><span style="color:#585858">on pace on 2 · nothing red, ever</span></div><span style="color:#585858">│</span></div>
+          <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+
+          <!-- kind mix + sparkline -->
+          <div style="display:flex; gap:26px; margin-top:10px; flex-wrap:wrap; align-items:flex-start">
+            <div>
+              <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin-bottom:3px">KIND MIX · this week</div>
+              <div><span style="color:#808080">read </span><span style="color:#E6EBF2">4.0h</span><span style="color:#585858"> · </span><span style="color:#808080">build </span><span style="color:#E6EBF2">3.4h</span><span style="color:#585858"> · </span><span style="color:#808080">practice </span><span style="color:#E6EBF2">1.2h</span><span style="color:#585858"> · </span><span style="color:#808080">write </span><span style="color:#E6EBF2">1.0h</span></div>
+            </div>
+            <div>
+              <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin-bottom:3px">THIS WEEK</div>
+              <div style="white-space:pre; color:#87AF87; font-size:15px; line-height:1">▂▃▅▂▇█▃</div>
+            </div>
+            <div>
+              <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin-bottom:3px">TRACKED</div>
+              <div style="color:#E6EBF2; font-weight:700">9.6h<span style="color:#808080; font-weight:400"> · mon → sun · today ↑</span></div>
+            </div>
+          </div>
+
+          <!-- footer keys -->
+          <div style="border-top:1px solid #1A2230; padding-top:10px; margin-top:11px; display:flex; align-items:center; flex-wrap:wrap">
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> e </span><span>&nbsp;adjust</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#D75F5F; color:#0B0E14; font-weight:600; white-space:pre"> x </span><span>&nbsp;retire</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> d </span><span>&nbsp;declare</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> g </span><span>&nbsp;where it went</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+            <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> [ ] </span><span>&nbsp;week</span>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:8px; font-size:12px; color:#808080; line-height:1.5">The <span style="color:#808080">┊</span> now-tick marks where an even week would be at <span style="color:#E6EBF2">66%</span>; fill left of it is <span style="color:#D7AF5F">behind</span>, fill at or past it is <span style="color:#87AF87">on pace</span>, a full bar is <span style="color:#87AF87">met</span>. Rows sort behind-first, largest gap on top. Actuals are recomputed server-side on every read — the client keeps no second ledger.</div>
+    </div>
+
+    <!-- state legend row -->
+    <div style="display:flex; flex-wrap:wrap; gap:28px; align-items:flex-start">
+      <div style="width:600px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">THE THREE PACE STATES · <span style="color:#585858">PaceState = met / on_pace / behind — no red state</span></div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">one glyph carries the state · quiet by default</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.5">
+            <div style="display:flex; align-items:center; padding:4px 0"><span style="width:96px; color:#87AF87; font-weight:700">✓ met</span><span style="white-space:pre; color:#87AF87">████████████████████████</span><span style="flex:1"></span><span style="color:#808080">at or over intent</span></div>
+            <div style="display:flex; align-items:center; padding:4px 0"><span style="width:96px; color:#87AF87; font-weight:700">✓ on pace</span><span style="white-space:pre"><span style="color:#8787FF">████████████████▊</span><span style="color:#585858">·······</span></span><span style="flex:1"></span><span style="color:#808080">fill at/past the tick</span></div>
+            <div style="display:flex; align-items:center; padding:4px 0"><span style="width:96px; color:#D7AF5F; font-weight:700">▾ behind</span><span style="white-space:pre"><span style="color:#8787FF">████████</span><span style="color:#585858">·······</span><span style="color:#808080">┊</span><span style="color:#585858">········</span></span><span style="flex:1"></span><span style="color:#D7AF5F">catch-up shown</span></div>
+            <div style="margin-top:10px; border-top:1px solid #1A2230; padding-top:9px; color:#808080; font-size:12px; line-height:1.6">There is deliberately <span style="color:#E6EBF2">no red pace state</span>. Behind is the loudest it gets — a small amber signal, never a nag. On pace shows a calm ✓; nothing pulses, nothing alarms.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- status-line reduction -->
+      <div style="width:600px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">THE ONE-LINE REDUCTION · where pace surfaces off-screen</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">the promised superpower — a line of text per target</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13.5px; line-height:1.7">
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin-bottom:4px">PER-TARGET LINE</div>
+            <div style="white-space:pre"><span style="color:#E6EBF2">systems </span><span style="color:#8787FF">███▍··┊··</span><span style="color:#E6EBF2"> 2.4/6h · </span><span style="color:#D7AF5F">behind 1.1h</span></div>
+            <div style="white-space:pre"><span style="color:#E6EBF2">read&nbsp;&nbsp;&nbsp; </span><span style="color:#87AF87">█████████</span><span style="color:#E6EBF2"> 4.0/4h · </span><span style="color:#87AF87">met</span></div>
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:14px 0 4px">ZELLIJ / TMUX STATUS BAR</div>
+            <div><span style="color:#808080">◧ engineer</span>&nbsp;&nbsp;<span style="color:#D7AF5F">▾ 2.1h behind</span>&nbsp;<span style="color:#585858">·</span>&nbsp;<span style="color:#87AF87">read ✓</span></div>
+            <div style="margin-top:14px; border-top:1px solid #1A2230; padding-top:9px; color:#808080; font-size:12px; line-height:1.6">Same read, three footprints: the full screen above, this two-line digest, and a single status-bar reduction — all from <span style="color:#8787FF">engineer pace</span> (§5).</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ ACT 2 · ADJUST & RETIRE ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">2</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">ADJUST &amp; RETIRE — fix the promise in place <span style="color:#87AF87; font-size:12px">· job 6 · shipped this pass</span></span>
+      <span style="color:#808080; font-size:12.5px">no modal · <span style="color:#8787FF">e</span> edits hours on the row · <span style="color:#D75F5F">x</span> retires (keeps history)</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- adjust inline -->
+      <div style="width:640px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">ADJUST · inline hours field on the selected row (<code style="color:#8787FF">PATCH /targets/:id</code>)</div>
+        <div data-screen-label="Adjust target" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">engineer-cli — Progress · adjust · 92×16</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.4">
+            <div style="display:flex; align-items:baseline; margin-bottom:10px"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Progress&nbsp;›&nbsp;</span><span>adjust</span><span style="flex:1"></span><span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre"> INSERT </span></div>
+            <div style="display:flex"><span style="color:#585858">&nbsp;</span><div style="flex:1; min-width:0; padding:3px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ </span><span style="width:110px">systems</span><span style="white-space:pre; font-weight:400"><span style="color:#0B0E14; font-weight:700">███████████▍</span>···┊·····</span><span style="flex:1"></span><span style="color:#0B0E14">2.4 /</span>&nbsp;<span style="background:#0B0E14; color:#8787FF; font-weight:700; white-space:pre"> 8▏ </span><span style="color:#0B0E14; font-weight:700">h</span></div></div>
+            <div style="padding:6px 12px 2px; color:#808080; font-size:12px">weekly intent for <span style="color:#E6EBF2">systems</span> · was <span style="color:#E6EBF2">6h</span> · new <span style="color:#8787FF; font-weight:700">8h</span> — pace re-reads on save</div>
+            <div style="border-top:1px solid #1A2230; margin-top:10px; padding-top:10px; display:flex; align-items:center; flex-wrap:wrap">
+              <span style="background:#87AF87; color:#0B0E14; font-weight:600; white-space:pre"> ⏎ </span><span>&nbsp;save</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Esc </span><span>&nbsp;cancel</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="color:#585858">±0.5h with ↑/↓</span>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:7px; font-size:12px; color:#808080; line-height:1.5"><span style="color:#8787FF">e</span> turns the intended-hours cell into a field — the only editable thing on the row. Save may <span style="color:#E6EBF2">mint a successor version</span> (ADR 0026), so the client re-fetches by axis + scope rather than trusting the old id.</div>
+      </div>
+
+      <!-- retire confirm -->
+      <div style="width:640px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">RETIRE · second-press confirm (<code style="color:#8787FF">PATCH /targets/:id/retire</code> · no DELETE)</div>
+        <div data-screen-label="Retire target" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">engineer-cli — Progress · retire? · 92×16</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.4">
+            <div style="display:flex; align-items:baseline; margin-bottom:10px"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Progress</span><span style="flex:1"></span><span style="background:#D7AF5F; color:#0B0E14; font-weight:700; white-space:pre"> x again to confirm </span></div>
+            <div style="display:flex"><span style="color:#585858">&nbsp;</span><div style="flex:1; min-width:0; padding:3px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ </span><span style="width:110px">write</span><span style="white-space:pre; font-weight:400"><span style="color:#0B0E14; font-weight:700">████████</span>·······┊····</span><span style="flex:1"></span><span style="color:#0B0E14">1.0 / 3h</span></div></div>
+            <div style="display:flex"><span style="color:#585858">┌</span><span style="white-space:pre"><span style="color:#D7AF5F; font-weight:700"> Retire this target? </span></span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────</div><span style="color:#585858">┐</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:5px 10px 2px"><span style="color:#87AF87; font-weight:700">Keeps history.</span> <span style="color:#808080">Past weeks still read this target — it just stops counting from now.</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">─────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+            <div style="border-top:1px solid #1A2230; margin-top:10px; padding-top:10px; display:flex; align-items:center; flex-wrap:wrap">
+              <sc-if value="{{ confirmRetire }}" hint-placeholder-val="{{ true }}">
+                <span style="background:#D75F5F; color:#0B0E14; font-weight:600; white-space:pre"> x </span><span>&nbsp;again → retire (keeps history)</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+                <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Esc </span><span>&nbsp;keep it</span>
+              </sc-if>
+              <sc-if value="{{ immediateRetire }}" hint-placeholder-val="{{ false }}">
+                <span style="background:#D75F5F; color:#0B0E14; font-weight:600; white-space:pre"> x </span><span>&nbsp;retire now (keeps history)</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+                <span style="color:#585858">confirm off in settings</span>
+              </sc-if>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:7px; font-size:12px; color:#808080; line-height:1.5">Retire ≠ delete. There is no destroy verb; <span style="color:#8787FF">retire</span> closes the lineage so history survives. The confirm copy says <span style="color:#E6EBF2">“keeps history,”</span> never “delete.”</div>
+      </div>
+
+      <!-- notify tiles -->
+      <div style="width:640px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">NOTIFY · auto-expiring footer tiles after a write</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">info / success = coloured text · warn / error = full-row bg</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13.5px; line-height:1.5">
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin-bottom:5px">AFTER ADJUST</div>
+            <div style="padding:2px 2px"><span style="color:#87AF87">✓ systems → 8h/wk</span><span style="color:#808080"> · re-reading pace…</span></div>
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:14px 0 5px">AFTER RETIRE</div>
+            <div style="padding:2px 2px"><span style="color:#87AF87">✓ write retired</span><span style="color:#808080"> · 3 active targets · history kept</span></div>
+            <div style="color:#808080; font-size:11px; letter-spacing:.08em; margin:14px 0 5px">STALE VERSION · 422</div>
+            <div style="padding:3px 10px; background:#D7AF5F; color:#0B0E14; font-weight:700; white-space:pre">⚠ this target moved on — re-fetched, retry</div>
+            <div style="margin-top:14px; border-top:1px solid #1A2230; padding-top:9px; color:#808080; font-size:12px; line-height:1.6">A <span style="color:#D7AF5F">Target::ClosedVersionError</span> is surfaced as a soft re-fetch prompt, not a hard failure — the CLI addresses a lineage by axis + scope, so it just re-reads and retries.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ ACT 3 · DECLARE ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">3</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">DECLARE — make a new promise <span style="color:#5F5F87; background:#5F5F87; color:#E6EBF2; font-size:12px; padding:1px 7px; border-radius:4px">OPEN SLICE</span></span>
+      <span style="color:#808080; font-size:12.5px">the empty state teaches it today · interactive flow waits on the shared scope picker</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- empty state -->
+      <div style="width:640px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">EMPTY STATE · no active targets — the pointer that becomes a keystroke</div>
+        <div data-screen-label="Progress · empty" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">engineer-cli — Progress · no targets · 92×22</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.4">
+            <div style="display:flex; align-items:baseline; margin-bottom:8px"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Progress</span><span style="flex:1"></span><span style="color:#808080">2026-W27</span></div>
+            <div style="display:flex"><span style="color:#585858">┌</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┐</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:16px 10px 2px; text-align:center; color:#808080">No weekly targets yet.</div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; text-align:center"><span style="color:#E6EBF2">Declare a weekly intent</span> <span style="color:#808080">— a promise you keep from the terminal.</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:16px 10px 2px; text-align:center">Press <span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre"> d </span> <span style="color:#808080">to declare</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:6px 10px 2px; text-align:center; color:#585858">or, headless:</div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px 16px; text-align:center; white-space:pre"><span style="color:#87AF87">$ </span><span style="color:#8787FF">engineer</span> target declare systems <span style="color:#D7AF5F">--hours 6</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+            <div style="border-top:1px solid #1A2230; margin-top:10px; padding-top:10px; display:flex; align-items:center; flex-wrap:wrap">
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> d </span><span>&nbsp;declare</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> [ ] </span><span>&nbsp;week</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> : </span><span>&nbsp;command</span>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:7px; font-size:12px; color:#808080; line-height:1.5">Today the screen points at the web app; this replaces that with a keystroke <span style="color:#E6EBF2">and</span> the honest headless verb — never a raw-id form. The pointer is real work, not a dead end.</div>
+      </div>
+
+      <!-- declare flow: axis + hours -->
+      <div style="width:560px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">DECLARE · step 1 — pick the axis</div>
+        <div data-screen-label="Declare · axis" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">Declare › axis · 64×14</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.4">
+            <div style="display:flex"><span style="color:#585858">┌</span><span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Declare a target · axis </span></span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────</div><span style="color:#585858">┐</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:3px 10px; display:flex; align-items:center; background:#5F5FAF; color:#0B0E14; font-weight:700"><span style="white-space:pre">▌ ● domain</span><span style="flex:1"></span><span>e.g. Distributed Systems</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre">  ○ kind&nbsp;&nbsp;</span><span style="flex:1"></span><span style="color:#808080">read · build · write · practice…</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px 4px; display:flex; align-items:center"><span style="white-space:pre">  ○ intent</span><span style="flex:1"></span><span style="color:#808080">deep work · exploration…</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+            <div style="border-top:1px solid #1A2230; margin-top:9px; padding-top:9px; display:flex; align-items:center; flex-wrap:wrap">
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> j/k </span><span>&nbsp;move</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ⏎ </span><span>&nbsp;next</span>
+            </div>
+          </div>
+        </div>
+
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin:14px 0 8px; letter-spacing:.06em">DECLARE · step 3 — hours / week</div>
+        <div data-screen-label="Declare · hours" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">Declare › hours · 64×12</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.5">
+            <div><span style="color:#808080">axis</span> <span style="color:#8787FF; font-weight:700">domain</span> <span style="color:#585858">·</span> <span style="color:#808080">scope</span> <span style="color:#E6EBF2; font-weight:700">Distributed Systems</span></div>
+            <div style="display:flex; align-items:center; margin-top:8px"><span style="color:#808080">hours / week</span><span style="flex:1"></span><span style="background:#8787FF; color:#0B0E14; font-weight:700; white-space:pre; padding:0 2px"> 6▏ </span><span style="color:#808080">&nbsp;h</span></div>
+            <div style="border-top:1px solid #1A2230; margin-top:10px; padding-top:9px; display:flex; align-items:center; flex-wrap:wrap">
+              <span style="background:#87AF87; color:#0B0E14; font-weight:600; white-space:pre"> ⏎ </span><span>&nbsp;declare</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Esc </span><span>&nbsp;back</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- scope fuzzy picker -->
+      <div style="width:640px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">DECLARE · step 2 — the scope picker · <span style="color:#585858">shared fuzzy widget, Telescope-flavoured</span></div>
+        <div data-screen-label="Declare · scope picker" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">Declare › scope · domain · 64×16</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.4">
+            <div style="display:flex"><span style="color:#585858">┌</span><span style="white-space:pre"><span style="color:#8787FF; font-weight:700"> Choose a domain </span></span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────</div><span style="color:#585858">┐</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:4px 10px; display:flex; align-items:center"><span style="color:#8787FF">&gt;&nbsp;</span><span style="color:#E6EBF2">dis</span><span style="width:8px; background:#8787FF; display:inline-block; height:15px; margin-left:1px"></span><span style="flex:1"></span><span style="color:#585858">3 / 24</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#1A2230">──────────────────────────────────────────────────────────</div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center; background:#5F5F87; color:#E6EBF2; font-weight:700"><span style="white-space:pre">▌ </span><span><span style="color:#8787FF">Di</span>stributed <span style="color:#8787FF">S</span>ystems</span><span style="flex:1"></span><span style="color:#C9CFDA">4.2h logged</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span><span style="color:#8787FF">Di</span>screte Mathematic<span style="color:#8787FF">s</span></span><span style="flex:1"></span><span style="color:#808080">0.6h</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; display:flex; align-items:center"><span style="white-space:pre">  </span><span><span style="color:#8787FF">D</span>e<span style="color:#8787FF">s</span>ign <span style="color:#8787FF">I</span>... <span style="color:#808080">(Design Systems)</span></span><span style="flex:1"></span><span style="color:#808080">1.1h</span></div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:1px 10px 4px; color:#585858">&nbsp;&nbsp;— 21 filtered out —</div><span style="color:#585858">│</span></div>
+            <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+            <div style="border-top:1px solid #1A2230; margin-top:9px; padding-top:9px; display:flex; align-items:center; flex-wrap:wrap">
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ⏎ </span><span>&nbsp;pick</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ↑↓ </span><span>&nbsp;rank</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> Esc </span><span>&nbsp;back</span>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:7px; font-size:12px; color:#808080; line-height:1.5"><span style="color:#8787FF">dis</span> ranks by subsequence — <span style="color:#E6EBF2">Distributed Systems</span> tops the list. This is the one shared widget timer's bind and week-planning also invoke; declaring in the TUI unblocks the moment that widget lands. Meanwhile <span style="color:#8787FF">engineer target declare</span> ships the full capability headless.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ ACT 4 · WHERE THE TIME WENT ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">4</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">WHERE THE WEEK WENT — a glance, not a pivot <span style="color:#5F5F87; background:#5F5F87; color:#E6EBF2; font-size:12px; padding:1px 7px; border-radius:4px">OPEN · lowest priority</span></span>
+      <span style="color:#808080; font-size:12.5px">the kind-mix line unfolds with <span style="color:#8787FF">g</span> · click a tab to switch the axis</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- the fold -->
+      <div style="width:720px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">THE FOLD · this week by <span style="color:#8787FF">kind / domain / intent</span></div>
+        <div data-screen-label="Where it went" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">engineer-cli — Progress · where it went · 84×22</span>
+          </div>
+          <div style="padding:14px 16px; font-size:14px; line-height:1.4">
+            <div style="display:flex; align-items:baseline; margin-bottom:10px"><span style="color:#8787FF; font-weight:700">engineer</span><span style="color:#808080">&nbsp;›&nbsp;Progress&nbsp;›&nbsp;</span><span>Where it went</span><span style="flex:1"></span><span style="color:#808080">2026-W27 · 9.6h</span></div>
+
+            <!-- axis tabs (clickable) -->
+            <div style="display:flex; gap:0; margin-bottom:12px; font-size:13px">
+              <span onclick="{{ setKind }}" style="{{ tabKind }}">by kind</span>
+              <span style="color:#585858">·</span>
+              <span onclick="{{ setDomain }}" style="{{ tabDomain }}">by domain</span>
+              <span style="color:#585858">·</span>
+              <span onclick="{{ setIntent }}" style="{{ tabIntent }}">by intent</span>
+            </div>
+
+            <!-- BY DOMAIN -->
+            <sc-if value="{{ isDomain }}" hint-placeholder-val="{{ true }}">
+              <div style="display:flex; align-items:center; padding:2px 0"><span style="width:210px; color:#E6EBF2">Distributed Systems</span><span style="white-space:pre; color:#8787FF">████████████████████</span><span style="color:#808080">&nbsp;&nbsp;4.6h</span></div>
+              <div style="display:flex; align-items:center; padding:2px 0"><span style="width:210px; color:#E6EBF2">Programming Languages</span><span style="white-space:pre; color:#8787FF">████████████▊</span><span style="color:#808080">&nbsp;&nbsp;2.9h</span></div>
+              <div style="display:flex; align-items:center; padding:2px 0"><span style="width:210px; color:#E6EBF2">Databases</span><span style="white-space:pre; color:#8787FF">████▊</span><span style="color:#808080">&nbsp;&nbsp;1.1h</span></div>
+              <div style="display:flex; align-items:center; padding:2px 0"><span style="width:210px; color:#808080">Discrete Mathematics</span><span style="white-space:pre; color:#585858">██▌</span><span style="color:#808080">&nbsp;&nbsp;0.6h</span></div>
+              <div style="display:flex; align-items:center; padding:2px 0"><span style="width:210px; color:#808080">Design</span><span style="white-space:pre; color:#585858">██</span><span style="color:#808080">&nbsp;&nbsp;0.4h</span></div>
+            </sc-if>
+            <!-- BY KIND -->
+            <sc-if value="{{ isKind }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex; align-items:center; padding:2px 0"><span style="width:210px; color:#E6EBF2">read</span><span style="white-space:pre; color:#8787FF">█████████████████▍</span><span style="color:#808080">&nbsp;&nbsp;4.0h</span></div>
+              <div style="display:flex; align-items:center; padding:2px 0"><span style="width:210px; color:#E6EBF2">build</span><span style="white-space:pre; color:#8787FF">██████████████▊</span><span style="color:#808080">&nbsp;&nbsp;3.4h</span></div>
+              <div style="display:flex; align-items:center; padding:2px 0"><span style="width:210px; color:#E6EBF2">practice</span><span style="white-space:pre; color:#8787FF">█████▍</span><span style="color:#808080">&nbsp;&nbsp;1.2h</span></div>
+              <div style="display:flex; align-items:center; padding:2px 0"><span style="width:210px; color:#E6EBF2">write</span><span style="white-space:pre; color:#8787FF">████▍</span><span style="color:#808080">&nbsp;&nbsp;1.0h</span></div>
+            </sc-if>
+            <!-- BY INTENT -->
+            <sc-if value="{{ isIntent }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex; align-items:center; padding:2px 0"><span style="width:210px; color:#E6EBF2">deep work</span><span style="white-space:pre; color:#8787FF">████████████████████████</span><span style="color:#808080">&nbsp;&nbsp;5.6h</span></div>
+              <div style="display:flex; align-items:center; padding:2px 0"><span style="width:210px; color:#E6EBF2">exploration</span><span style="white-space:pre; color:#8787FF">███████████</span><span style="color:#808080">&nbsp;&nbsp;2.5h</span></div>
+              <div style="display:flex; align-items:center; padding:2px 0"><span style="width:210px; color:#E6EBF2">review</span><span style="white-space:pre; color:#8787FF">██████▌</span><span style="color:#808080">&nbsp;&nbsp;1.5h</span></div>
+            </sc-if>
+
+            <div style="border-top:1px solid #1A2230; margin-top:11px; padding-top:10px; display:flex; align-items:center; flex-wrap:wrap">
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> g </span><span>&nbsp;fold / unfold</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> tab </span><span>&nbsp;cycle axis</span><span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+              <span style="color:#585858">no periods, no cross-tabs — that stays on the web</span>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:7px; font-size:12px; color:#808080; line-height:1.5">This is the distilled answer to <span style="color:#E6EBF2">“where did this week go?”</span> — a fold on the kind-mix line, not a pivot grid. Periods, cross-tabs, axes and pagination fail the glance-or-gesture test and stay on the web. Pipe <span style="color:#8787FF">--json</span> (§5) when you want to slice it yourself.</div>
+      </div>
+
+      <!-- why not a pivot -->
+      <div style="width:560px">
+        <div style="background:#05080F; border:1px solid #1A2230; border-left:2px solid #8787FF; border-radius:8px; padding:16px 18px; font-size:12.5px; line-height:1.6; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="color:#E6EBF2; font-weight:700; margin-bottom:9px">Distilled, not replicated</div>
+          <div style="display:flex; gap:10px; padding:5px 0; border-top:1px solid #121826"><span style="color:#87AF87">●</span><div><span style="color:#E6EBF2">A glance</span> — the by-axis fold above. One look, one gesture, no navigation.</div></div>
+          <div style="display:flex; gap:10px; padding:5px 0; border-top:1px solid #121826"><span style="color:#87AF87">●</span><div><span style="color:#E6EBF2">A rollup</span> — <span style="color:#8787FF">engineer progress rollup --json</span> for scripted slicing.</div></div>
+          <div style="display:flex; gap:10px; padding:5px 0; border-top:1px solid #121826"><span style="color:#D75F5F">✗</span><div><span style="color:#E6EBF2">Not</span> a TUI pivot grid with axes, periods and pagination — a lean-back web surface that fails the glance-or-gesture test.</div></div>
+          <div style="margin-top:10px; padding-top:9px; border-top:1px solid #1A2230; color:#585858">The one-look answer may already be enough — which is why this is the lowest-priority slice.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ ACT 5 · HEADLESS ============================ -->
+  <section style="display:flex; flex-direction:column; gap:18px">
+    <div style="display:flex; align-items:center; gap:11px">
+      <span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:2px 10px; border-radius:4px; font-size:13px">5</span>
+      <span style="font-weight:700; font-size:15px; letter-spacing:.02em">HEADLESS — every read &amp; write has a one-shot twin</span>
+      <span style="color:#808080; font-size:12.5px">TTY-detected · <span style="color:#8787FF">NO_COLOR</span> respected · no ANSI when piped · meaningful exit codes</span>
+    </div>
+    <div style="display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start">
+
+      <!-- pace reads -->
+      <div style="width:880px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">PACE READ · <code style="color:#8787FF">engineer pace</code> <span style="color:#5F5F87; background:#5F5F87; color:#E6EBF2; font-size:11px; padding:1px 6px; border-radius:4px">OPEN · job 5's twin</span></div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">zsh — read the pace</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13px; line-height:1.5">
+            <div><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> pace</div>
+            <div style="white-space:pre">2026-W27 · fri · day 5/7 · now 66%</div>
+            <div style="white-space:pre"><span style="color:#E6EBF2">systems&nbsp;&nbsp;&nbsp;</span><span style="color:#8787FF">███▍··┊··</span><span style="color:#E6EBF2"> 2.4/6h · </span><span style="color:#D7AF5F">behind 1.1h</span></div>
+            <div style="white-space:pre"><span style="color:#E6EBF2">write&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span style="color:#8787FF">██···┊···</span><span style="color:#E6EBF2"> 1.0/3h · </span><span style="color:#D7AF5F">behind 1.0h</span></div>
+            <div style="white-space:pre"><span style="color:#E6EBF2">deep work </span><span style="color:#8787FF">██████▊··</span><span style="color:#E6EBF2"> 5.6/8h · </span><span style="color:#87AF87">on pace</span></div>
+            <div style="white-space:pre"><span style="color:#E6EBF2">read&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span style="color:#87AF87">█████████</span><span style="color:#E6EBF2"> 4.0/4h · </span><span style="color:#87AF87">met</span></div>
+            <div style="white-space:pre; color:#D7AF5F">2 behind · 2.1h to catch up</div>
+
+            <div style="margin-top:10px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> pace <span style="color:#D7AF5F">--json</span></div>
+            <div style="color:#808080; white-space:pre">{
+  <span style="color:#8787FF">"week"</span>: <span style="color:#87AF87">"2026-W27"</span>, <span style="color:#8787FF">"now_fraction"</span>: <span style="color:#D7AF5F">0.66</span>,
+  <span style="color:#8787FF">"targets"</span>: [
+    { <span style="color:#8787FF">"axis"</span>:<span style="color:#87AF87">"domain"</span>, <span style="color:#8787FF">"scope"</span>:<span style="color:#87AF87">"systems"</span>, <span style="color:#8787FF">"done_h"</span>:<span style="color:#D7AF5F">2.4</span>, <span style="color:#8787FF">"intended_h"</span>:<span style="color:#D7AF5F">6</span>, <span style="color:#8787FF">"state"</span>:<span style="color:#87AF87">"behind"</span>, <span style="color:#8787FF">"behind_h"</span>:<span style="color:#D7AF5F">1.1</span> },
+    …
+  ],
+  <span style="color:#8787FF">"behind_total_h"</span>: <span style="color:#D7AF5F">2.1</span>
+}</div>
+            <div style="margin-top:10px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> pace <span style="color:#808080">| cat</span>&nbsp;&nbsp;&nbsp;<span style="color:#585858"># plain, one line per target, no ANSI</span></div>
+            <div style="color:#E6EBF2; white-space:pre">systems domain 2.4 6 behind 1.1</div>
+            <div style="color:#E6EBF2; white-space:pre">read&nbsp;&nbsp;&nbsp; kind&nbsp;&nbsp; 4.0 4 met&nbsp;&nbsp;&nbsp; 0</div>
+            <div style="margin-top:10px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> pace <span style="color:#8787FF">--format '{glyph} {behind}'</span></div>
+            <div><span style="color:#D7AF5F">▾ 2.1h behind</span>&nbsp;&nbsp;<span style="color:#585858"># the exact status-bar string from §1</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- target writes -->
+      <div style="width:880px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">TARGET VERBS · <code style="color:#8787FF">engineer target</code> <span style="color:#87AF87; background:#87AF87; color:#0B0E14; font-size:11px; padding:1px 6px; border-radius:4px">SHIPPED</span></div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">zsh — the full target lifecycle</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13px; line-height:1.55">
+            <div><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> target list <span style="color:#808080"># --state active|retired|all</span></div>
+            <div style="color:#808080; white-space:pre">systems&nbsp;&nbsp; domain 6h&nbsp; <span style="color:#87AF87">active</span></div>
+            <div style="color:#808080; white-space:pre">read&nbsp;&nbsp;&nbsp;&nbsp; kind&nbsp;&nbsp; 4h&nbsp; <span style="color:#87AF87">active</span></div>
+            <div style="margin-top:8px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> target declare systems <span style="color:#D7AF5F">--hours 6</span></div>
+            <div style="color:#808080">✓ declared · systems · 6h/wk · <span style="color:#585858">201</span></div>
+            <div style="margin-top:8px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> target adjust systems <span style="color:#D7AF5F">--hours 8</span></div>
+            <div style="color:#808080; white-space:pre">✓ systems → 8h/wk&nbsp;&nbsp;<span style="color:#585858"># re-read: id may have changed</span></div>
+            <div style="margin-top:8px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> target adjust systems <span style="color:#D7AF5F">--hours 8</span> <span style="color:#D7AF5F">--json</span></div>
+            <div style="color:#808080; white-space:pre">{ <span style="color:#8787FF">"axis"</span>:<span style="color:#87AF87">"domain"</span>, <span style="color:#8787FF">"scope"</span>:<span style="color:#87AF87">"systems"</span>, <span style="color:#8787FF">"hours_per_week"</span>:<span style="color:#D7AF5F">8</span>, <span style="color:#8787FF">"active"</span>:<span style="color:#87AF87">true</span> }</div>
+            <div style="margin-top:8px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> target retire write</div>
+            <div style="color:#808080">✓ retired · write · <span style="color:#585858">history kept, past weeks still read it</span></div>
+            <div style="margin-top:8px; color:#585858">— addresses a lineage by axis + scope, never a cached id —</div>
+            <div style="margin-top:4px"><span style="color:#87AF87">$</span> <span style="color:#8787FF">engineer</span> target adjust systems <span style="color:#D7AF5F">--hours 8</span> <span style="color:#808080"># stale id</span></div>
+            <div style="white-space:pre"><span style="color:#D7AF5F">⚠ this target moved on — re-fetch and retry</span>&nbsp;&nbsp;<span style="color:#585858">(422)</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- exit codes -->
+      <div style="width:520px">
+        <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:8px; letter-spacing:.06em">EXIT CODES · scripts branch on the code</div>
+        <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+          <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+            <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span><span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+            <span style="margin-left:6px">$? after engineer pace · target</span>
+          </div>
+          <div style="padding:14px 16px; font-size:13.5px; line-height:1.85">
+            <div style="display:flex; align-items:baseline"><span style="color:#87AF87; font-weight:700; width:34px">0</span><span>all targets met or on pace</span></div>
+            <div style="display:flex; align-items:baseline"><span style="color:#D7AF5F; font-weight:700; width:34px">1</span><span>at least one behind</span></div>
+            <div style="display:flex; align-items:baseline"><span style="color:#585858; font-weight:700; width:34px">2</span><span>no active targets</span></div>
+            <div style="display:flex; align-items:baseline"><span style="color:#808080; font-weight:700; width:34px">3</span><span>target not found <span style="color:#585858">(bad scope)</span></span></div>
+            <div style="display:flex; align-items:baseline"><span style="color:#D7AF5F; font-weight:700; width:34px">4</span><span>version moved on <span style="color:#585858">· 422 · re-fetch</span></span></div>
+            <div style="margin-top:10px; border-top:1px solid #1A2230; padding-top:9px; color:#808080; font-size:12px">Humans read the glyph; scripts read <span style="color:#8787FF">$?</span> — a cron can nag you when <span style="color:#8787FF">pace</span> exits <span style="color:#D7AF5F">1</span>.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ CLOSING · DECISION RECORD ============================ -->
+  <div style="width:1240px; background:#05080F; border:1px solid #1A2230; border-left:2px solid #D7AF5F; border-radius:8px; padding:16px 20px; font-size:12.5px; line-height:1.65; color:#808080; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="color:#E6EBF2; font-weight:700; margin-bottom:8px">Decision record — targets are append-only versions <span style="color:#585858">(ADR 0026)</span></div>
+    <div style="display:flex; padding:6px 0; border-top:1px solid #121826"><span style="color:#8787FF; width:210px; flex-shrink:0; font-weight:700">Retire ≠ delete</span><span>There is deliberately no <span style="color:#E6EBF2">DELETE</span>. <span style="color:#E6EBF2">PATCH :retire</span> closes a lineage while keeping its history so past weeks still read it — the verb is <span style="color:#8787FF">retire</span>, and the confirm says “keeps history,” never “delete.”</span></div>
+    <div style="display:flex; padding:6px 0; border-top:1px solid #121826"><span style="color:#8787FF; width:210px; flex-shrink:0; font-weight:700">Adjust mints a successor</span><span><span style="color:#E6EBF2">PATCH :id</span> returns the live row, whose id can differ; a closed version id is a <span style="color:#D7AF5F">422</span>. So the CLI addresses a lineage by <span style="color:#E6EBF2">axis + scope</span>, re-reads after an adjust, and surfaces the 422 as “this target moved on,” not a hard error.</span></div>
+    <div style="display:flex; padding:6px 0; border-top:1px solid #121826"><span style="color:#8787FF; width:210px; flex-shrink:0; font-weight:700">One clock · derived</span><span>Week attribution uses the 4 AM study-day boundary and Monday-first ISO week (<span style="color:#E6EBF2">YYYY-Www</span>); a meter and a status string agree with the web to the minute. Pace and rollups are read-through from <span style="color:#E6EBF2">GET /api/v1/progress</span> — the only write this module owns is the target itself.</span></div>
+    <div style="margin-top:10px; padding-top:9px; border-top:1px solid #1A2230; display:flex; gap:12px; flex-wrap:wrap; align-items:center">
+      <span style="background:#87AF87; color:#0B0E14; font-weight:700; padding:1px 7px; border-radius:4px; font-size:11px">SHIPPED</span>
+      <span>pace screen · adjust / retire in place · the <span style="color:#E6EBF2">engineer target</span> verbs</span>
+      <span style="color:#585858">·</span>
+      <span style="background:#5F5F87; color:#E6EBF2; font-weight:700; padding:1px 7px; border-radius:4px; font-size:11px">OPEN</span>
+      <span>interactive declare <span style="color:#585858">(waits on the shared scope picker)</span> · the <span style="color:#E6EBF2">engineer pace</span> twin · the where-it-went fold + rollup</span>
+    </div>
+  </div>
+
+</div>
+
+<template id="__bundler_thumbnail">
+  <svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+    <rect width="80" height="80" rx="16" fill="#05080F"/>
+    <rect x="16" y="30" width="34" height="6" rx="3" fill="#8787FF"/>
+    <rect x="16" y="42" width="20" height="6" rx="3" fill="#8787FF"/>
+    <rect x="50" y="42" width="14" height="6" rx="3" fill="#585858"/>
+    <rect x="50" y="30" width="14" height="6" rx="3" fill="#585858"/>
+    <rect x="44" y="26" width="2" height="26" rx="1" fill="#808080"/>
+  </svg>
+</template>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: { &quot;width&quot;: &quot;100%&quot;, &quot;height&quot;: &quot;100%&quot; },
+  &quot;rollupAxis&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;kind&quot;, &quot;domain&quot;, &quot;intent&quot;], &quot;default&quot;: &quot;domain&quot;, &quot;tsType&quot;: &quot;\&quot;kind\&quot; | \&quot;domain\&quot; | \&quot;intent\&quot;&quot;, &quot;section&quot;: &quot;Progress&quot;, &quot;label&quot;: &quot;Where-it-went fold axis&quot; },
+  &quot;showBehindOnly&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Progress&quot;, &quot;label&quot;: &quot;Pace: behind-only view&quot; },
+  &quot;confirmRetire&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Progress&quot;, &quot;label&quot;: &quot;Retire needs second-press confirm&quot; }
+}">
+class Component extends DCLogic {
+  state = { rollup: null, behindOnly: null };
+
+  axis() {
+    return this.state.rollup ?? (this.props.rollupAxis ?? 'domain');
+  }
+
+  renderVals() {
+    const axis = this.axis();
+    const behindOnly = this.state.behindOnly ?? (this.props.showBehindOnly ?? false);
+    const confirm = this.props.confirmRetire ?? true;
+    const tab = (on) => on
+      ? { padding: '0 12px', color: '#8787FF', fontWeight: 700, borderBottom: '2px solid #8787FF', cursor: 'pointer', userSelect: 'none' }
+      : { padding: '0 12px', color: '#808080', cursor: 'pointer', userSelect: 'none' };
+    return {
+      isKind: axis === 'kind',
+      isDomain: axis === 'domain',
+      isIntent: axis === 'intent',
+      tabKind: tab(axis === 'kind'),
+      tabDomain: tab(axis === 'domain'),
+      tabIntent: tab(axis === 'intent'),
+      setKind: () => this.setState({ rollup: 'kind' }),
+      setDomain: () => this.setState({ rollup: 'domain' }),
+      setIntent: () => this.setState({ rollup: 'intent' }),
+      showRest: !behindOnly,
+      toggleBehind: () => this.setState({ behindOnly: !behindOnly }),
+      confirmRetire: confirm,
+      immediateRetire: !confirm,
+    };
+  }
+}
+</script>
+</body>
+</html>
