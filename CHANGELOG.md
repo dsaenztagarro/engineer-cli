@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The accent is now indigo, not sky-blue — the brand hue, ratified.** `theme.rs` moves `ACCENT` from `256 #75` (a sky-blue that had drifted off the web's indigo hue) to periwinkle `256 #105`, with the selection background following from steel `67` to indigo-dim `61`. This is the accent every mockup already drew against and the kit recommended; it keeps the terminal brand identity aligned with the web indigo while staying bright on dark. A one-line palette change every screen inherits. (`docs/designs/README.md` "The accent decision"; `cross-cutting.brief.md` §D)
+
 ## [0.6.0] - 2026-07-08
 
 ### Added
