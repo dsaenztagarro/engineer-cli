@@ -29,7 +29,37 @@ pub struct SegmentUpdate {
     pub minutes: Option<u32>,
 }
 
+#[derive(Serialize)]
+struct SegmentCreate {
+    started_at: jiff::Timestamp,
+    duration_minutes: u32,
+}
+
+#[derive(Serialize)]
+struct SegmentCreateBody {
+    segment: SegmentCreate,
+}
+
 impl ApiClient {
+    /// Append a manual segment to an existing activity — the `engineer log
+    /// --activity` write (after-the-fact time on work already recorded). The
+    /// server derives `ended_at` from `started_at + duration_minutes`.
+    pub async fn create_segment(
+        &self,
+        activity_id: i64,
+        started_at: jiff::Timestamp,
+        minutes: u32,
+    ) -> Result<Segment, ApiError> {
+        let body = SegmentCreateBody {
+            segment: SegmentCreate {
+                started_at,
+                duration_minutes: minutes,
+            },
+        };
+        self.post(&format!("/api/v1/activities/{activity_id}/segments"), &body)
+            .await
+    }
+
     /// Edit a segment in place — shortening `minutes` is the trim preset.
     /// Segments are nested under their activity on the wire.
     pub async fn update_segment(
@@ -81,6 +111,31 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(segment.minutes, Some(74));
+    }
+
+    #[tokio::test]
+    async fn create_segment_posts_wrapped_body_to_nested_route() {
+        use wiremock::matchers::body_partial_json;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/activities/9/segments"))
+            .and(body_partial_json(
+                serde_json::json!({ "segment": { "duration_minutes": 45 } }),
+            ))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 88, "activity_id": 9, "minutes": 45
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let started = jiff::Timestamp::from_second(1_780_000_000).unwrap();
+        let seg = client(&server)
+            .create_segment(9, started, 45)
+            .await
+            .unwrap();
+        assert_eq!(seg.id, 88);
+        assert_eq!(seg.minutes, Some(45));
     }
 
     #[tokio::test]
