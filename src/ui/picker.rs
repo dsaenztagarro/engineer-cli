@@ -88,6 +88,14 @@ impl<T> Picker<T> {
         ranked.get(self.cursor).map(|&i| &self.items[i].value)
     }
 
+    /// The label under the cursor — for callers that echo the chosen row.
+    pub fn selected_label(&self) -> Option<&str> {
+        let ranked = self.ranked();
+        ranked
+            .get(self.cursor)
+            .map(|&i| self.items[i].label.as_str())
+    }
+
     pub fn render(&self, frame: &mut Frame, area: Rect) {
         let overlay = centered_rect(60, 60, area);
         let ranked = self.ranked();

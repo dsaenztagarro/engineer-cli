@@ -1,5 +1,5 @@
 use crate::api::{
-    Activity, AuditAcknowledged, AuditRead, Book, BookChapter, Dashboard, DayMinutes, Note,
+    Activity, AuditAcknowledged, AuditRead, Book, BookChapter, Dashboard, DayMinutes, Domain, Note,
     Progress, RateResult, Timer, TimerCandidate, TimerSettings, TimerStopped, Today, Topic,
 };
 use crate::app::screens::review::Rating;
@@ -101,6 +101,12 @@ pub enum Action {
     ProgressAdjustSubmit,
     ProgressAdjustCancel,
     ProgressRetire,
+    // Declare a new target on the Progress screen (`n`) — riding the fuzzy picker.
+    // `Begin` fetches domains; `Ready` opens the scope picker over domains + the
+    // kind/intent enums; `Key` routes every key while the flow is open.
+    ProgressDeclareBegin,
+    ProgressDeclareReady(Vec<Domain>),
+    ProgressDeclareKey(crossterm::event::KeyEvent),
 
     // Timer — the header cell (app-owned snapshot) and the Timer screen.
     // `RefreshTimer` re-polls the header snapshot; `TimerLoaded` updates the

@@ -3,22 +3,54 @@
 //! week header line, a behind-total footer, and a compact kind-mix line. Step
 //! weeks with `[` / `]`; `t` returns to the current week.
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jiff::{ToSpan, Zoned};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::api::{ApiClient, PaceState, Progress as ProgressData, ProgressReading};
+use crate::api::{
+    ApiClient, Domain, PaceState, Progress as ProgressData, ProgressReading, TargetCreate,
+    TargetScope,
+};
 use crate::app::action::Action;
 use crate::ui::notify::Level;
+use crate::ui::picker::{Picker, PickerItem};
 use crate::ui::{layout::bordered, theme, widgets};
 
 /// Meter bar width in cells (matches the design mock's ten-block bar).
 const BAR_WIDTH: usize = 10;
+
+/// The activity kinds and intents a target can scope to — mirrors engineer's
+/// `Activity.kinds` / `Activity.intents` enums (Target reuses them). Domains are
+/// fetched; these are fixed, so the declare picker offers them without a call.
+const KINDS: &[&str] = &[
+    "deep_work",
+    "reading",
+    "coding",
+    "lecture",
+    "review",
+    "pairing",
+    "other",
+];
+const INTENTS: &[&str] = &["implement", "challenge", "follow", "study"];
+
+/// The `n`-to-declare flow: fetch domains, fuzzy-pick any scope, then hours.
+enum Declare {
+    /// Fetching domains before the scope picker can open.
+    Loading,
+    /// Fuzzy-picking the scope — any domain, kind, or intent — in one list.
+    Scope(Picker<TargetScope>),
+    /// Entering the weekly hours for the chosen scope.
+    Hours {
+        scope: TargetScope,
+        label: String,
+        buf: String,
+    },
+}
 
 #[derive(Default)]
 pub struct Progress {
@@ -33,6 +65,8 @@ pub struct Progress {
     edit: Option<String>,
     /// The target id armed for retire; a second `x` on the same row confirms.
     retire_armed: Option<i64>,
+    /// `Some` while the `n`-declare flow (scope pick → hours) is open.
+    declare: Option<Declare>,
 }
 
 impl Progress {
@@ -44,6 +78,12 @@ impl Progress {
     /// While the inline hours editor is open it owns every relevant key, so a
     /// digit edits the buffer rather than firing the global keymap.
     pub fn intercept_key(&mut self, key: KeyEvent) -> Option<Action> {
+        // The declare flow (scope picker / hours input) is modal — while open it
+        // owns every key so a typed letter filters rather than firing the keymap.
+        if self.declare.is_some() {
+            return Some(Action::ProgressDeclareKey(key));
+        }
+        // The inline hours editor owns digits/./Enter/Esc while open.
         self.edit.as_ref()?;
         match key.code {
             KeyCode::Esc => Some(Action::ProgressAdjustCancel),
@@ -54,6 +94,31 @@ impl Progress {
             }
             _ => None,
         }
+    }
+
+    /// Build the one-list scope picker: every domain, then the kind and intent
+    /// enums — each labeled by axis, valued as the `TargetScope` to create.
+    fn scope_picker(domains: &[Domain]) -> Picker<TargetScope> {
+        let mut items = Vec::new();
+        for d in domains {
+            items.push(PickerItem::new(
+                format!("domain · {}", d.name),
+                TargetScope::Domain(d.id),
+            ));
+        }
+        for k in KINDS {
+            items.push(PickerItem::new(
+                format!("kind · {k}"),
+                TargetScope::Kind((*k).to_string()),
+            ));
+        }
+        for i in INTENTS {
+            items.push(PickerItem::new(
+                format!("intent · {i}"),
+                TargetScope::Intent((*i).to_string()),
+            ));
+        }
+        Picker::new("declare a target — pick a scope", items)
     }
 
     fn selected_target(&self) -> Option<&ProgressReading> {
@@ -213,9 +278,113 @@ impl Progress {
                     ));
                 }
             }
+            Action::ProgressDeclareBegin => {
+                if self.declare.is_none() && self.edit.is_none() {
+                    self.declare = Some(Declare::Loading);
+                    self.retire_armed = None;
+                    let api = api.clone();
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        // Domains failing shouldn't block declaring a kind/intent
+                        // target — fall back to an empty domain list.
+                        let domains = api.list_domains().await.unwrap_or_default();
+                        let _ = tx.send(Action::ProgressDeclareReady(domains));
+                    });
+                }
+            }
+            Action::ProgressDeclareReady(domains) => {
+                // Only open the picker if the user is still in the flow.
+                if matches!(self.declare, Some(Declare::Loading)) {
+                    self.declare = Some(Declare::Scope(Self::scope_picker(&domains)));
+                }
+            }
+            Action::ProgressDeclareKey(key) => self.declare_key(key, api, tx),
             _ => {}
         }
         None
+    }
+
+    /// Route a key while the declare flow is open. Uses take-then-replace so a
+    /// stage transition can reassign `self.declare` without a borrow conflict.
+    fn declare_key(&mut self, key: KeyEvent, api: &ApiClient, tx: &UnboundedSender<Action>) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(mut state) = self.declare.take() else {
+            return;
+        };
+        match &mut state {
+            Declare::Loading => {
+                if key.code == KeyCode::Esc {
+                    return; // taken → cancelled
+                }
+            }
+            Declare::Scope(picker) => match key.code {
+                KeyCode::Esc => return,
+                KeyCode::Enter => {
+                    if let (Some(scope), Some(label)) =
+                        (picker.selected().cloned(), picker.selected_label())
+                    {
+                        let label = label.to_string();
+                        self.declare = Some(Declare::Hours {
+                            scope,
+                            label,
+                            buf: String::new(),
+                        });
+                    }
+                    return;
+                }
+                KeyCode::Backspace => picker.backspace(),
+                KeyCode::Down => picker.move_cursor(1),
+                KeyCode::Up => picker.move_cursor(-1),
+                KeyCode::Char('n') if ctrl => picker.move_cursor(1),
+                KeyCode::Char('p') if ctrl => picker.move_cursor(-1),
+                KeyCode::Char(c) if !ctrl => picker.input(c),
+                _ => {}
+            },
+            Declare::Hours { scope, buf, .. } => match key.code {
+                KeyCode::Esc => return,
+                KeyCode::Backspace => {
+                    buf.pop();
+                }
+                KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => buf.push(c),
+                KeyCode::Enter => match buf.trim().parse::<f64>() {
+                    Ok(hours) if hours > 0.0 => {
+                        let create = TargetCreate {
+                            scope: scope.clone(),
+                            hours_per_week: hours,
+                        };
+                        let api = api.clone();
+                        let tx = tx.clone();
+                        tokio::spawn(async move {
+                            match api.create_target(&create).await {
+                                Ok(t) => {
+                                    let _ = tx.send(Action::Notify {
+                                        level: Level::Success,
+                                        text: format!(
+                                            "declared {} · {}h/wk",
+                                            t.scope.name(),
+                                            fmt_hours(t.hours_per_week)
+                                        ),
+                                    });
+                                    let _ = tx.send(Action::RefreshProgress);
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(Action::Notify {
+                                        level: Level::Error,
+                                        text: format!("declare failed: {e}"),
+                                    });
+                                }
+                            }
+                        });
+                        return; // done → closed
+                    }
+                    // Invalid hours: keep the prompt open (fall through, put back).
+                    _ => {}
+                },
+                _ => {}
+            },
+        }
+        // Stages that continue (picker filtering, hours typing) keep the state.
+        self.declare = Some(state);
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -281,14 +450,45 @@ impl Progress {
         }
 
         frame.render_widget(Paragraph::new(lines).block(block), area);
+
+        // The declare flow draws over the meters when open.
+        match &self.declare {
+            Some(Declare::Loading) => declare_overlay(
+                frame,
+                area,
+                "declare a target",
+                Span::styled("loading domains…", theme::muted()),
+            ),
+            Some(Declare::Scope(picker)) => picker.render(frame, area),
+            Some(Declare::Hours { label, buf, .. }) => declare_overlay(
+                frame,
+                area,
+                "declare a target — hours",
+                Span::from(format!("{label}  →  {buf}█ h/wk   (⏎ save · Esc cancel)")),
+            ),
+            None => {}
+        }
     }
 
     pub fn hints(&self) -> Line<'static> {
+        if let Some(d) = &self.declare {
+            return match d {
+                Declare::Scope(_) => Line::from(Span::styled(
+                    "type to filter · ↑/↓ or ^n/^p move · ⏎ pick · Esc cancel",
+                    theme::muted(),
+                )),
+                _ => Line::from(Span::styled(
+                    "enter weekly hours · ⏎ declare · Esc cancel",
+                    theme::muted(),
+                )),
+            };
+        }
         if self.edit.is_some() {
             return widgets::footer_hints(&[("⏎", "save"), ("Esc", "cancel")]);
         }
         widgets::footer_hints(&[
             ("j/k", "select"),
+            ("n", "new"),
             ("e", "adjust"),
             ("x", "retire"),
             ("[", "prev wk"),
@@ -298,6 +498,22 @@ impl Progress {
             ("h", "home"),
         ])
     }
+}
+
+/// A small centered box for the declare flow's non-picker stages (loading, hours).
+fn declare_overlay(frame: &mut Frame, area: Rect, title: &str, body: Span<'static>) {
+    let width = area.width.saturating_sub(6).clamp(24, 64);
+    let rect = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height / 2,
+        width,
+        height: 3,
+    };
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(Line::from(body)).block(bordered(title.to_string())),
+        rect,
+    );
 }
 
 /// `2026-W27 · sat · day 5 of 7 · now = 57%` — the week frame and now-tick.
@@ -601,6 +817,62 @@ mod tests {
         assert_eq!(p.retire_armed, Some(42));
         p.handle(Action::ProgressSelectMove(1), &api, &tx).await;
         assert_eq!(p.retire_armed, None, "moving the cursor disarms retire");
+    }
+
+    #[tokio::test]
+    async fn declare_begin_loads_then_ready_opens_the_scope_picker() {
+        let (api, tx) = ctx();
+        let mut p = Progress::default();
+        p.handle(Action::ProgressDeclareBegin, &api, &tx).await;
+        assert!(matches!(p.declare, Some(Declare::Loading)));
+        p.handle(
+            Action::ProgressDeclareReady(vec![Domain {
+                id: 7,
+                name: "Systems".into(),
+            }]),
+            &api,
+            &tx,
+        )
+        .await;
+        assert!(matches!(p.declare, Some(Declare::Scope(_))));
+    }
+
+    #[tokio::test]
+    async fn declare_scope_pick_moves_to_hours_then_esc_cancels() {
+        let (api, tx) = ctx();
+        let mut p = Progress {
+            declare: Some(Declare::Scope(Progress::scope_picker(&[Domain {
+                id: 7,
+                name: "Systems".into(),
+            }]))),
+            ..Default::default()
+        };
+        // Filter to the one domain, then pick it.
+        for c in "sys".chars() {
+            p.handle(Action::ProgressDeclareKey(key(KeyCode::Char(c))), &api, &tx)
+                .await;
+        }
+        p.handle(Action::ProgressDeclareKey(key(KeyCode::Enter)), &api, &tx)
+            .await;
+        match &p.declare {
+            Some(Declare::Hours { scope, label, buf }) => {
+                assert!(matches!(scope, TargetScope::Domain(7)));
+                assert!(label.contains("Systems"), "{label}");
+                assert!(buf.is_empty());
+            }
+            other => panic!("expected Hours, got {:?}", other.is_some()),
+        }
+        // Type hours, then Esc cancels the whole flow.
+        p.handle(
+            Action::ProgressDeclareKey(key(KeyCode::Char('6'))),
+            &api,
+            &tx,
+        )
+        .await;
+        assert!(matches!(&p.declare, Some(Declare::Hours { buf, .. }) if buf == "6"));
+        p.handle(Action::ProgressDeclareKey(key(KeyCode::Esc)), &api, &tx)
+            .await;
+        assert!(p.declare.is_none());
     }
 
     #[test]
