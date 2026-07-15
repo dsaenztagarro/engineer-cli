@@ -163,13 +163,13 @@ pub(crate) fn offer_for(
             (phase_secs >= target).then(|| {
                 let next_break = snap.intervals_completed.unwrap_or(0) + 1;
                 Offer::Break {
-                    long: every != 0 && next_break % every == 0,
+                    long: every != 0 && next_break.is_multiple_of(every),
                 }
             })
         }
         Some("break") => {
             let banked = snap.intervals_completed.unwrap_or(0);
-            let long = every != 0 && banked != 0 && banked % every == 0;
+            let long = every != 0 && banked != 0 && banked.is_multiple_of(every);
             let minutes = if long {
                 settings.focus_long_break_minutes
             } else {
