@@ -129,6 +129,7 @@ impl QuickCapture {
         }
         match (key.code, key.modifiers) {
             (KeyCode::Char('s'), KeyModifiers::CONTROL) => Some(Action::CaptureSave),
+            (KeyCode::Char('e'), KeyModifiers::CONTROL) => Some(Action::CaptureEditExternal),
             (KeyCode::Esc, _) => Some(Action::CaptureCancel),
             (KeyCode::Tab, _) => Some(Action::CaptureFieldNext),
             (KeyCode::BackTab, _) => Some(Action::CaptureFieldPrev),
@@ -281,6 +282,18 @@ impl QuickCapture {
 
     fn content_text(&self) -> String {
         self.content.lines().join("\n")
+    }
+
+    /// The current note body — the seed handed to `$EDITOR`.
+    pub fn body(&self) -> String {
+        self.content_text()
+    }
+
+    /// Replace the body with text round-tripped through `$EDITOR`, cursor at end.
+    pub fn set_content(&mut self, text: &str) {
+        self.content = make_textarea(text);
+        self.content.move_cursor(CursorMove::Bottom);
+        self.content.move_cursor(CursorMove::End);
     }
 
     /// True when the draft holds any input worth protecting from an accidental
@@ -441,6 +454,7 @@ impl QuickCapture {
         }
         widgets::footer_hints(&[
             ("^S", "save"),
+            ("^E", "$EDITOR"),
             ("Tab", "field"),
             ("↵", "book/newline"),
             ("Esc", "close"),

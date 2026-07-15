@@ -267,6 +267,9 @@ pub enum Action {
     CaptureClose,
     CaptureSaved,
     CaptureKey(crossterm::event::KeyEvent),
+    /// `Ctrl-E` — hand the note body off to `$EDITOR` (the run loop suspends the
+    /// TUI, spawns the editor, and feeds the edited text back into `content`).
+    CaptureEditExternal,
     CaptureSave,
     CaptureSaveFailed,
     CaptureCancel,

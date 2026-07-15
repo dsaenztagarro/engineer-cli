@@ -78,6 +78,10 @@ pub struct App {
     pub overrun_pinged: Option<i64>,
     /// When the last presence heartbeat was sent, to honour `HEARTBEAT_INTERVAL`.
     pub heartbeat_last: Instant,
+    /// A pending request to edit prose in `$EDITOR` (the seed text). The run loop
+    /// suspends the TUI, spawns the editor, and feeds the result back — set by
+    /// the capture overlay's `Ctrl-E`.
+    pub pending_editor: Option<String>,
 }
 
 pub async fn run(config: Config) -> Result<()> {
@@ -124,6 +128,7 @@ async fn run_loop(
         settings: None,
         overrun_pinged: None,
         heartbeat_last: Instant::now(),
+        pending_editor: None,
     };
 
     // Kick off initial loads (only meaningful once authenticated).
@@ -163,9 +168,91 @@ async fn run_loop(
                 app.poll_timer_if_due();
             }
         }
+
+        // A note asked for the full editor (Ctrl-E) — suspend the TUI, run
+        // $EDITOR, restore. Blocking is fine: the terminal is ours meanwhile.
+        if app.pending_editor.is_some() {
+            if let Err(e) = run_editor(terminal, &mut app) {
+                app.notify(Level::Error, format!("editor failed: {e}"));
+            }
+        }
     }
 
     Ok(())
+}
+
+/// Suspend the TUI, open the note body in `$EDITOR` (seeded from the capture
+/// overlay), and feed the result back — the `git commit` pattern.
+fn run_editor(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
+    let Some(seed) = app.pending_editor.take() else {
+        return Ok(());
+    };
+    restore_terminal(terminal)?; // leave the alt screen + raw mode to the child
+    let edited = spawn_editor(&seed);
+    resume_terminal(terminal)?;
+    match edited {
+        // `None` = the editor aborted or the buffer came back empty — keep the
+        // original body rather than clobbering it (the empty-buffer-cancels rule).
+        Ok(Some(text)) => {
+            if let Some(cap) = app.capture.as_mut() {
+                cap.set_content(&text);
+            }
+        }
+        Ok(None) => {}
+        Err(e) => return Err(e),
+    }
+    Ok(())
+}
+
+/// Re-enter the alt screen + raw mode after the child editor exits.
+fn resume_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
+    enable_raw_mode()?;
+    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+    terminal.hide_cursor()?;
+    terminal.clear()?;
+    Ok(())
+}
+
+/// Open the seed in `$VISUAL`/`$EDITOR` (falling back to `vi`) and read it back.
+fn spawn_editor(seed: &str) -> Result<Option<String>> {
+    run_editor_cmd(&resolve_editor(), seed)
+}
+
+/// `$VISUAL` then `$EDITOR`, else `vi`.
+fn resolve_editor() -> String {
+    std::env::var("VISUAL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::env::var("EDITOR")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or_else(|| "vi".to_string())
+}
+
+/// Write the seed to a temp file, run `editor` on it, and read it back.
+/// `Ok(None)` when the editor aborts or the buffer comes back empty (cancel).
+/// `editor` may carry flags (`code -w`), so split on whitespace.
+fn run_editor_cmd(editor: &str, seed: &str) -> Result<Option<String>> {
+    let path = std::env::temp_dir().join(format!("engineer-note-{}.md", std::process::id()));
+    std::fs::write(&path, seed)?;
+
+    let mut parts = editor.split_whitespace();
+    let program = parts.next().unwrap_or("vi");
+    let status = std::process::Command::new(program)
+        .args(parts)
+        .arg(&path)
+        .status()?;
+
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let _ = std::fs::remove_file(&path);
+
+    let content = content.trim_end_matches('\n').to_string();
+    if !status.success() || content.trim().is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(content))
 }
 
 fn format_minutes(minutes: u32) -> String {
@@ -343,6 +430,13 @@ impl App {
                 // If the browser is showing, reflect the new/edited note.
                 if self.current.kind() == ScreenKind::Notes {
                     self.dispatch(Action::RefreshNotes);
+                }
+            }
+            // Stash the body for the run loop to open in $EDITOR (it owns the
+            // terminal, so the suspend/spawn/restore happens there, not here).
+            Action::CaptureEditExternal => {
+                if let Some(cap) = &self.capture {
+                    self.pending_editor = Some(cap.body());
                 }
             }
             capture_action @ (Action::CaptureKey(_)
@@ -552,6 +646,7 @@ mod tests {
             settings: None,
             overrun_pinged: None,
             heartbeat_last: Instant::now(),
+            pending_editor: None,
         };
         (app, rx)
     }
@@ -574,6 +669,41 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect()
+    }
+
+    #[cfg(unix)]
+    fn write_fake_editor(name: &str, script: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("engineer-{name}-{}.sh", std::process::id()));
+        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn editor_cmd_roundtrips_the_edited_buffer() {
+        // A fake editor that overwrites the file it's given ($1).
+        let editor = write_fake_editor("fakeed", "printf 'edited body' > \"$1\"");
+        let out = super::run_editor_cmd(editor.to_str().unwrap(), "seed").unwrap();
+        let _ = std::fs::remove_file(&editor);
+        assert_eq!(out.as_deref(), Some("edited body"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn editor_cmd_empty_buffer_cancels() {
+        let editor = write_fake_editor("emptyed", ": > \"$1\"");
+        let out = super::run_editor_cmd(editor.to_str().unwrap(), "seed").unwrap();
+        let _ = std::fs::remove_file(&editor);
+        assert!(out.is_none(), "an empty buffer keeps the original body");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn editor_cmd_nonzero_exit_cancels() {
+        // `false` exits 1 without touching the file — an abort keeps the seed.
+        assert!(super::run_editor_cmd("false", "seed").unwrap().is_none());
     }
 
     #[tokio::test]
