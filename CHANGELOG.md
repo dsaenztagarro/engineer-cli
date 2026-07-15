@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-15
+
 ### Added
 
 - **Offline read-cache — the headless timer never goes blank.** The status-bar reads (`engineer timer`, `status`, `--short`) now cache the last-known timer to the state dir on every success and fall back to it when the network is unreachable — so a dropped connection (studying on a train) shows `● 52:14 ~` or `… · offline (last known 2m ago)` instead of nothing. `--json` gains `"stale": true` + `"stale_age_s"`. Only *transport* failures fall back; an auth error still surfaces honestly. This is the read half of offline-tolerance — controlling the timer offline and an optimistic write queue are the larger follow-up (their own epic, per the brief). (`cross-cutting.brief.md` §A)
@@ -127,7 +129,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Explicit environment selection** via the `--env` flag and `ENGINEER_ENV` variable (`production` default, or `development` for localhost), with built-in URL presets so a fresh run needs no config file. Layered configuration: environment preset < `~/.config/engineer-cli/config.toml` (XDG-honored on all platforms, including macOS) < `ENGINEER_*` env vars.
 - **GitHub Actions CI** running `cargo test` on pushes to `master` and on pull requests.
 
-[Unreleased]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.2.0...v0.3.0
