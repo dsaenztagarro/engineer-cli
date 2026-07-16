@@ -28,12 +28,20 @@ pub struct Home {
     /// cell ticks (both share `timer::live_elapsed`).
     loaded_at: Option<Instant>,
     loading: bool,
+    /// The ambient pending-drafts count (§Inbox · the ambient count). Loaded by
+    /// a light `list_pending_tasks()` fetch beside the `today()` load, since the
+    /// `/today` aggregate carries no drafts count. `0` renders nothing — quiet by
+    /// default; `inbox_expiring` escalates the chip to amber when a draft is near
+    /// expiry (the design's "escalates once").
+    inbox_pending: usize,
+    inbox_expiring: bool,
 }
 
 impl Home {
     pub fn on_enter(&mut self, api: &ApiClient, tx: &UnboundedSender<Action>) {
         self.loading = true;
         spawn_load(api.clone(), tx.clone());
+        spawn_inbox_count(api.clone(), tx.clone());
     }
 
     pub async fn handle(
@@ -49,9 +57,14 @@ impl Home {
                 self.loading = false;
             }
             Action::HomeLoadFailed => self.loading = false,
+            Action::HomeInboxLoaded { pending, expiring } => {
+                self.inbox_pending = pending;
+                self.inbox_expiring = expiring;
+            }
             Action::RefreshHome => {
                 self.loading = true;
                 spawn_load(api.clone(), tx.clone());
+                spawn_inbox_count(api.clone(), tx.clone());
             }
             _ => {}
         }
@@ -87,11 +100,44 @@ impl Home {
             ])
             .split(area);
 
-        render_date(frame, chunks[0], today);
+        self.render_header_row(frame, chunks[0], today);
         self.render_lead(frame, chunks[1], today);
         render_plan(frame, chunks[2], today);
         render_stats(frame, chunks[3], today);
         render_reading(frame, chunks[4], today);
+    }
+
+    /// The top row: the date (right-aligned) with the ambient inbox chip on the
+    /// left when drafts are pending (§Inbox · the ambient count — the design's
+    /// header-cell footprint). Split so the chip never collides with the date; a
+    /// muted `◧ inbox N` normally, an amber `▾ inbox N` when a draft is near
+    /// expiry. Nothing shows at inbox zero — quiet by default.
+    fn render_header_row(&self, frame: &mut Frame, area: Rect, today: &Today) {
+        if self.inbox_pending == 0 {
+            render_date(frame, area, today);
+            return;
+        }
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(area);
+        let (glyph, style) = if self.inbox_expiring {
+            (
+                "▾ ",
+                Style::default()
+                    .fg(theme::WARN)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            ("◧ ", theme::muted())
+        };
+        let chip = Line::from(vec![
+            Span::styled(glyph, style),
+            Span::styled(format!("inbox {}", self.inbox_pending), style),
+            Span::styled("  i →", theme::focused()),
+        ]);
+        frame.render_widget(Paragraph::new(chip), cols[0]);
+        render_date(frame, cols[1], today);
     }
 
     /// The lead band — the two ambient reads that decide the next move: the
@@ -360,6 +406,22 @@ fn spawn_load(api: ApiClient, tx: UnboundedSender<Action>) {
     });
 }
 
+/// The ambient pending-drafts count — a light `list_pending_tasks()` read beside
+/// the `today()` load (the `/today` aggregate carries no drafts count, and the
+/// CLI invents no server endpoint). Quiet by default: a failed read stays silent
+/// (the chip just doesn't show), never a notify tile.
+fn spawn_inbox_count(api: ApiClient, tx: UnboundedSender<Action>) {
+    tokio::spawn(async move {
+        if let Ok(tasks) = api.list_pending_tasks().await {
+            let expiring = tasks.iter().any(super::inbox::is_expiring_soon);
+            let _ = tx.send(Action::HomeInboxLoaded {
+                pending: tasks.len(),
+                expiring,
+            });
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,6 +542,34 @@ mod tests {
             !text.contains("on pace"),
             "no calm line when behind: {text}"
         );
+    }
+
+    #[tokio::test]
+    async fn ambient_inbox_chip_shows_the_pending_count_and_hides_at_zero() {
+        let (api, tx) = deps();
+        let mut home = Home::default();
+        home.handle(Action::TodayLoaded(Box::new(today(full()))), &api, &tx)
+            .await;
+
+        // Zero pending: the chip stays hidden — quiet by default.
+        assert!(
+            !render_home(&mut home).contains("inbox 3"),
+            "chip hidden at zero"
+        );
+
+        // A pending count surfaces the chip in the stats strip.
+        home.handle(
+            Action::HomeInboxLoaded {
+                pending: 3,
+                expiring: false,
+            },
+            &api,
+            &tx,
+        )
+        .await;
+        let text = render_home(&mut home);
+        assert!(text.contains("inbox 3"), "ambient chip: {text}");
+        assert!(text.contains("i →"), "triage affordance: {text}");
     }
 
     #[tokio::test]

@@ -16,6 +16,17 @@ use crate::api::{ApiClient, ApiError, Task};
 use crate::auth::TokenProvider;
 use crate::config::Config;
 
+/// The past-tense outcome word each triage verb confirms. Shared with the TUI
+/// inbox screen (`src/app/screens/inbox.rs`) so the headless verbs and the
+/// screen speak one vocabulary — the accept/reject/ack copy is spelled once.
+pub const ACCEPTED: &str = "accepted";
+pub const REJECTED: &str = "rejected";
+pub const ACKNOWLEDGED: &str = "acknowledged";
+
+/// The stale-draft (`422`) line: a soft re-read, never a crash. The design's
+/// §Inbox notify tile copy, shared so both surfaces render the same phrase.
+pub const ALREADY_MOVED_ON: &str = "this draft already moved on — inbox re-read";
+
 #[derive(Args)]
 pub struct InboxArgs {
     /// Emit JSON (an array for the list, an object for a single task).
@@ -91,18 +102,18 @@ async fn dispatch(api: &ApiClient, cmd: Option<InboxCmd>, json: bool, colored: b
     match cmd {
         None => list(api, json, colored).await,
         Some(InboxCmd::Accept { id }) => {
-            act(api.complete_task(id).await, "accepted", id, json, colored)
+            act(api.complete_task(id).await, ACCEPTED, id, json, colored)
         }
         Some(InboxCmd::Reject { id, reason }) => act(
             api.reject_task(id, reason).await,
-            "rejected",
+            REJECTED,
             id,
             json,
             colored,
         ),
         Some(InboxCmd::Ack { id }) => act(
             api.acknowledge_task(id).await,
-            "acknowledged",
+            ACKNOWLEDGED,
             id,
             json,
             colored,

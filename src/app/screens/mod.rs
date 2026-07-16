@@ -20,6 +20,7 @@ pub mod audit;
 pub mod book_detail;
 pub mod books;
 pub mod home;
+pub mod inbox;
 pub mod login;
 pub mod notes;
 pub mod progress;
@@ -109,6 +110,7 @@ pub enum ScreenKind {
     Settings,
     Audit,
     Week,
+    Inbox,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,6 +135,7 @@ pub enum Screen {
     Settings(settings::Settings),
     Audit(audit::Audit),
     Week(week::Week),
+    Inbox(inbox::Inbox),
 }
 
 impl Screen {
@@ -151,6 +154,7 @@ impl Screen {
             ScreenKind::Settings => Self::Settings(settings::Settings::default()),
             ScreenKind::Audit => Self::Audit(audit::Audit::default()),
             ScreenKind::Week => Self::Week(week::Week::default()),
+            ScreenKind::Inbox => Self::Inbox(inbox::Inbox::default()),
         }
     }
 
@@ -169,6 +173,7 @@ impl Screen {
             Self::Settings(_) => ScreenKind::Settings,
             Self::Audit(_) => ScreenKind::Audit,
             Self::Week(_) => ScreenKind::Week,
+            Self::Inbox(_) => ScreenKind::Inbox,
         }
     }
 
@@ -187,6 +192,7 @@ impl Screen {
             Self::Settings(_) => "Settings · Timer",
             Self::Audit(_) => "Progress · Segment audit",
             Self::Week(_) => "Week",
+            Self::Inbox(_) => "Inbox",
         }
     }
 
@@ -212,6 +218,7 @@ impl Screen {
             Self::Settings(s) => s.on_enter(api, tx),
             Self::Audit(s) => s.on_enter(api, tx),
             Self::Week(s) => s.on_enter(api, tx),
+            Self::Inbox(s) => s.on_enter(api, tx),
         }
     }
 
@@ -226,6 +233,7 @@ impl Screen {
             Self::Notes(s) => s.intercept_key(key),
             Self::Review(s) => s.intercept_key(key),
             Self::Week(s) => s.intercept_key(key),
+            Self::Inbox(s) => s.intercept_key(key),
             _ => None,
         }
     }
@@ -250,6 +258,7 @@ impl Screen {
             Self::Settings(s) => s.handle(action, api, tx).await,
             Self::Audit(s) => s.handle(action, api, tx).await,
             Self::Week(s) => s.handle(action, api, tx).await,
+            Self::Inbox(s) => s.handle(action, api, tx).await,
         }
     }
 
@@ -268,6 +277,7 @@ impl Screen {
             Self::Settings(s) => s.render(frame, area),
             Self::Audit(s) => s.render(frame, area),
             Self::Week(s) => s.render(frame, area),
+            Self::Inbox(s) => s.render(frame, area),
         }
     }
 
@@ -298,6 +308,7 @@ impl Screen {
                 ("p", "progress"),
                 ("w", "week"),
                 ("r", "review"),
+                ("i", "inbox"),
                 ("h", "home"),
                 ("b", "books"),
                 ("n", "notes"),
@@ -313,6 +324,7 @@ impl Screen {
                 ("g t", "timer"),
                 ("g p", "progress"),
                 ("g r", "review"),
+                ("i", "inbox"),
                 ("c", "+note"),
                 (":", "cmd"),
                 ("q", "quit"),
@@ -328,6 +340,7 @@ impl Screen {
             Self::Settings(s) => s.hints(),
             Self::Audit(s) => s.hints(),
             Self::Week(s) => s.hints(),
+            Self::Inbox(s) => s.hints(),
         }
     }
 }
