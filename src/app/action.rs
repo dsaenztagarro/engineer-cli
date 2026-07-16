@@ -4,7 +4,7 @@ use crate::api::{
 };
 use crate::app::screens::review::Rating;
 use crate::app::screens::ScreenKind;
-use crate::queue::ReplayReport;
+use crate::queue::{Intent, ReplayReport};
 use crate::ui::notify::Level;
 
 /// Reducer-style messages dispatched by event handlers and async tasks.
@@ -139,6 +139,15 @@ pub enum Action {
     /// halted by divergence shows nothing here (the diverged markers stand; the
     /// reconcile panel is #106).
     ReplayFinished(ReplayReport),
+    /// The queue's first diverged intent, payload and all — `Some` opens (or
+    /// refreshes) the Timer screen's reconcile panel, `None` closes a stale
+    /// one (the divergence was resolved elsewhere, e.g. headlessly). Loaded by
+    /// a spawned queue read after each snapshot lands, so the panel follows
+    /// the queue file — the single source of truth — like every other surface.
+    TimerDivergedLoaded(Option<Box<Intent>>),
+    /// `b` on the reconcile panel — keep both: the local session is written
+    /// via `create_segment` and the server session stands.
+    TimerReconcileBoth,
     TimerCleared,
     TimerReload,
     /// The `s` key — stage-dependent primary: starts the clock when absent,

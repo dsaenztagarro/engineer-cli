@@ -11,6 +11,7 @@ mod client;
 mod fold;
 mod intent;
 mod replay;
+mod resolve;
 mod store;
 
 #[allow(unused_imports)]
@@ -21,5 +22,7 @@ pub use fold::{fold_timer, Provenance};
 pub use intent::{Intent, IntentKind, IntentState};
 #[allow(unused_imports)]
 pub use replay::{drain, ReplayError, ReplayReport};
+#[allow(unused_imports)]
+pub use resolve::{resolve, Resolution, ResolveError, Resolved};
 #[allow(unused_imports)]
 pub use store::{QueueDocView, QueueError, QueueStore, QueueSummary, ReplayGuard};

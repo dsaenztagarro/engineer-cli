@@ -35,6 +35,10 @@ impl Intent {
     pub fn is_diverged(&self) -> bool {
         matches!(self.state, IntentState::Diverged { .. })
     }
+
+    pub fn is_parked(&self) -> bool {
+        matches!(self.state, IntentState::Parked { .. })
+    }
 }
 
 /// The typed verb + payload. Verbs that act on the clock carry the wall-clock
@@ -97,7 +101,10 @@ impl IntentKind {
 }
 
 /// Where an intent stands. `Diverged` keeps the whole RFC 7807 payload so the
-/// reconcile surface can render the server's objection verbatim.
+/// reconcile surface can render the server's objection verbatim. `Parked` is
+/// the take-server resolution's kept-for-review state: the intent stays in
+/// `queue.json` (never deleted), reads as `parked` in `engineer queue`, is
+/// excluded from replay, and leaves only by an explicit gesture.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum IntentState {
@@ -110,6 +117,11 @@ pub enum IntentState {
         type_uri: Option<String>,
         #[serde(default)]
         errors: Vec<FieldError>,
+    },
+    Parked {
+        /// Why it was parked — the resolution that put it here, carrying the
+        /// server objection's title so the review can still say what happened.
+        reason: String,
     },
 }
 
@@ -167,7 +179,21 @@ mod tests {
                 assert_eq!(status, 422);
                 assert_eq!(errors.len(), 1);
             }
-            IntentState::Pending => panic!("expected diverged"),
+            other => panic!("expected diverged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parked_state_roundtrips_with_its_reason() {
+        let state = IntentState::Parked {
+            reason: "took server · Conflict".into(),
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains(r#""state":"parked""#), "{json}");
+        let back: IntentState = serde_json::from_str(&json).unwrap();
+        match back {
+            IntentState::Parked { reason } => assert_eq!(reason, "took server · Conflict"),
+            other => panic!("expected parked, got {other:?}"),
         }
     }
 

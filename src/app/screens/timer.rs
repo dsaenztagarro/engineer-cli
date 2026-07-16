@@ -28,7 +28,9 @@ use crate::api::{
     TimerStopped,
 };
 use crate::app::action::Action;
-use crate::queue::{QueueStore, QueuedClient, WriteOutcome};
+use crate::queue::{
+    Intent, IntentKind, IntentState, QueueStore, QueuedClient, Resolution, Resolved, WriteOutcome,
+};
 use crate::ui::notify::Level;
 use crate::ui::{layout::bordered, theme, widgets};
 
@@ -245,6 +247,20 @@ enum Panel {
     /// §Idle reclaim: the clock went quiet — one row per server verb plus the
     /// discard escape. Nothing is written until a row is applied; Esc defers.
     Reclaim { selected: usize },
+    /// §Diverged (the one loud state): replay found the server moved on and a
+    /// diverged intent waits in the queue. Two sides, pick one — `⏎` keeps the
+    /// highlighted side, `b` keeps both (session family), Esc defers (the
+    /// panel reopens on the next poll while the divergence stands). Nothing
+    /// resolves, drops, or merges without a gesture.
+    Reconcile {
+        /// The diverged intent, its stored RFC 7807 payload included — the
+        /// server's objection renders verbatim (generic fallback today;
+        /// #107's coded conflicts enrich the same panel). Boxed: the payload
+        /// is large next to the other panels.
+        intent: Box<Intent>,
+        /// 0 = local, 1 = server.
+        selected: usize,
+    },
 }
 
 /// The reclaim list rows, in display order: trim · keep · stop · discard.
@@ -310,6 +326,7 @@ impl Timer {
         spawn_today(api, tx);
         spawn_week(api, tx);
         spawn_settings(api, tx);
+        spawn_diverged_check(tx, self.queue_paths.clone());
     }
 
     /// The live focus phase (`work`/`break`), or `None` outside focus.
@@ -365,6 +382,19 @@ impl Timer {
                 _ => None,
             };
         }
+        // The reconcile panel: the same plain-chooser grammar, plus `b` for
+        // keep-both. Esc defers — the divergence stands and the panel reopens
+        // on the next poll, exactly the reclaim list's deferral idiom.
+        if matches!(panel, Panel::Reconcile { .. }) {
+            return match key.code {
+                KeyCode::Esc => Some(Action::TimerBindCancel),
+                KeyCode::Enter => Some(Action::TimerBindSubmit),
+                KeyCode::Char('j') | KeyCode::Down => Some(Action::TimerBindMove(1)),
+                KeyCode::Char('k') | KeyCode::Up => Some(Action::TimerBindMove(-1)),
+                KeyCode::Char('b') => Some(Action::TimerReconcileBoth),
+                _ => None,
+            };
+        }
         match key.code {
             KeyCode::Esc => Some(Action::TimerBindCancel),
             KeyCode::Enter => Some(Action::TimerBindSubmit),
@@ -395,6 +425,11 @@ impl Timer {
             // op). A pending stop confirmation is preserved — the user hasn't
             // acknowledged the written segment yet.
             Action::TimerLoaded(t) => {
+                // Every landed snapshot re-checks the queue for a waiting
+                // divergence — the reconcile panel follows the queue file, so
+                // it opens after a halted drain and closes after a headless
+                // resolve, without its own polling loop.
+                spawn_diverged_check(tx, self.queue_paths.clone());
                 if matches!(self.stage, Stage::Stopped { .. }) {
                     return None;
                 }
@@ -448,6 +483,38 @@ impl Timer {
                 self.base = Some(Instant::now());
                 self.snapshot = Some(t);
                 self.provisional = true;
+            }
+            // The queue check landed. A waiting divergence opens the reconcile
+            // panel (never stealing an already-open picker mid-gesture — it
+            // reopens on the next poll); a cleared one closes a stale panel,
+            // e.g. after a headless `engineer queue resolve`.
+            Action::TimerDivergedLoaded(found) => match (found, &mut self.panel) {
+                (Some(intent), None) => {
+                    self.panel = Some(Panel::Reconcile {
+                        intent,
+                        selected: 0,
+                    });
+                }
+                (Some(intent), Some(Panel::Reconcile { intent: cur, .. })) => *cur = intent,
+                (None, Some(Panel::Reconcile { .. })) => self.close_panel(),
+                _ => {}
+            },
+            // `b` on the reconcile panel: keep both — the local session is
+            // written via create_segment, the server session stands. Only the
+            // session family has two sessions to keep; a diverged stop has one
+            // segment at stake, so it says so instead.
+            Action::TimerReconcileBoth => {
+                if let Some(Panel::Reconcile { intent, .. }) = self.panel.as_ref() {
+                    if matches!(intent.kind, IntentKind::TimerStop { .. }) {
+                        return Some((
+                            Level::Warning,
+                            "a diverged stop has one segment at stake — ⏎ on a side instead".into(),
+                        ));
+                    }
+                    let id = intent.id;
+                    self.close_panel();
+                    spawn_resolve(api, tx, self.queue_paths.clone(), id, Resolution::KeepBoth);
+                }
             }
             Action::TimerReload => spawn_load(api, tx),
             // `s` — stage-dependent primary: open the start picker when
@@ -634,14 +701,17 @@ impl Timer {
                 self.cand_state.select(Some(0));
                 spawn_candidates(api, tx, self.query.clone());
             }
-            Action::TimerBindMove(delta) => {
-                if let Some(Panel::Reclaim { selected }) = self.panel.as_mut() {
+            Action::TimerBindMove(delta) => match self.panel.as_mut() {
+                Some(Panel::Reclaim { selected }) => {
                     let next = (*selected as i32 + delta).clamp(0, RECLAIM_ROWS as i32 - 1);
                     *selected = next as usize;
-                } else {
-                    self.move_selection(delta);
                 }
-            }
+                // Two sides: local (0) and server (1).
+                Some(Panel::Reconcile { selected, .. }) => {
+                    *selected = (*selected as i32 + delta).clamp(0, 1) as usize;
+                }
+                _ => self.move_selection(delta),
+            },
             Action::TimerCandidatesLoaded(list) => {
                 self.candidates = list;
                 let len = self.bind_rows_len();
@@ -722,6 +792,20 @@ impl Timer {
                 }
                 None
             }
+            // ⏎ keeps the highlighted side: local re-asserts the gesture on
+            // the server (switch / create_segment), server parks the local
+            // intents for review — never a delete either way.
+            Some(Panel::Reconcile { intent, selected }) => {
+                let resolution = if *selected == 0 {
+                    Resolution::KeepLocal
+                } else {
+                    Resolution::TakeServer
+                };
+                let id = intent.id;
+                self.close_panel();
+                spawn_resolve(api, tx, self.queue_paths.clone(), id, resolution);
+                None
+            }
             None => None,
         }
     }
@@ -779,7 +863,7 @@ impl Timer {
             Some(Panel::Bind { .. }) => (has_query, false),
             Some(Panel::Start { .. }) if !running => (has_query, true),
             Some(Panel::Start { .. }) | Some(Panel::Reclaim { .. }) => (false, false),
-            None => (false, false),
+            Some(Panel::Reconcile { .. }) | None => (false, false),
         }
     }
 
@@ -1169,6 +1253,12 @@ impl Timer {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
+        // The reconcile panel outranks everything — the one loud state; a
+        // divergence is a surfaced choice, never background noise.
+        if matches!(self.panel, Some(Panel::Reconcile { .. })) {
+            self.render_reconcile_panel(frame, area);
+            return;
+        }
         // The start picker overlays whichever stage it was opened from
         // (Absent, or Live in switch context).
         if matches!(self.panel, Some(Panel::Start { .. })) {
@@ -1517,6 +1607,120 @@ impl Timer {
         frame.render_widget(Paragraph::new(lines), inner);
     }
 
+    /// §Diverged (session elsewhere / clock drift, the generic-conflict
+    /// fallback): full-row danger treatment — a red frame, the server's
+    /// objection verbatim from the stored RFC 7807 payload, the local intent's
+    /// identity (verb word, queued age), and two sides picked with the shipped
+    /// `▌` selection. #107's coded conflicts (`timer-already-running` + the
+    /// `current` snapshot) enrich these same rows; today they render
+    /// title/detail.
+    fn render_reconcile_panel(&mut self, frame: &mut Frame, area: Rect) {
+        let Some(Panel::Reconcile { intent, selected }) = self.panel.as_ref() else {
+            return;
+        };
+        let IntentState::Diverged {
+            status,
+            title,
+            detail,
+            ..
+        } = &intent.state
+        else {
+            return;
+        };
+        let is_stop = matches!(intent.kind, IntentKind::TimerStop { .. });
+
+        let danger = Style::default()
+            .fg(theme::DANGER)
+            .add_modifier(Modifier::BOLD);
+        let heading = if is_stop {
+            "The server refused this save"
+        } else {
+            "Two sessions — which is real?"
+        };
+        let block = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_style(Style::default().fg(theme::DANGER))
+            .title(Span::styled(format!(" {heading} "), danger));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        // The local side's clock: a diverged stop carries its own gestured
+        // elapsed; the session family shows the running local clock.
+        let local_clock = match &intent.kind {
+            IntentKind::TimerStop {
+                local_elapsed_s, ..
+            } => widgets::fmt_elapsed(*local_elapsed_s),
+            _ => self
+                .snapshot
+                .as_ref()
+                .map(|s| widgets::fmt_elapsed(live_elapsed(s, self.base)))
+                .unwrap_or_else(|| "—".into()),
+        };
+        let local_label = self
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.label.clone())
+            .unwrap_or_else(|| "untitled".into());
+        let age_s = (jiff::Timestamp::now().as_second() - intent.queued_at.as_second()).max(0);
+        let identity = format!("{} · queued {} ago", intent.kind.word(), fmt_age(age_s));
+
+        let side = |i: usize, text: String, caption: String| -> Line<'static> {
+            let style = if i == *selected {
+                theme::selection()
+            } else {
+                Style::default()
+            };
+            Line::from(vec![
+                Span::styled(if i == *selected { "▌ " } else { "  " }.to_string(), style),
+                Span::styled(text, style.add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("   {caption}"),
+                    if i == *selected {
+                        style
+                    } else {
+                        theme::muted()
+                    },
+                ),
+            ])
+        };
+
+        let objection = format!("{status} {title}");
+        let mut lines = vec![
+            Line::from(Span::styled(
+                "the server moved on while this was queued — pick a side; nothing is dropped for you",
+                theme::muted(),
+            )),
+            Line::from(""),
+            side(
+                0,
+                format!("local    {local_clock}   {local_label}"),
+                identity,
+            ),
+            side(
+                1,
+                format!("server   {objection}"),
+                if detail.is_empty() {
+                    "the server's version stands".into()
+                } else {
+                    detail.clone()
+                },
+            ),
+            Line::from(""),
+        ];
+        lines.push(Line::from(Span::styled(
+            if is_stop {
+                "keep local writes your minutes as a segment; take server parks the stop for review — nothing is written or dropped behind your back.".to_string()
+            } else {
+                "keeping local stops & saves the server session and yours takes over; taking server parks your intents for review — never deletes them.".to_string()
+            },
+            theme::muted(),
+        )));
+        frame.render_widget(
+            Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: true }),
+            inner,
+        );
+    }
+
     fn render_bind_panel(&mut self, frame: &mut Frame, area: Rect) {
         let save_on_bind = matches!(
             self.panel,
@@ -1598,6 +1802,24 @@ impl Timer {
                     ("⏎", "apply"),
                     ("Esc", "decide later"),
                 ]);
+            }
+            // The reconcile gestures the design panels advertise; `b` only
+            // where there are two sessions to keep.
+            Some(Panel::Reconcile { intent, .. }) => {
+                return if matches!(intent.kind, IntentKind::TimerStop { .. }) {
+                    widgets::footer_hints(&[
+                        ("j/k", "choose"),
+                        ("⏎", "keep this side"),
+                        ("Esc", "decide later"),
+                    ])
+                } else {
+                    widgets::footer_hints(&[
+                        ("j/k", "choose"),
+                        ("⏎", "keep this side"),
+                        ("b", "keep both, review"),
+                        ("Esc", "decide later"),
+                    ])
+                };
             }
             _ => {}
         }
@@ -1711,6 +1933,17 @@ fn fmt_minutes(minutes: u32) -> String {
         format!("{h}h {m:02}m")
     } else {
         format!("{m}m")
+    }
+}
+
+/// `42s` · `7m` · `3h` · `2d` — the queued-intent age the reconcile panel
+/// prints, matching `engineer queue`'s one-glance ages.
+fn fmt_age(secs: i64) -> String {
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86_400),
     }
 }
 
@@ -2177,6 +2410,95 @@ fn spawn_mode(api: &ApiClient, tx: &UnboundedSender<Action>, mode: &'static str)
                     level: Level::Warning,
                     text: format!("mode switch refused: {e}"),
                 });
+            }
+        }
+    });
+}
+
+/// Read the queue for the first diverged intent and report it (or its absence)
+/// to the reducer — the reconcile panel opens, refreshes, or closes from this.
+/// A plain file read, spawned so the reducer never blocks on the store; an
+/// unreadable queue reads as no divergence here (`engineer queue` is the loud
+/// surface for that).
+fn spawn_diverged_check(tx: &UnboundedSender<Action>, paths: QueuePaths) {
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let store = match &paths {
+            Some((queue, _)) => QueueStore::at(queue.clone()),
+            None => match QueueStore::open_default() {
+                Ok(store) => store,
+                Err(_) => return,
+            },
+        };
+        let found = store
+            .intents()
+            .ok()
+            .and_then(|intents| intents.into_iter().find(Intent::is_diverged));
+        let _ = tx.send(Action::TimerDivergedLoaded(found.map(Box::new)));
+    });
+}
+
+/// Apply a reconcile-panel resolution through the shared `queue::resolve`
+/// engine — the same one `engineer queue resolve` calls, so the gesture and
+/// the flag cannot drift. A keep-local/keep-both unblocks the queue, so the
+/// drain continues behind the choice, streaming the shipped reconnect
+/// transcript; a failure keeps the intent diverged and says so (the panel
+/// reopens on the next poll).
+fn spawn_resolve(
+    api: &ApiClient,
+    tx: &UnboundedSender<Action>,
+    paths: QueuePaths,
+    intent_id: u64,
+    resolution: Resolution,
+) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => return notify_seam_error(&tx, "reconcile failed", e),
+        };
+        match queued.resolve_divergence(intent_id, resolution).await {
+            Ok(resolved) => {
+                let text = match resolved {
+                    Resolved::SwitchedToLocal => {
+                        "kept local — the server stopped & saved its session; yours took over"
+                            .to_string()
+                    }
+                    Resolved::SegmentWritten {
+                        segment_id,
+                        minutes,
+                        ..
+                    } => format!("kept — {minutes}m written (segment {segment_id}); nothing lost"),
+                    Resolved::Parked { count } => format!(
+                        "took server — {count} intent{} parked for review, nothing deleted",
+                        if count == 1 { "" } else { "s" }
+                    ),
+                };
+                let _ = tx.send(Action::Notify {
+                    level: Level::Success,
+                    text,
+                });
+                // Continue the drain behind the choice (skips instantly when
+                // take-server parked everything).
+                let tx2 = tx.clone();
+                if let Some(report) = queued
+                    .drain_reporting(|intent| {
+                        let _ = tx2.send(Action::ReplayProgress {
+                            word: intent.kind.word().to_string(),
+                        });
+                    })
+                    .await
+                {
+                    let _ = tx.send(Action::ReplayFinished(report));
+                }
+                let _ = tx.send(Action::TimerReload);
+            }
+            Err(e) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Error,
+                    text: format!("reconcile failed: {e} — the intent stays diverged"),
+                });
+                let _ = tx.send(Action::TimerReload);
             }
         }
     });
@@ -3447,5 +3769,261 @@ mod tests {
         // without a monotonic base — the clock never depends on poll age.
         let elapsed = live_elapsed(&anchored, None);
         assert!((500..=502).contains(&elapsed), "got {elapsed}");
+    }
+
+    // ------------------------------------------- the reconcile panel (#106)
+
+    /// A diverged intent as the queue check would deliver it.
+    fn diverged_intent(kind: IntentKind) -> Intent {
+        Intent {
+            id: 7,
+            idempotency_key: "key-7".into(),
+            stream: kind.stream(),
+            queued_at: jiff::Timestamp::now(),
+            kind,
+            state: IntentState::Diverged {
+                status: 409,
+                title: "Conflict".into(),
+                detail: "a timer is already running".into(),
+                type_uri: None,
+                errors: vec![],
+            },
+            attempts: 1,
+            last_error: None,
+        }
+    }
+
+    fn diverged_start() -> Intent {
+        diverged_intent(IntentKind::TimerStart {
+            activity_id: Some(9),
+            switch: false,
+            at: jiff::Timestamp::now(),
+        })
+    }
+
+    fn diverged_stop() -> Intent {
+        diverged_intent(IntentKind::TimerStop {
+            at: jiff::Timestamp::now(),
+            local_elapsed_s: 2832,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_waiting_divergence_opens_the_reconcile_panel_and_a_cleared_one_closes_it() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerDivergedLoaded(Some(Box::new(diverged_start()))),
+        )
+        .await;
+        assert!(
+            matches!(s.panel, Some(Panel::Reconcile { selected: 0, .. })),
+            "the panel opens on the local side"
+        );
+
+        // Resolved elsewhere (e.g. `engineer queue resolve`): the next check
+        // reports no divergence and the stale panel closes.
+        feed(&mut s, &api, &tx, Action::TimerDivergedLoaded(None)).await;
+        assert!(s.panel.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_reconcile_panel_never_steals_an_open_picker() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({ "running": false })))),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::TimerSave).await; // start picker open
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerDivergedLoaded(Some(Box::new(diverged_start()))),
+        )
+        .await;
+        assert!(
+            matches!(s.panel, Some(Panel::Start { .. })),
+            "mid-gesture pickers stand; the panel opens on the next check"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_selection_moves_between_the_two_sides_and_clamps() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerDivergedLoaded(Some(Box::new(diverged_start()))),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::TimerBindMove(1)).await;
+        assert!(matches!(
+            s.panel,
+            Some(Panel::Reconcile { selected: 1, .. })
+        ));
+        feed(&mut s, &api, &tx, Action::TimerBindMove(5)).await;
+        assert!(
+            matches!(s.panel, Some(Panel::Reconcile { selected: 1, .. })),
+            "two sides only"
+        );
+        feed(&mut s, &api, &tx, Action::TimerBindMove(-5)).await;
+        assert!(matches!(
+            s.panel,
+            Some(Panel::Reconcile { selected: 0, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn reconcile_keys_route_choose_keep_both_and_defer() {
+        use crossterm::event::KeyModifiers;
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerDivergedLoaded(Some(Box::new(diverged_start()))),
+        )
+        .await;
+        let press = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+        assert!(matches!(
+            s.intercept_key(press(KeyCode::Char('j'))),
+            Some(Action::TimerBindMove(1))
+        ));
+        assert!(matches!(
+            s.intercept_key(press(KeyCode::Char('b'))),
+            Some(Action::TimerReconcileBoth)
+        ));
+        assert!(matches!(
+            s.intercept_key(press(KeyCode::Enter)),
+            Some(Action::TimerBindSubmit)
+        ));
+        assert!(matches!(
+            s.intercept_key(press(KeyCode::Esc)),
+            Some(Action::TimerBindCancel)
+        ));
+        // Esc defers: the panel closes; the divergence stands in the queue,
+        // so the next poll's check reopens it.
+        feed(&mut s, &api, &tx, Action::TimerBindCancel).await;
+        assert!(s.panel.is_none());
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerDivergedLoaded(Some(Box::new(diverged_start()))),
+        )
+        .await;
+        assert!(matches!(s.panel, Some(Panel::Reconcile { .. })));
+    }
+
+    #[tokio::test]
+    async fn reconcile_submit_dispatches_the_resolution_and_closes() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerDivergedLoaded(Some(Box::new(diverged_start()))),
+        )
+        .await;
+        // ⏎ on a side hands the choice to the shared resolve engine and the
+        // panel closes; the outcome lands as notify + reload (spawned).
+        feed(&mut s, &api, &tx, Action::TimerBindSubmit).await;
+        assert!(s.panel.is_none());
+    }
+
+    #[tokio::test]
+    async fn keep_both_refuses_on_a_diverged_stop() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerDivergedLoaded(Some(Box::new(diverged_stop()))),
+        )
+        .await;
+        let warned = s.handle(Action::TimerReconcileBoth, &api, &tx).await;
+        let (level, text) = warned.expect("a warning is surfaced");
+        assert_eq!(level, Level::Warning);
+        assert!(text.contains("one segment at stake"), "{text}");
+        assert!(
+            matches!(s.panel, Some(Panel::Reconcile { .. })),
+            "the choice is still open"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_hints_advertise_the_design_gestures() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerDivergedLoaded(Some(Box::new(diverged_start()))),
+        )
+        .await;
+        let hints = format!("{:?}", s.hints());
+        assert!(hints.contains("keep this side"), "{hints}");
+        assert!(hints.contains("keep both"), "{hints}");
+        assert!(hints.contains("decide later"), "{hints}");
+
+        // A diverged stop has one segment at stake — no `b` gesture.
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerDivergedLoaded(Some(Box::new(diverged_stop()))),
+        )
+        .await;
+        let hints = format!("{:?}", s.hints());
+        assert!(hints.contains("keep this side"), "{hints}");
+        assert!(!hints.contains("keep both"), "{hints}");
+    }
+
+    #[tokio::test]
+    async fn reconcile_panel_renders_the_objection_and_both_sides() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (mut s, api, tx) = setup();
+        // A live local clock so the local side has an elapsed to show.
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "label": "Raft leader election",
+                "elapsed_seconds": 2832
+            })))),
+        )
+        .await;
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerDivergedLoaded(Some(Box::new(diverged_start()))),
+        )
+        .await;
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
+        terminal.draw(|f| s.render(f, f.area())).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("Two sessions — which is real?"), "{text}");
+        assert!(text.contains("local"), "{text}");
+        assert!(text.contains("409 Conflict"), "{text}");
+        assert!(text.contains("start · queued"), "the intent's identity");
+        assert!(text.contains("never deletes them"), "{text}");
     }
 }
