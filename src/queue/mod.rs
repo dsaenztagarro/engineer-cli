@@ -7,9 +7,12 @@
 //! never this file.
 #![allow(dead_code)]
 
+mod client;
 mod intent;
 mod store;
 
+#[allow(unused_imports)]
+pub use client::{QueuedClient, WriteOutcome};
 #[allow(unused_imports)]
 pub use intent::{Intent, IntentKind, IntentState};
 #[allow(unused_imports)]

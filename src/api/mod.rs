@@ -54,6 +54,9 @@ pub struct Me {
     pub admin: bool,
 }
 
+/// The replay-dedupe header the server contract keys on (engineer#806).
+const IDEMPOTENCY_HEADER: &str = "Idempotency-Key";
+
 #[derive(Clone)]
 pub struct ApiClient {
     base: Url,
@@ -148,6 +151,37 @@ impl ApiClient {
     // but return the updated resource.
     async fn post_empty<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
         let req = self.request(Method::POST, path).await?;
+        send(req).await
+    }
+
+    // The `post`/`post_empty` twins that carry an `Idempotency-Key` header —
+    // the offline queue's replay path (`crate::queue`) re-sends stored intents
+    // through these so a lost ack can never double-write. `send()` unchanged.
+    #[allow(dead_code)]
+    pub(crate) async fn post_idempotent<B: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+        idempotency_key: &str,
+    ) -> Result<T, ApiError> {
+        let req = self
+            .request(Method::POST, path)
+            .await?
+            .header(IDEMPOTENCY_HEADER, idempotency_key)
+            .json(body);
+        send(req).await
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn post_empty_idempotent<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        idempotency_key: &str,
+    ) -> Result<T, ApiError> {
+        let req = self
+            .request(Method::POST, path)
+            .await?
+            .header(IDEMPOTENCY_HEADER, idempotency_key);
         send(req).await
     }
 
