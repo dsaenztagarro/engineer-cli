@@ -19,6 +19,7 @@ pub mod activity_new;
 pub mod audit;
 pub mod book_detail;
 pub mod books;
+pub mod connect;
 pub mod home;
 pub mod inbox;
 pub mod login;
@@ -111,6 +112,7 @@ pub enum ScreenKind {
     Audit,
     Week,
     Inbox,
+    Connect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +138,7 @@ pub enum Screen {
     Audit(audit::Audit),
     Week(week::Week),
     Inbox(inbox::Inbox),
+    Connect(connect::Connect),
 }
 
 impl Screen {
@@ -155,6 +158,7 @@ impl Screen {
             ScreenKind::Audit => Self::Audit(audit::Audit::default()),
             ScreenKind::Week => Self::Week(week::Week::default()),
             ScreenKind::Inbox => Self::Inbox(inbox::Inbox::default()),
+            ScreenKind::Connect => Self::Connect(connect::Connect::default()),
         }
     }
 
@@ -174,6 +178,7 @@ impl Screen {
             Self::Audit(_) => ScreenKind::Audit,
             Self::Week(_) => ScreenKind::Week,
             Self::Inbox(_) => ScreenKind::Inbox,
+            Self::Connect(_) => ScreenKind::Connect,
         }
     }
 
@@ -193,6 +198,7 @@ impl Screen {
             Self::Audit(_) => "Progress · Segment audit",
             Self::Week(_) => "Week",
             Self::Inbox(_) => "Inbox",
+            Self::Connect(_) => "Connect",
         }
     }
 
@@ -219,6 +225,7 @@ impl Screen {
             Self::Audit(s) => s.on_enter(api, tx),
             Self::Week(s) => s.on_enter(api, tx),
             Self::Inbox(s) => s.on_enter(api, tx),
+            Self::Connect(s) => s.on_enter(api, tx),
         }
     }
 
@@ -234,6 +241,7 @@ impl Screen {
             Self::Review(s) => s.intercept_key(key),
             Self::Week(s) => s.intercept_key(key),
             Self::Inbox(s) => s.intercept_key(key),
+            Self::Connect(s) => s.intercept_key(key),
             _ => None,
         }
     }
@@ -259,6 +267,7 @@ impl Screen {
             Self::Audit(s) => s.handle(action, api, tx).await,
             Self::Week(s) => s.handle(action, api, tx).await,
             Self::Inbox(s) => s.handle(action, api, tx).await,
+            Self::Connect(s) => s.handle(action, api, tx).await,
         }
     }
 
@@ -278,6 +287,7 @@ impl Screen {
             Self::Audit(s) => s.render(frame, area),
             Self::Week(s) => s.render(frame, area),
             Self::Inbox(s) => s.render(frame, area),
+            Self::Connect(s) => s.render(frame, area),
         }
     }
 
@@ -341,6 +351,7 @@ impl Screen {
             Self::Audit(s) => s.hints(),
             Self::Week(s) => s.hints(),
             Self::Inbox(s) => s.hints(),
+            Self::Connect(s) => s.hints(),
         }
     }
 }

@@ -1,7 +1,7 @@
 use crate::api::{
-    Activity, AuditAcknowledged, AuditRead, Book, BookChapter, Dashboard, DayMinutes, Domain, Note,
-    Progress, RateResult, Task, Timer, TimerCandidate, TimerSettings, TimerStopped, Today, Topic,
-    Week,
+    Activity, AuditAcknowledged, AuditRead, Book, BookChapter, CaptureSource, Dashboard,
+    DayMinutes, Domain, Note, Progress, RateResult, Task, Timer, TimerCandidate, TimerSettings,
+    TimerStopped, Today, Topic, Week,
 };
 use crate::app::screens::review::Rating;
 use crate::app::screens::ScreenKind;
@@ -385,6 +385,36 @@ pub enum Action {
     /// A live-only verb failed without a re-read (offline / server rejection) —
     /// clears the in-flight guard so the gesture can be retried.
     InboxActionFailed,
+
+    // Connect — the git-source connect flow (`src/app/screens/connect.rs`),
+    // reachable from the Inbox screen via `c` (the design's §Connect · git
+    // source). The capture sources (git / calendar) with their connect state,
+    // the plain-language trust statement rendered verbatim before connecting,
+    // and the honest requirement pointer when GitHub isn't connected. The verbs
+    // (connect / disconnect / sync) are LIVE-ONLY — the same epic deviation as
+    // the triage verbs (#94): connecting needs the server, so an offline gesture
+    // refuses honestly rather than synthesizing an opt-in that never happened.
+    ConnectLoaded(Vec<CaptureSource>),
+    ConnectLoadFailed(String),
+    RefreshConnect,
+    ConnectMove(i32),
+    /// `c` — open the trust/confirm prompt for the selected source (or the
+    /// requirement pointer when it isn't connectable).
+    ConnectBegin,
+    /// `d` — arm the disconnect confirm for the selected (connected) source.
+    ConnectDisconnectBegin,
+    /// `s` — enqueue a scan for the selected connected source.
+    ConnectSync,
+    /// `y`/`⏎` — proceed with whatever prompt is open (connect or disconnect).
+    ConnectPromptSubmit,
+    /// `Esc`/`n` — dismiss the open prompt without a server call.
+    ConnectPromptCancel,
+    /// Feed-URL capture keys (calendar connect only).
+    ConnectFeedInput(char),
+    ConnectFeedBackspace,
+    /// A live-only verb failed without a re-read (offline / server rejection) —
+    /// clears the in-flight guard so the gesture can be retried.
+    ConnectActionFailed,
 
     // Quick-capture overlay (`src/app/capture.rs`). Reachable from any screen
     // via the `<Space>` leader; also opened pre-filled to edit an existing note

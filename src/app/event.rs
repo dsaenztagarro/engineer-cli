@@ -176,6 +176,7 @@ fn screen_key(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action> 
         Notes => notes_key(key),
         Review => review_key(app, key),
         Inbox => inbox_key(app, key),
+        Connect => connect_key(key),
         Settings => match key.code {
             KeyCode::Char('h') | KeyCode::Esc => Some(Action::Goto(Home)),
             _ => None,
@@ -202,6 +203,9 @@ fn inbox_key(app: &App, key: crossterm::event::KeyEvent) -> Option<Action> {
             KeyCode::Enter | KeyCode::Char('l') => Some(Action::InboxOpen),
             KeyCode::Char('x') => Some(Action::InboxRejectBegin),
             KeyCode::Char('a') => Some(Action::InboxAck),
+            // `c` — the design's footer key (§Inbox · pending / zero): connect a
+            // source, the flow that makes drafts appear in the first place.
+            KeyCode::Char('c') => Some(Action::Goto(ScreenKind::Connect)),
             KeyCode::Char('h') | KeyCode::Esc => Some(Action::Goto(ScreenKind::Home)),
             _ => None,
         },
@@ -219,6 +223,23 @@ fn inbox_key(app: &App, key: crossterm::event::KeyEvent) -> Option<Action> {
             KeyCode::Char('h') | KeyCode::Esc => Some(Action::InboxCloseDetail),
             _ => None,
         },
+    }
+}
+
+/// Connect-flow keys (§Connect · git source): the sources list plus the three
+/// verbs. The trust/confirm/feed-URL prompts own their keys via the screen's
+/// `intercept_key` (which runs before this), so they never reach here — and the
+/// reducer guards the list verbs while a prompt is open. `h`/Esc steps back to
+/// the Inbox it was reached from (not Home), the tab-return idiom Audit uses.
+fn connect_key(key: crossterm::event::KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Some(Action::ConnectMove(1)),
+        KeyCode::Char('k') | KeyCode::Up => Some(Action::ConnectMove(-1)),
+        KeyCode::Char('c') => Some(Action::ConnectBegin),
+        KeyCode::Char('d') => Some(Action::ConnectDisconnectBegin),
+        KeyCode::Char('s') => Some(Action::ConnectSync),
+        KeyCode::Char('h') | KeyCode::Esc => Some(Action::Goto(ScreenKind::Inbox)),
+        _ => None,
     }
 }
 
@@ -471,6 +492,7 @@ fn refresh_for(kind: ScreenKind) -> Action {
         ScreenKind::Activities => Action::RefreshActivities,
         ScreenKind::Review => Action::RefreshReview,
         ScreenKind::Inbox => Action::RefreshInbox,
+        ScreenKind::Connect => Action::RefreshConnect,
         ScreenKind::Settings => Action::SettingsReload,
         ScreenKind::Audit => Action::AuditReload,
         _ => Action::RefreshHome,
