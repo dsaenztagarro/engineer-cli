@@ -255,6 +255,52 @@ impl ApiClient {
     pub async fn discard_timer(&self) -> Result<(), ApiError> {
         self.delete("/api/v1/timer").await
     }
+
+    // --- replay variants (`crate::queue::replay`) ---------------------------
+    // The same endpoints, re-sent with the queued intent's stored
+    // `Idempotency-Key` so a replay whose ack was lost cannot double-write
+    // (engineer#806). `discard_timer` has no variant: DELETE is naturally
+    // idempotent, so the replay pass calls it as-is.
+
+    pub(crate) async fn start_timer_idempotent(
+        &self,
+        activity_id: Option<i64>,
+        switch: bool,
+        key: &str,
+    ) -> Result<Timer, ApiError> {
+        self.post_idempotent(
+            "/api/v1/timer",
+            &StartBody {
+                activity_id,
+                switch: switch.then_some(true),
+            },
+            key,
+        )
+        .await
+    }
+
+    pub(crate) async fn pause_timer_idempotent(&self, key: &str) -> Result<Timer, ApiError> {
+        self.post_empty_idempotent("/api/v1/timer/pause", key).await
+    }
+
+    pub(crate) async fn resume_timer_idempotent(&self, key: &str) -> Result<Timer, ApiError> {
+        self.post_empty_idempotent("/api/v1/timer/resume", key)
+            .await
+    }
+
+    pub(crate) async fn stop_timer_idempotent(&self, key: &str) -> Result<TimerStopped, ApiError> {
+        self.post_empty_idempotent("/api/v1/timer/stop", key).await
+    }
+
+    pub(crate) async fn bind_timer_idempotent(
+        &self,
+        activity_id: Option<i64>,
+        title: Option<String>,
+        key: &str,
+    ) -> Result<Timer, ApiError> {
+        self.post_idempotent("/api/v1/timer/bind", &BindBody { activity_id, title }, key)
+            .await
+    }
 }
 
 #[cfg(test)]

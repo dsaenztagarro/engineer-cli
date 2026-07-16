@@ -9,6 +9,7 @@ mod inbox_cli;
 mod log_cli;
 mod progress_cli;
 mod queue;
+mod queue_cli;
 mod target_cli;
 mod timer_cache;
 mod timer_cli;
@@ -65,6 +66,9 @@ enum Cmd {
     Plan(week_cli::PlanArgs),
     /// Triage the assisted-capture draft inbox (list/accept/reject/ack/show).
     Inbox(inbox_cli::InboxArgs),
+    /// Inspect the offline write queue, or `sync` to replay it now;
+    /// exit codes: 0 drained/empty · 3 queued offline · 4 diverged · 5 replay failed.
+    Queue(queue_cli::QueueArgs),
     /// Launch the TUI (default).
     Tui,
 }
@@ -100,6 +104,7 @@ fn main() -> Result<()> {
             Cmd::Week(args) => week_cli::run_week(&cfg, args).await,
             Cmd::Plan(args) => week_cli::run_plan(&cfg, args).await,
             Cmd::Inbox(args) => inbox_cli::run(&cfg, args).await,
+            Cmd::Queue(args) => queue_cli::run(&cfg, args).await,
             Cmd::Tui => app::run(cfg).await.map(|()| 0),
         }
     })?;

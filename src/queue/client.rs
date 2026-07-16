@@ -16,6 +16,7 @@ use crate::timer_cache;
 use crate::timer_clock;
 
 use super::intent::IntentKind;
+use super::replay::{self, ReplayError, ReplayReport};
 use super::store::{QueueStore, QueueSummary};
 
 /// How a write landed: on the server, or into the queue with a locally
@@ -77,7 +78,31 @@ impl<'a> QueuedClient<'a> {
         })
     }
 
+    /// Run a full replay pass now; the caller renders the report.
+    pub async fn drain(&self) -> Result<ReplayReport, ReplayError> {
+        replay::drain(self.api, &self.store).await
+    }
+
+    /// The cheap drain the automatic triggers fire — before a live write and
+    /// after a successful one-shot read. Skips instantly when the queue is
+    /// empty (a summary depth check before taking any lock) and swallows
+    /// failures with a log line: the caller's own call carries the
+    /// user-facing error, and a divergence keeps surfacing through the
+    /// `queued`/`diverged` read fields until `engineer queue` resolves it.
+    pub async fn drain_best_effort(&self) {
+        if self.queue_summary().depth == 0 {
+            return;
+        }
+        if let Err(e) = self.drain().await {
+            tracing::warn!(target: "engineer_cli::queue", error = %e, "queue drain failed");
+        }
+    }
+
     pub async fn pause_timer(&self) -> Result<WriteOutcome<Timer>, ApiError> {
+        // Drain-before-live-write: a live write never jumps the queue. If the
+        // drain hits Transport, this verb's own live attempt fails the same
+        // way and the fresh intent enqueues *behind* the replaying ones.
+        self.drain_best_effort().await;
         match self.api.pause_timer().await {
             Ok(t) => Ok(WriteOutcome::Confirmed(t)),
             Err(ApiError::Transport(msg)) => {
@@ -91,6 +116,8 @@ impl<'a> QueuedClient<'a> {
     }
 
     pub async fn resume_timer(&self) -> Result<WriteOutcome<Timer>, ApiError> {
+        // Same drain-before-live-write contract as `pause_timer`.
+        self.drain_best_effort().await;
         match self.api.resume_timer().await {
             Ok(t) => Ok(WriteOutcome::Confirmed(t)),
             Err(ApiError::Transport(msg)) => {
@@ -239,6 +266,57 @@ mod tests {
             Err(ApiError::Transport(_))
         ));
         assert_eq!(queued.queue_summary().depth, 0, "nothing enqueued blind");
+    }
+
+    #[tokio::test]
+    async fn a_live_write_drains_the_queue_first() {
+        let server = MockServer::start().await;
+        // One replayed pause (with the stored key) + the live pause = 2 hits.
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/pause"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "paused": true, "elapsed_seconds": 1801
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let dir = tmp_dir("drain-first");
+        let store = QueueStore::at(dir.join("queue.json"));
+        store
+            .enqueue(crate::queue::IntentKind::TimerPause {
+                at: jiff::Timestamp::now(),
+            })
+            .unwrap();
+        let queued = QueuedClient::with_paths(&api, store, seeded_cache(&dir));
+
+        let out = queued.pause_timer().await.unwrap();
+        assert!(!out.is_provisional(), "the live write went live");
+        assert_eq!(queued.queue_summary().depth, 0, "the backlog drained first");
+    }
+
+    #[tokio::test]
+    async fn offline_drain_leaves_the_fresh_write_queued_behind() {
+        let api = dead_api();
+        let dir = tmp_dir("enqueue-behind");
+        let store = QueueStore::at(dir.join("queue.json"));
+        let first = store
+            .enqueue(crate::queue::IntentKind::TimerPause {
+                at: jiff::Timestamp::now(),
+            })
+            .unwrap();
+        let queued = QueuedClient::with_paths(&api, store, seeded_cache(&dir));
+
+        let out = queued.resume_timer().await.unwrap();
+        assert!(out.is_provisional());
+
+        let intents = QueueStore::at(dir.join("queue.json")).intents().unwrap();
+        assert_eq!(intents.len(), 2, "the fresh write joined the tail");
+        assert_eq!(intents[0].id, first.id, "order preserved");
+        assert_eq!(intents[0].attempts, 1, "the drain tried the head first");
+        assert_eq!(intents[1].kind.word(), "resume");
+        assert_eq!(intents[1].attempts, 0);
     }
 
     #[tokio::test]
