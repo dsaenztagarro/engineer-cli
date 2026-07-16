@@ -1,10 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-use super::{ApiClient, ApiError, List};
+use super::{ApiClient, ApiError, Keyed, List};
 
 // API model: fields mirror the wire format; the UI reads only a subset today.
+// `Default` seeds the provisional stand-in an offline `create`/`update`/`archive`
+// returns (`queue::QueuedClient`) — a negative-id row the board renders `◔ queued`.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Activity {
     pub id: i64,
     pub title: String,
@@ -66,7 +68,10 @@ pub struct ActivityFilters {
     pub per_page: Option<u32>,
 }
 
-#[derive(Debug, Default, Serialize)]
+// `Clone + PartialEq + Deserialize` so the whole body can ride an
+// `IntentKind::ActivityCreate` into `queue.json` and re-send verbatim on replay
+// (the plan-write offline seam — `queue::intent`).
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActivityCreate {
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -98,6 +103,20 @@ pub struct ActivityCreate {
 #[derive(Serialize)]
 struct ActivityCreateBody<'a> {
     activity: &'a ActivityCreate,
+}
+
+/// The subset of an activity a plan-item adjust (`e` on the board) edits in
+/// place via `PATCH /api/v1/activities/:id`. Only set fields serialize, so a
+/// title-only edit sends `{ activity: { title } }` and leaves the rest alone.
+#[derive(Debug, Default, Serialize)]
+pub struct ActivityUpdate {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ActivityUpdateBody<'a> {
+    activity: &'a ActivityUpdate,
 }
 
 impl ApiClient {
@@ -146,6 +165,38 @@ impl ApiClient {
             .await
     }
 
+    /// The `create_activity` twin carrying an `Idempotency-Key` — the plan-write
+    /// queue's replay path re-sends a deferred declare through this so a lost ack
+    /// can never mint the plan item twice (engineer#806, the same contract the
+    /// timer verbs replay under).
+    pub(crate) async fn create_activity_idempotent(
+        &self,
+        body: &ActivityCreate,
+        idempotency_key: &str,
+    ) -> Result<Keyed<Activity>, ApiError> {
+        self.post_idempotent(
+            "/api/v1/activities",
+            &ActivityCreateBody { activity: body },
+            idempotency_key,
+        )
+        .await
+    }
+
+    /// Edit an activity in place — the plan-item adjust (`e` on the board) and
+    /// its replay path. A plain PATCH: update/archive replay idempotently on the
+    /// server without a key (re-sending the same title is naturally idempotent).
+    pub async fn update_activity(
+        &self,
+        id: i64,
+        body: &ActivityUpdate,
+    ) -> Result<Activity, ApiError> {
+        self.patch(
+            &format!("/api/v1/activities/{id}"),
+            &ActivityUpdateBody { activity: body },
+        )
+        .await
+    }
+
     /// Mark the activity done — a member action that returns the updated record.
     pub async fn complete_activity(&self, id: i64) -> Result<Activity, ApiError> {
         self.post_empty(&format!("/api/v1/activities/{id}/complete"))
@@ -175,7 +226,7 @@ impl ApiClient {
 mod tests {
     use super::*;
     use url::Url;
-    use wiremock::matchers::{method, path, query_param};
+    use wiremock::matchers::{body_json, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn client(server: &MockServer) -> ApiClient {
@@ -241,6 +292,62 @@ mod tests {
             .await;
         let a = client(&server).archive_activity(9).await.unwrap();
         assert!(a.is_archived());
+    }
+
+    #[tokio::test]
+    async fn create_posts_a_wrapped_planned_activity() {
+        let server = MockServer::start().await;
+        // A plan item: a planned activity carrying `planned_on` and its rough
+        // size, wrapped under `activity` — the exact body `engineer plan` and the
+        // board's `a` gesture send.
+        Mock::given(method("POST"))
+            .and(path("/api/v1/activities"))
+            .and(body_json(serde_json::json!({
+                "activity": {
+                    "title": "one systems paper",
+                    "kind": "reading",
+                    "planned_on": "2026-07-13",
+                    "target_duration_minutes": 60
+                }
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 7, "title": "one systems paper", "status": "planned"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let create = ActivityCreate {
+            title: "one systems paper".into(),
+            kind: Some("reading".into()),
+            planned_on: Some("2026-07-13".parse().unwrap()),
+            target_duration_minutes: Some(60),
+            ..Default::default()
+        };
+        let a = client(&server).create_activity(&create).await.unwrap();
+        assert_eq!(a.id, 7);
+    }
+
+    #[tokio::test]
+    async fn update_patches_a_wrapped_title() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/activities/9"))
+            .and(body_json(serde_json::json!({
+                "activity": { "title": "revised" }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 9, "title": "revised", "status": "planned"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let update = ActivityUpdate {
+            title: Some("revised".into()),
+        };
+        let a = client(&server).update_activity(9, &update).await.unwrap();
+        assert_eq!(a.title, "revised");
     }
 
     #[tokio::test]

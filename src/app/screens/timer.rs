@@ -12,7 +12,6 @@
 //! - **Stopped** — the written segment (minutes + activity) so the ledger is
 //!   trusted; `↵` dismisses.
 
-use std::path::PathBuf;
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -29,31 +28,12 @@ use crate::api::{
 };
 use crate::app::action::Action;
 use crate::queue::{
-    Intent, IntentKind, IntentState, QueueStore, QueuedClient, Resolution, Resolved, WriteOutcome,
+    Intent, IntentKind, IntentState, QueueStore, Resolution, Resolved, WriteOutcome,
 };
 use crate::ui::notify::Level;
 use crate::ui::{layout::bordered, theme, widgets};
 
-/// Queue + read-cache locations for the offline write seam. `None` (production)
-/// uses the shared XDG paths (`QueuedClient::new`); tests inject a scratch dir
-/// so a spawned write never touches the real queue.
-type QueuePaths = Option<(PathBuf, PathBuf)>;
-
-/// Build the write seam a spawned task enqueues through — the shared XDG queue,
-/// or the test scratch paths when the screen was handed some.
-fn open_queued(
-    api: &ApiClient,
-    paths: &QueuePaths,
-) -> Result<QueuedClient, crate::queue::QueueError> {
-    match paths {
-        Some((queue, cache)) => Ok(QueuedClient::with_paths(
-            api,
-            QueueStore::at(queue.clone()),
-            cache.clone(),
-        )),
-        None => QueuedClient::new(api),
-    }
-}
+use super::{notify_seam_error, open_queued, QueuePaths};
 
 /// The four timer sub-verbs the `:` palette dispatches (`:timer start|pause|
 /// resume|stop`). Defined here, next to the actions they drive, so the grammar
@@ -2052,15 +2032,6 @@ fn forward_write(
     }
 }
 
-/// Loud failure when the queue seam itself can't open — the write can't even be
-/// deferred, so say so rather than dropping the gesture.
-fn notify_seam_error(tx: &UnboundedSender<Action>, context: &str, e: impl std::fmt::Display) {
-    let _ = tx.send(Action::Notify {
-        level: Level::Error,
-        text: format!("{context}: {e}"),
-    });
-}
-
 /// Today's logged minutes for the rail — the same today-window read the Home
 /// screen uses, reduced to one number.
 fn spawn_today(api: &ApiClient, tx: &UnboundedSender<Action>) {
@@ -2640,6 +2611,7 @@ fn spawn_candidates(api: &ApiClient, tx: &UnboundedSender<Action>, query: String
 mod tests {
     use super::*;
     use crate::config::{Config, Environment};
+    use std::path::PathBuf;
     use tokio::sync::mpsc;
 
     /// A per-test scratch (queue.json, cache) so a spawned offline write lands

@@ -186,14 +186,29 @@ pub enum Action {
     SettingsReload,
 
     // Week board (`src/app/screens/week.rs`, `:week`, `g w`) — the planned-vs-
-    // done readout for one ISO week. Read-only: stepping refetches, the cursor
-    // moves over the plan rows (the seam the plan-write gestures ride in later).
+    // done readout for one ISO week. Stepping refetches; the cursor moves over
+    // the plan rows the plan-write gestures act on.
     WeekLoaded(Box<Week>),
     WeekLoadFailed(String),
     WeekStep(i32),
     WeekReset,
     RefreshWeek,
     WeekSelectMove(i32),
+    // Plan writes from the board (#115). `a` opens the one-line intent input,
+    // `e` adjusts the selected row's title (both route through `WeekInput*`);
+    // `d` drops the selected row (armed, confirmed on a second press). Each
+    // write goes through `QueuedClient`, so an offline gesture queues and the
+    // board renders it provisionally.
+    WeekAddBegin,
+    WeekAdjustBegin,
+    WeekInputChar(char),
+    WeekInputBackspace,
+    WeekInputSubmit,
+    WeekInputCancel,
+    WeekDrop,
+    /// An offline declare landed in the queue: its title, for the provisional
+    /// `◔ … queued` row the board renders until the create replays.
+    WeekPlanQueued(String),
 
     // Segment audit (`Progress ▸ audit`, `:audit`).
     AuditLoaded(Box<AuditRead>),

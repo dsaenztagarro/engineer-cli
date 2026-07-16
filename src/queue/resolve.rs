@@ -137,6 +137,11 @@ pub async fn resolve(
         .filter(|i| i.stream == intent.stream && i.id >= intent.id && !i.is_parked())
         .collect();
 
+    // Only timer verbs compose a resolution today. A diverged plan write
+    // (`activity_create`/`_update`/`_archive`) can still be parked via
+    // take-server; keep-local/keep-both fall to the `other =>` refusals below —
+    // richer activity divergence (declare/adjust/drop reconciliation) is Phase-3
+    // (#110/#111), not this slice.
     match resolution {
         Resolution::TakeServer => park_group(store, &group, title),
         Resolution::KeepLocal => match &intent.kind {
@@ -345,6 +350,14 @@ fn compose_local_session(
                 ));
             }
             IntentKind::TimerStart { .. } | IntentKind::TimerBind { .. } => {}
+            // A timer-stream group never holds a plan write (activity intents
+            // key on the `activity`/`activity:<id>` streams), so this is
+            // unreachable — the match stays exhaustive over `IntentKind`.
+            IntentKind::ActivityCreate { .. }
+            | IntentKind::ActivityUpdate { .. }
+            | IntentKind::ActivityArchive { .. } => {
+                unreachable!("a plan write never shares a timer session's stream")
+            }
         }
     }
     let elapsed_s = stopped_elapsed.unwrap_or_else(|| timer_clock::elapsed(&timer, now));
