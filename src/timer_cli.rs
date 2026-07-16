@@ -15,6 +15,7 @@ use color_eyre::eyre::Result;
 use crate::api::{ApiClient, ApiError, ReclaimVerb, Reclaimed, Timer};
 use crate::auth::TokenProvider;
 use crate::config::Config;
+use crate::queue::QueuedClient;
 use crate::ui::widgets::fmt_elapsed;
 
 #[derive(Args)]
@@ -75,9 +76,10 @@ pub async fn run(cfg: &Config, args: TimerArgs) -> Result<i32> {
     let provider = TokenProvider::new(cfg.clone()).await?;
     let token = provider.access_token().await?;
     let api = ApiClient::with_token(cfg.api_url.clone(), token);
+    let queued = QueuedClient::new(&api).map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
     let colored = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
 
-    let outcome = dispatch(&api, args.cmd, args.json, colored).await?;
+    let outcome = dispatch(&api, &queued, args.cmd, args.json, colored).await?;
     for line in &outcome.out {
         println!("{line}");
     }
@@ -113,17 +115,18 @@ impl Outcome {
 
 async fn dispatch(
     api: &ApiClient,
+    queued: &QueuedClient<'_>,
     cmd: Option<TimerCmd>,
     json: bool,
     colored: bool,
 ) -> Result<Outcome, ApiError> {
     match cmd {
-        None => read(api, json, colored).await,
-        Some(TimerCmd::Status { short }) => status(api, short, colored).await,
+        None => read(api, queued, json, colored).await,
+        Some(TimerCmd::Status { short }) => status(api, queued, short, colored).await,
         Some(TimerCmd::Start { query, switch }) => start(api, query, switch, colored).await,
-        Some(TimerCmd::Toggle) => toggle(api, colored).await,
-        Some(TimerCmd::Pause) => pause(api, colored).await,
-        Some(TimerCmd::Resume) => resume(api, colored).await,
+        Some(TimerCmd::Toggle) => toggle(api, queued, colored).await,
+        Some(TimerCmd::Pause) => pause(queued, colored).await,
+        Some(TimerCmd::Resume) => resume(queued, colored).await,
         Some(TimerCmd::Stop { reclaim }) => stop(api, reclaim).await,
         Some(TimerCmd::Reclaim { verb }) => reclaim(api, &verb, json).await,
         Some(TimerCmd::Bind { query }) => bind(api, &query).await,
@@ -256,8 +259,14 @@ async fn fetch_timer(api: &ApiClient) -> Result<(Timer, Option<i64>), ApiError> 
     }
 }
 
-async fn read(api: &ApiClient, json: bool, colored: bool) -> Result<Outcome, ApiError> {
+async fn read(
+    api: &ApiClient,
+    queued: &QueuedClient<'_>,
+    json: bool,
+    colored: bool,
+) -> Result<Outcome, ApiError> {
     let (timer, stale) = fetch_timer(api).await?;
+    let depth = queued.queue_summary().depth;
     let code = exit_code(&timer);
     let line = if json {
         let mut v = json_read(&timer);
@@ -265,11 +274,18 @@ async fn read(api: &ApiClient, json: bool, colored: bool) -> Result<Outcome, Api
             v["stale"] = true.into();
             v["stale_age_s"] = age.into();
         }
+        // Unsynced local writes are a different honesty state than a stale
+        // read — both machine fields ship on every read (#100).
+        v["queued"] = (depth > 0).into();
+        v["queue_depth"] = depth.into();
         v.to_string()
     } else {
         let mut l = human_line(&timer, colored);
         if let Some(age) = stale {
             l.push_str(&stale_suffix(age, colored));
+        }
+        if depth > 0 {
+            l.push_str(&paint(&format!("  · {depth} queued"), COLOR_MUTED, colored));
         }
         l
     };
@@ -280,14 +296,25 @@ async fn read(api: &ApiClient, json: bool, colored: bool) -> Result<Outcome, Api
     })
 }
 
-async fn status(api: &ApiClient, short: bool, colored: bool) -> Result<Outcome, ApiError> {
+async fn status(
+    api: &ApiClient,
+    queued: &QueuedClient<'_>,
+    short: bool,
+    colored: bool,
+) -> Result<Outcome, ApiError> {
     let (timer, stale) = fetch_timer(api).await?;
+    let depth = queued.queue_summary().depth;
     let code = exit_code(&timer);
     let line = if short {
         let mut l = short_status(&timer, colored);
         // A stale status-bar clock wears a `~` so a glance still reads "offline".
         if !l.is_empty() && stale.is_some() {
             l.push_str(" ~");
+        }
+        // `↑N` — unsynced local writes, the quiet queued complication.
+        if !l.is_empty() && depth > 0 {
+            l.push(' ');
+            l.push_str(&paint(&format!("↑{depth}"), COLOR_FOCUS, colored));
         }
         l
     } else {
@@ -296,6 +323,9 @@ async fn status(api: &ApiClient, short: bool, colored: bool) -> Result<Outcome, 
             if l != "none" {
                 l.push_str(&format!(" stale_age_s={age}"));
             }
+        }
+        if depth > 0 {
+            l.push_str(&format!(" queued={depth}"));
         }
         l
     };
@@ -378,25 +408,42 @@ async fn start(
     }
 }
 
-async fn toggle(api: &ApiClient, colored: bool) -> Result<Outcome, ApiError> {
+async fn toggle(
+    api: &ApiClient,
+    queued: &QueuedClient<'_>,
+    colored: bool,
+) -> Result<Outcome, ApiError> {
     let timer = api.timer().await?;
     if !timer.running {
         return Ok(Outcome::refuse("nothing running"));
     }
     if timer.paused {
-        resume(api, colored).await
+        resume(queued, colored).await
     } else {
-        pause(api, colored).await
+        pause(queued, colored).await
     }
 }
 
-async fn pause(api: &ApiClient, colored: bool) -> Result<Outcome, ApiError> {
-    match api.pause_timer().await {
-        Ok(t) => Ok(Outcome::ok(format!(
-            "{} paused at {}",
-            paint("‖", COLOR_ATTENTION, colored),
-            fmt_elapsed(t.elapsed_seconds.unwrap_or(0))
-        ))),
+/// `· queued (offline)` — the provisional tail on a write that landed in the
+/// queue instead of on the server. Same honesty family as `stale_suffix`.
+fn queued_suffix(colored: bool) -> String {
+    paint("  · queued (offline)", COLOR_MUTED, colored)
+}
+
+async fn pause(queued: &QueuedClient<'_>, colored: bool) -> Result<Outcome, ApiError> {
+    match queued.pause_timer().await {
+        Ok(out) => {
+            let t = out.value();
+            let mut line = format!(
+                "{} paused at {}",
+                paint("‖", COLOR_ATTENTION, colored),
+                fmt_elapsed(t.elapsed_seconds.unwrap_or(0))
+            );
+            if out.is_provisional() {
+                line.push_str(&queued_suffix(colored));
+            }
+            Ok(Outcome::ok(line))
+        }
         Err(ApiError::Problem { title, detail, .. }) => {
             Ok(Outcome::refuse(problem_text(&title, &detail)))
         }
@@ -404,14 +451,21 @@ async fn pause(api: &ApiClient, colored: bool) -> Result<Outcome, ApiError> {
     }
 }
 
-async fn resume(api: &ApiClient, colored: bool) -> Result<Outcome, ApiError> {
-    match api.resume_timer().await {
-        Ok(t) => Ok(Outcome::ok(format!(
-            "{} resumed  {}  {}",
-            paint("●", COLOR_RUNNING, colored),
-            fmt_elapsed(t.elapsed_seconds.unwrap_or(0)),
-            t.label.as_deref().unwrap_or("untitled")
-        ))),
+async fn resume(queued: &QueuedClient<'_>, colored: bool) -> Result<Outcome, ApiError> {
+    match queued.resume_timer().await {
+        Ok(out) => {
+            let t = out.value();
+            let mut line = format!(
+                "{} resumed  {}  {}",
+                paint("●", COLOR_RUNNING, colored),
+                fmt_elapsed(t.elapsed_seconds.unwrap_or(0)),
+                t.label.as_deref().unwrap_or("untitled")
+            );
+            if out.is_provisional() {
+                line.push_str(&queued_suffix(colored));
+            }
+            Ok(Outcome::ok(line))
+        }
         Err(ApiError::Problem { title, detail, .. }) => {
             Ok(Outcome::refuse(problem_text(&title, &detail)))
         }
@@ -657,6 +711,40 @@ mod tests {
         serde_json::from_value(json).unwrap()
     }
 
+    /// A per-test scratch dir so the queue and read cache never touch the
+    /// shared XDG state.
+    fn scratch() -> std::path::PathBuf {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "engineer-timer-cli-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn queued_at<'a>(api: &'a ApiClient, dir: &std::path::Path) -> QueuedClient<'a> {
+        QueuedClient::with_paths(
+            api,
+            crate::queue::QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        )
+    }
+
+    /// `dispatch` with an isolated, empty queue — what most tests need.
+    async fn run_dispatch(
+        api: &ApiClient,
+        cmd: Option<TimerCmd>,
+        json: bool,
+        colored: bool,
+    ) -> Result<Outcome, ApiError> {
+        let dir = scratch();
+        let queued = queued_at(api, &dir);
+        dispatch(api, &queued, cmd, json, colored).await
+    }
+
     #[test]
     fn state_words_cover_every_face() {
         assert_eq!(
@@ -777,7 +865,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let outcome = dispatch(&client(&server), None, true, false).await.unwrap();
+        let outcome = run_dispatch(&client(&server), None, true, false)
+            .await
+            .unwrap();
         assert_eq!(outcome.code, 0);
         let v: serde_json::Value = serde_json::from_str(&outcome.out[0]).unwrap();
         assert_eq!(v["state"], "running");
@@ -808,7 +898,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let outcome = dispatch(
+        let outcome = run_dispatch(
             &client(&server),
             Some(TimerCmd::Start {
                 query: Some("raft".into()),
@@ -842,7 +932,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let outcome = dispatch(
+        let outcome = run_dispatch(
             &client(&server),
             Some(TimerCmd::Start {
                 query: None,
@@ -877,7 +967,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let outcome = dispatch(&client(&server), Some(TimerCmd::Toggle), false, false)
+        let outcome = run_dispatch(&client(&server), Some(TimerCmd::Toggle), false, false)
             .await
             .unwrap();
         assert_eq!(outcome.code, 0);
@@ -901,7 +991,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let outcome = dispatch(
+        let outcome = run_dispatch(
             &client(&server),
             Some(TimerCmd::Discard { force: false }),
             false,
@@ -930,7 +1020,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let outcome = dispatch(
+        let outcome = run_dispatch(
             &client(&server),
             Some(TimerCmd::Discard { force: true }),
             false,
@@ -965,7 +1055,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let outcome = dispatch(&client(&server), Some(TimerCmd::Settings), true, false)
+        let outcome = run_dispatch(&client(&server), Some(TimerCmd::Settings), true, false)
             .await
             .unwrap();
         assert_eq!(outcome.code, 0);
@@ -987,7 +1077,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let outcome = dispatch(
+        let outcome = run_dispatch(
             &client(&server),
             Some(TimerCmd::Stop { reclaim: None }),
             false,
@@ -997,5 +1087,110 @@ mod tests {
         .unwrap();
         assert_eq!(outcome.code, 1);
         assert!(outcome.err[0].contains("bind or discard first"));
+    }
+
+    // ------------------------------------------------- offline writes (#100)
+
+    fn dead_api() -> ApiClient {
+        ApiClient::with_token(Url::parse("http://127.0.0.1:1/").unwrap(), "tok".into())
+    }
+
+    #[tokio::test]
+    async fn offline_pause_queues_and_says_so() {
+        let api = dead_api();
+        let dir = scratch();
+        crate::timer_cache::store_at(
+            &dir.join("timer-cache.json"),
+            &timer(serde_json::json!({
+                "running": true, "bound": true, "elapsed_seconds": 2832,
+                "label": "systems"
+            })),
+        );
+        let queued = queued_at(&api, &dir);
+
+        let outcome = dispatch(&api, &queued, Some(TimerCmd::Pause), false, false)
+            .await
+            .unwrap();
+        assert_eq!(outcome.code, 0, "the keystroke is never refused offline");
+        assert!(outcome.out[0].contains("paused"));
+        assert!(outcome.out[0].contains("queued (offline)"));
+        assert_eq!(queued.queue_summary().depth, 1);
+    }
+
+    #[tokio::test]
+    async fn json_read_carries_the_queue_fields() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "elapsed_seconds": 3134
+            })))
+            .mount(&server)
+            .await;
+
+        let api = client(&server);
+        let dir = scratch();
+        let queued = queued_at(&api, &dir);
+        queued_seed(&dir, 2);
+
+        let outcome = dispatch(&api, &queued, None, true, false).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&outcome.out[0]).unwrap();
+        assert_eq!(v["queued"], true);
+        assert_eq!(v["queue_depth"], 2);
+        assert_eq!(
+            v["stale"],
+            serde_json::Value::Null,
+            "live read is not stale"
+        );
+    }
+
+    #[tokio::test]
+    async fn short_status_wears_the_queued_count() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "elapsed_seconds": 3134
+            })))
+            .mount(&server)
+            .await;
+
+        let api = client(&server);
+        let dir = scratch();
+        let queued = queued_at(&api, &dir);
+        queued_seed(&dir, 3);
+
+        let short = dispatch(
+            &api,
+            &queued,
+            Some(TimerCmd::Status { short: true }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(short.out[0], "● 52:14 ↑3");
+
+        let plain = dispatch(
+            &api,
+            &queued,
+            Some(TimerCmd::Status { short: false }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(plain.out[0].ends_with(" queued=3"), "{}", plain.out[0]);
+    }
+
+    fn queued_seed(dir: &std::path::Path, n: usize) {
+        let store = crate::queue::QueueStore::at(dir.join("queue.json"));
+        for _ in 0..n {
+            store
+                .enqueue(crate::queue::IntentKind::TimerPause {
+                    at: jiff::Timestamp::now(),
+                })
+                .unwrap();
+        }
     }
 }

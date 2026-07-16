@@ -12,6 +12,7 @@ mod queue;
 mod target_cli;
 mod timer_cache;
 mod timer_cli;
+mod timer_clock;
 mod today_cli;
 mod ui;
 mod week_cli;
