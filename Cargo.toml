@@ -2,7 +2,9 @@
 name = "engineer-cli"
 version = "0.7.0"
 edition = "2021"
-rust-version = "1.80"
+# 1.89 for std file locking (`File::lock`/`try_lock`) — the offline write
+# queue's advisory locks (`src/queue/store.rs`) with no extra dependency.
+rust-version = "1.89"
 description = "Terminal client for the Engineer study-tracking app"
 license = "MIT"
 repository = "https://github.com/dsaenztagarro/engineer-cli"

@@ -1,5 +1,5 @@
 use reqwest::StatusCode;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// RFC 7807 problem+json with the Engineer-specific `errors[]` extension for 422s.
@@ -14,7 +14,9 @@ struct Problem {
     errors: Vec<FieldError>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+// `Serialize` lets the offline write queue persist a rejection verbatim on a
+// diverged intent (`crate::queue`), the way the read cache serializes `Timer`.
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct FieldError {
     pub field: String,
     pub detail: String,

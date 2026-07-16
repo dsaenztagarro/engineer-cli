@@ -8,6 +8,7 @@ mod config;
 mod inbox_cli;
 mod log_cli;
 mod progress_cli;
+mod queue;
 mod target_cli;
 mod timer_cache;
 mod timer_cli;
