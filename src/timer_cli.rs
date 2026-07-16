@@ -1734,6 +1734,8 @@ mod tests {
                     detail: "a timer is already running".into(),
                     type_uri: None,
                     errors: vec![],
+                    code: None,
+                    conflict: Default::default(),
                 };
             })
             .unwrap();

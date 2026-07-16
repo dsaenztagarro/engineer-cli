@@ -32,7 +32,12 @@ pub use automations::Task;
 pub use books::{Book, BookChapter, BookStatus, BookUpdate};
 pub use domains::Domain;
 pub use envelope::List;
-pub use error::{ApiError, FieldError};
+pub use error::{codes, ApiError, ConflictInfo, FieldError};
+// Re-exported for naming the `current` snapshot's type outside `api`; today's
+// consumers reach it through `ConflictInfo::current`, so the name itself has
+// no callers yet.
+#[allow(unused_imports)]
+pub use error::ConflictTimer;
 pub use notes::{Anchor, Note, NoteFilters, NoteInput};
 pub use progress::{DayMinutes, PaceState, Progress, ProgressReading, TargetRef};
 pub use review::{Dashboard, RateResult, Topic, TopicFilters};
@@ -56,6 +61,21 @@ pub struct Me {
 
 /// The replay-dedupe header the server contract keys on (engineer#806).
 const IDEMPOTENCY_HEADER: &str = "Idempotency-Key";
+
+/// Set by the server when a keyed write was answered byte-identically from the
+/// stored first execution instead of re-running (engineer#806, ADR 0036).
+const IDEMPOTENCY_REPLAYED_HEADER: &str = "Idempotency-Replayed";
+
+/// A keyed write's response plus whether the server answered it from the
+/// idempotency store (`Idempotency-Replayed: true`). The value is the normal
+/// parsed body either way — a stored replay is indistinguishable from the
+/// first ack by design; the flag exists for the replay pass's telemetry and
+/// the dedupe tests.
+#[derive(Debug)]
+pub(crate) struct Keyed<T> {
+    pub value: T,
+    pub replayed: bool,
+}
 
 #[derive(Clone)]
 pub struct ApiClient {
@@ -156,31 +176,32 @@ impl ApiClient {
 
     // The `post`/`post_empty` twins that carry an `Idempotency-Key` header —
     // the offline queue's replay path (`crate::queue`) re-sends stored intents
-    // through these so a lost ack can never double-write. `send()` unchanged.
+    // through these so a lost ack can never double-write. They return `Keyed`
+    // so the replay pass can see when the answer was a stored replay.
     pub(crate) async fn post_idempotent<B: Serialize, T: DeserializeOwned>(
         &self,
         path: &str,
         body: &B,
         idempotency_key: &str,
-    ) -> Result<T, ApiError> {
+    ) -> Result<Keyed<T>, ApiError> {
         let req = self
             .request(Method::POST, path)
             .await?
             .header(IDEMPOTENCY_HEADER, idempotency_key)
             .json(body);
-        send(req).await
+        send_keyed(req).await
     }
 
     pub(crate) async fn post_empty_idempotent<T: DeserializeOwned>(
         &self,
         path: &str,
         idempotency_key: &str,
-    ) -> Result<T, ApiError> {
+    ) -> Result<Keyed<T>, ApiError> {
         let req = self
             .request(Method::POST, path)
             .await?
             .header(IDEMPOTENCY_HEADER, idempotency_key);
-        send(req).await
+        send_keyed(req).await
     }
 
     // PATCH for member actions that take no request body (unlink, archive,
@@ -196,6 +217,12 @@ impl ApiClient {
 }
 
 async fn send<T: DeserializeOwned>(req: RequestBuilder) -> Result<T, ApiError> {
+    Ok(send_keyed(req).await?.value)
+}
+
+// `send` plus the `Idempotency-Replayed` verdict — the keyed-write path reads
+// the flag; everything else drops it via `send`.
+async fn send_keyed<T: DeserializeOwned>(req: RequestBuilder) -> Result<Keyed<T>, ApiError> {
     // Split so we can log the method + URL of every call on a dedicated target.
     // We never log the Authorization header or token; URLs (incl. query params
     // like `status`/`q`) carry no secret. Response bodies are logged only on
@@ -214,6 +241,11 @@ async fn send<T: DeserializeOwned>(req: RequestBuilder) -> Result<T, ApiError> {
         }
     };
     let status = resp.status();
+    let replayed = resp
+        .headers()
+        .get(IDEMPOTENCY_REPLAYED_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"));
     let latency_ms = started.elapsed().as_millis();
     let bytes = resp
         .bytes()
@@ -221,12 +253,15 @@ async fn send<T: DeserializeOwned>(req: RequestBuilder) -> Result<T, ApiError> {
         .map_err(|e| ApiError::Transport(e.to_string()))?;
 
     if status.is_success() {
-        tracing::info!(target: "engineer_cli::api", %method, %url, status = status.as_u16(), latency_ms, "api call");
+        tracing::info!(target: "engineer_cli::api", %method, %url, status = status.as_u16(), latency_ms, idempotency_replayed = replayed, "api call");
         if bytes.is_empty() && std::any::type_name::<T>().contains("()") {
             // Caller expects unit; serde_json can't deserialize empty into ().
-            return serde_json::from_str("null").map_err(|e| ApiError::Decode(e.to_string()));
+            let value =
+                serde_json::from_str("null").map_err(|e| ApiError::Decode(e.to_string()))?;
+            return Ok(Keyed { value, replayed });
         }
-        return serde_json::from_slice(&bytes).map_err(|e| ApiError::Decode(e.to_string()));
+        let value = serde_json::from_slice(&bytes).map_err(|e| ApiError::Decode(e.to_string()))?;
+        return Ok(Keyed { value, replayed });
     }
 
     let detail = String::from_utf8_lossy(&bytes);

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::FieldError;
+use crate::api::{ConflictInfo, FieldError};
 
 /// A single deferred write: a mutation the user performed while the wire was
 /// down, persisted until it replays. Stored only until it syncs — the queue is
@@ -117,6 +117,19 @@ pub enum IntentState {
         type_uri: Option<String>,
         #[serde(default)]
         errors: Vec<FieldError>,
+        /// The stable conflict code (engineer#806, ADR 0036), when the server
+        /// sent one. Additive: pre-#107 queue documents load as `None` and the
+        /// reconcile surfaces fall back to the generic title/detail rendering.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+        /// The coded conflict's extension members (`current`, `resolutions`,
+        /// …), kept verbatim so the panel can render the server's side without
+        /// a second read. Empty on legacy and code-less problems. Boxed to
+        /// match [`ApiError::Problem`](crate::api::ApiError) — the payload rides
+        /// the error path verbatim into this state, and boxing keeps the
+        /// resolve/replay `Result`s off clippy's `result_large_err`.
+        #[serde(default, skip_serializing_if = "ConflictInfo::is_empty")]
+        conflict: Box<ConflictInfo>,
     },
     Parked {
         /// Why it was parked — the resolution that put it here, carrying the
@@ -168,6 +181,8 @@ mod tests {
 
     #[test]
     fn diverged_state_keeps_the_problem_payload() {
+        // A pre-#107 diverged shape: no `code`, no `conflict` — the additive
+        // fields must default so existing queue documents keep loading.
         let json = r#"{
             "state": "diverged",
             "status": 422, "title": "Segment overlaps", "detail": "…",
@@ -175,9 +190,49 @@ mod tests {
         }"#;
         let state: IntentState = serde_json::from_str(json).unwrap();
         match state {
-            IntentState::Diverged { status, errors, .. } => {
+            IntentState::Diverged {
+                status,
+                errors,
+                code,
+                conflict,
+                ..
+            } => {
                 assert_eq!(status, 422);
                 assert_eq!(errors.len(), 1);
+                assert!(code.is_none(), "pre-coded documents read as code-less");
+                assert!(conflict.is_empty());
+            }
+            other => panic!("expected diverged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn diverged_state_roundtrips_the_coded_conflict() {
+        let state = IntentState::Diverged {
+            status: 409,
+            title: "Timer already running".into(),
+            detail: "Stop the running timer first, or pass switch=true.".into(),
+            type_uri: Some("https://engineer.example/problems/timer-already-running".into()),
+            errors: vec![],
+            code: Some("timer-already-running".into()),
+            conflict: serde_json::from_value(serde_json::json!({
+                "current": {
+                    "id": 114, "activity_id": 9, "label": "Ruby OOP Study",
+                    "started_at": "2026-07-16T08:59:03Z", "paused": false
+                },
+                "resolutions": ["switch", "keep-remote"]
+            }))
+            .unwrap(),
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains(r#""code":"timer-already-running""#), "{json}");
+        let back: IntentState = serde_json::from_str(&json).unwrap();
+        match back {
+            IntentState::Diverged { code, conflict, .. } => {
+                assert_eq!(code.as_deref(), Some("timer-already-running"));
+                let current = conflict.current.expect("the snapshot rides along");
+                assert_eq!(current.activity_id, Some(9));
+                assert_eq!(conflict.resolutions, vec!["switch", "keep-remote"]);
             }
             other => panic!("expected diverged, got {other:?}"),
         }

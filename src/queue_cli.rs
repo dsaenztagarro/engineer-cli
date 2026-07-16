@@ -245,13 +245,23 @@ fn json_read(intents: &[Intent], now: i64) -> serde_json::Value {
                 "state": state_word(i),
                 "attempts": i.attempts,
             });
-            // The stored objection rides along so a script (and #107's coded
-            // conflicts tomorrow) can read the divergence without the TUI.
+            // The stored objection rides along so a script can read the
+            // divergence without the TUI — the coded conflict included, so a
+            // consumer can switch on `code` and read the extensions instead of
+            // parsing prose.
             match &i.state {
-                IntentState::Diverged { status, title, detail, .. } => {
-                    v["problem"] = serde_json::json!({
+                IntentState::Diverged { status, title, detail, code, conflict, .. } => {
+                    let mut problem = serde_json::json!({
                         "status": status, "title": title, "detail": detail,
                     });
+                    if let Some(code) = code {
+                        problem["code"] = serde_json::json!(code);
+                    }
+                    if !conflict.is_empty() {
+                        problem["conflict"] = serde_json::to_value(conflict)
+                            .unwrap_or(serde_json::Value::Null);
+                    }
+                    v["problem"] = problem;
                 }
                 IntentState::Parked { reason } => {
                     v["reason"] = serde_json::json!(reason);
@@ -505,6 +515,8 @@ mod tests {
                     detail: String::new(),
                     type_uri: None,
                     errors: vec![],
+                    code: None,
+                    conflict: Default::default(),
                 };
             })
             .unwrap();
@@ -770,6 +782,8 @@ mod tests {
                     detail: "a timer is already running".into(),
                     type_uri: None,
                     errors: vec![],
+                    code: None,
+                    conflict: Default::default(),
                 };
             })
             .unwrap();
@@ -1024,10 +1038,19 @@ mod tests {
             .mutate(|doc| {
                 doc.intents_mut()[0].state = IntentState::Diverged {
                     status: 409,
-                    title: "Conflict".into(),
+                    title: "Timer already running".into(),
                     detail: "a timer is already running".into(),
                     type_uri: None,
                     errors: vec![],
+                    code: Some("timer-already-running".into()),
+                    conflict: serde_json::from_value(serde_json::json!({
+                        "current": {
+                            "id": 114, "activity_id": 9, "label": "systems",
+                            "started_at": "2026-07-15T09:00:00Z", "paused": false
+                        },
+                        "resolutions": ["switch", "keep-remote"]
+                    }))
+                    .unwrap(),
                 };
                 doc.intents_mut()[1].state = IntentState::Parked {
                     reason: "took server · Conflict".into(),
@@ -1042,13 +1065,41 @@ mod tests {
         assert_eq!(v["diverged"], 1);
         assert_eq!(v["parked"], 1);
         assert_eq!(v["intents"][0]["problem"]["status"], 409);
-        assert_eq!(v["intents"][0]["problem"]["title"], "Conflict");
+        assert_eq!(v["intents"][0]["problem"]["title"], "Timer already running");
+        // The coded conflict is machine-readable: switch on `code`, read the
+        // extensions — no prose parsing.
+        assert_eq!(v["intents"][0]["problem"]["code"], "timer-already-running");
+        assert_eq!(
+            v["intents"][0]["problem"]["conflict"]["current"]["label"],
+            "systems"
+        );
+        assert_eq!(
+            v["intents"][0]["problem"]["conflict"]["resolutions"][0],
+            "switch"
+        );
         assert_eq!(v["intents"][1]["state"], "parked");
         assert_eq!(v["intents"][1]["reason"], "took server · Conflict");
         assert!(
             v["intents"][2]["problem"].is_null(),
             "pending rows carry no objection"
         );
+    }
+
+    #[tokio::test]
+    async fn json_read_of_a_codeless_problem_carries_no_code_member() {
+        let dir = scratch();
+        let store = seeded(&dir, 1);
+        diverge_first(&store);
+        let outcome = dispatch(&dead_api(), &store, None, None, true, false)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&outcome.out[0]).unwrap();
+        assert_eq!(v["intents"][0]["problem"]["status"], 422);
+        assert!(
+            v["intents"][0]["problem"]["code"].is_null(),
+            "the generic fallback stays exactly as it was"
+        );
+        assert!(v["intents"][0]["problem"]["conflict"].is_null());
     }
 
     #[tokio::test]
