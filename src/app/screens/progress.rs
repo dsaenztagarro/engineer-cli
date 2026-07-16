@@ -4,7 +4,7 @@
 //! weeks with `[` / `]`; `t` returns to the current week.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use jiff::{ToSpan, Zoned};
+use jiff::ToSpan;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -128,7 +128,7 @@ impl Progress {
     fn fetch(&self, api: &ApiClient, tx: &UnboundedSender<Action>) {
         let api = api.clone();
         let tx = tx.clone();
-        let week = week_param(self.offset);
+        let week = super::week_param(self.offset);
         tokio::spawn(async move {
             match api.get_progress(week.as_deref()).await {
                 Ok(progress) => {
@@ -540,7 +540,7 @@ fn week_header(data: &ProgressData) -> Line<'static> {
 /// marker (accent) flags the selected row that `e`/`x` act on.
 fn meter_line(reading: &ProgressReading, label_w: usize, selected: bool) -> Line<'static> {
     let name = reading.target.scope.name().to_lowercase();
-    let label = pad_or_truncate(&name, label_w);
+    let label = super::pad_or_truncate(&name, label_w);
     let color = state_color(reading.state);
 
     let marker = if selected { "▌ " } else { "  " };
@@ -639,31 +639,6 @@ fn fmt_hours(hours: f64) -> String {
     } else {
         format!("{hours:.1}")
     }
-}
-
-fn pad_or_truncate(s: &str, width: usize) -> String {
-    let len = s.chars().count();
-    if len > width {
-        let mut out: String = s.chars().take(width.saturating_sub(1)).collect();
-        out.push('…');
-        out
-    } else {
-        format!("{s:<width$}")
-    }
-}
-
-/// The ISO week id (`YYYY-Www`) `offset` weeks from the current week, or `None`
-/// for the current week so the server picks its own default.
-fn week_param(offset: i32) -> Option<String> {
-    if offset == 0 {
-        return None;
-    }
-    let target = Zoned::now()
-        .date()
-        .checked_add((offset as i64 * 7).days())
-        .ok()?;
-    let iso = target.iso_week_date();
-    Some(format!("{:04}-W{:02}", iso.year(), iso.week()))
 }
 
 impl ProgressReading {
@@ -903,8 +878,8 @@ mod tests {
 
     #[test]
     fn week_param_none_for_current_week() {
-        assert!(week_param(0).is_none());
-        assert!(week_param(-1).unwrap().contains("-W"));
+        assert!(super::super::week_param(0).is_none());
+        assert!(super::super::week_param(-1).unwrap().contains("-W"));
     }
 
     fn spans_text(line: &Line) -> String {

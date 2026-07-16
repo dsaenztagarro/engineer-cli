@@ -1,6 +1,7 @@
 //! Screen routing. Each screen is a self-contained reducer + renderer.
 
 use crossterm::event::KeyEvent;
+use jiff::{ToSpan, Zoned};
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::Frame;
@@ -22,6 +23,38 @@ pub mod progress;
 pub mod review;
 pub mod settings;
 pub mod timer;
+pub mod week;
+
+/// The ISO week id (`YYYY-Www`) `offset` weeks from the current study week
+/// (0 = this week, -1 = last week). The one derivation the week-dialect screens
+/// (Progress, Week) step with, so `[`/`]`/`t` agree across them.
+pub(crate) fn iso_week_for_offset(offset: i32) -> String {
+    let today = Zoned::now().date();
+    let target = today
+        .checked_add((offset as i64 * 7).days())
+        .unwrap_or(today);
+    let iso = target.iso_week_date();
+    format!("{:04}-W{:02}", iso.year(), iso.week())
+}
+
+/// The `week` query parameter for the Progress endpoint: `None` for the current
+/// week (the server picks its own default), else the explicit ISO week id.
+pub(crate) fn week_param(offset: i32) -> Option<String> {
+    (offset != 0).then(|| iso_week_for_offset(offset))
+}
+
+/// Left-align `s` into `width` columns, truncating with an ellipsis when it
+/// overruns — the shared row-label fitter for the week-dialect tables.
+pub(crate) fn pad_or_truncate(s: &str, width: usize) -> String {
+    let len = s.chars().count();
+    if len > width {
+        let mut out: String = s.chars().take(width.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    } else {
+        format!("{s:<width$}")
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScreenKind {
@@ -37,6 +70,7 @@ pub enum ScreenKind {
     Review,
     Settings,
     Audit,
+    Week,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +94,7 @@ pub enum Screen {
     Review(Box<review::Review>),
     Settings(settings::Settings),
     Audit(audit::Audit),
+    Week(week::Week),
 }
 
 impl Screen {
@@ -77,6 +112,7 @@ impl Screen {
             ScreenKind::Review => Self::Review(Box::default()),
             ScreenKind::Settings => Self::Settings(settings::Settings::default()),
             ScreenKind::Audit => Self::Audit(audit::Audit::default()),
+            ScreenKind::Week => Self::Week(week::Week::default()),
         }
     }
 
@@ -94,6 +130,7 @@ impl Screen {
             Self::Review(_) => ScreenKind::Review,
             Self::Settings(_) => ScreenKind::Settings,
             Self::Audit(_) => ScreenKind::Audit,
+            Self::Week(_) => ScreenKind::Week,
         }
     }
 
@@ -111,6 +148,7 @@ impl Screen {
             Self::Review(_) => "Review",
             Self::Settings(_) => "Settings · Timer",
             Self::Audit(_) => "Progress · Segment audit",
+            Self::Week(_) => "Week",
         }
     }
 
@@ -135,6 +173,7 @@ impl Screen {
             Self::Review(s) => s.on_enter(api, tx),
             Self::Settings(s) => s.on_enter(api, tx),
             Self::Audit(s) => s.on_enter(api, tx),
+            Self::Week(s) => s.on_enter(api, tx),
         }
     }
 
@@ -171,6 +210,7 @@ impl Screen {
             Self::Review(s) => s.handle(action, api, tx).await,
             Self::Settings(s) => s.handle(action, api, tx).await,
             Self::Audit(s) => s.handle(action, api, tx).await,
+            Self::Week(s) => s.handle(action, api, tx).await,
         }
     }
 
@@ -188,6 +228,7 @@ impl Screen {
             Self::Review(s) => s.render(frame, area),
             Self::Settings(s) => s.render(frame, area),
             Self::Audit(s) => s.render(frame, area),
+            Self::Week(s) => s.render(frame, area),
         }
     }
 
@@ -216,6 +257,7 @@ impl Screen {
             return crate::ui::widgets::footer_hints(&[
                 ("t", "timer"),
                 ("p", "progress"),
+                ("w", "week"),
                 ("r", "review"),
                 ("h", "home"),
                 ("b", "books"),
@@ -246,6 +288,7 @@ impl Screen {
             Self::Review(s) => s.hints(),
             Self::Settings(s) => s.hints(),
             Self::Audit(s) => s.hints(),
+            Self::Week(s) => s.hints(),
         }
     }
 }

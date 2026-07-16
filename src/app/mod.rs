@@ -1366,6 +1366,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn command_week_verb_lands_on_the_week_board() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        // `:week` routes through Nav → Goto and the screen becomes current.
+        submit_command(&mut app, "week").await;
+        // Apply the enqueued Goto so the screen actually switches.
+        app.handle(Action::Goto(ScreenKind::Week)).await;
+        assert_eq!(app.current.kind(), ScreenKind::Week);
+        assert!(rendered_text(&mut app).contains("Week"));
+    }
+
+    #[tokio::test]
     async fn command_prefix_resolves_to_activities() {
         let (mut app, mut rx) = test_app(Some("alice@example.com".into()));
         submit_command(&mut app, "act").await;
@@ -1466,6 +1477,13 @@ mod tests {
         assert!(matches!(
             press(&mut app, 'r'),
             Some(Action::Goto(ScreenKind::Review))
+        ));
+
+        // `g w` reaches the week board.
+        press(&mut app, 'g');
+        assert!(matches!(
+            press(&mut app, 'w'),
+            Some(Action::Goto(ScreenKind::Week))
         ));
     }
 

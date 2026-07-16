@@ -45,7 +45,7 @@ pub use segments::SegmentUpdate;
 pub use targets::{TargetCreate, TargetScope, TargetState};
 pub use timer::{ReclaimVerb, Reclaimed, Timer, TimerCandidate, TimerSettings, TimerStopped};
 pub use today::Today;
-pub use weeks::Week;
+pub use weeks::{PlanItem, PlanState, Week};
 
 /// Current user from `GET /api/v1/me`. Fields mirror the API contract; not all
 /// are consumed by the UI yet.
