@@ -123,14 +123,14 @@ async fn dispatch(
     match cmd {
         None => read(api, queued, json, colored).await,
         Some(TimerCmd::Status { short }) => status(api, queued, short, colored).await,
-        Some(TimerCmd::Start { query, switch }) => start(api, query, switch, colored).await,
+        Some(TimerCmd::Start { query, switch }) => start(api, queued, query, switch, colored).await,
         Some(TimerCmd::Toggle) => toggle(api, queued, colored).await,
         Some(TimerCmd::Pause) => pause(queued, colored).await,
         Some(TimerCmd::Resume) => resume(queued, colored).await,
-        Some(TimerCmd::Stop { reclaim }) => stop(api, reclaim).await,
+        Some(TimerCmd::Stop { reclaim }) => stop(api, queued, reclaim, colored).await,
         Some(TimerCmd::Reclaim { verb }) => reclaim(api, &verb, json).await,
-        Some(TimerCmd::Bind { query }) => bind(api, &query).await,
-        Some(TimerCmd::Discard { force }) => discard(api, force).await,
+        Some(TimerCmd::Bind { query }) => bind(api, queued, &query, colored).await,
+        Some(TimerCmd::Discard { force }) => discard(api, queued, force, colored).await,
         Some(TimerCmd::Settings) => settings(api, json).await,
     }
 }
@@ -369,41 +369,71 @@ fn stale_suffix(age_secs: i64, colored: bool) -> String {
 
 async fn start(
     api: &ApiClient,
+    queued: &QueuedClient,
     query: Option<String>,
     switch: bool,
     colored: bool,
 ) -> Result<Outcome, ApiError> {
+    // Resolving a query to an activity is a *live* candidates read. Offline we
+    // can't fuzzy-match, and guessing would bind the wrong thing — so refuse
+    // with the way forward (start bare, or wait for the wire). A *bare* start
+    // needs no read and rides the queue below (the #103 offline-start decision).
     let activity_id = match &query {
         None => None,
-        Some(q) => match api.timer_candidates(Some(q)).await?.first() {
-            Some(candidate) => Some(candidate.id),
-            None => return Ok(Outcome::refuse(format!("no activity matches \"{q}\""))),
+        Some(q) => match api.timer_candidates(Some(q)).await {
+            Ok(list) => match list.first() {
+                Some(candidate) => Some(candidate.id),
+                None => return Ok(Outcome::refuse(format!("no activity matches \"{q}\""))),
+            },
+            Err(ApiError::Transport(_)) => {
+                return Ok(Outcome::refuse(format!(
+                    "offline — can't resolve \"{q}\"; start bare or retry online"
+                )));
+            }
+            Err(e) => return Err(e),
         },
     };
 
     // The saved-segment details of a switch live server-side; read the current
-    // timer first so the output can at least name what was stopped.
+    // timer first so the output can at least name what was stopped. Offline,
+    // fall back to the effective (folded) timer, or skip the line when nothing
+    // is locally known — the switch still rides the intent and replays as a
+    // stop & save.
     let previous = if switch {
-        let t = api.timer().await?;
-        t.running
-            .then(|| t.label.unwrap_or_else(|| "untitled".into()))
+        let running_label = |t: Timer| {
+            t.running
+                .then(|| t.label.unwrap_or_else(|| "untitled".into()))
+        };
+        match api.timer().await {
+            Ok(t) => running_label(t),
+            Err(ApiError::Transport(_)) => queued
+                .effective_timer(jiff::Timestamp::now())
+                .and_then(|(t, _)| running_label(t)),
+            Err(e) => return Err(e),
+        }
     } else {
         None
     };
 
-    match api.start_timer(activity_id, switch).await {
-        Ok(timer) => {
-            let mut out = Vec::new();
+    match queued.start_timer(activity_id, switch).await {
+        Ok(out) => {
+            let provisional = out.is_provisional();
+            let timer = out.value();
+            let mut lines = Vec::new();
             if let Some(label) = previous {
-                out.push(format!("■ stopped & saved {label}"));
+                lines.push(format!("■ stopped & saved {label}"));
             }
-            out.push(format!(
+            let mut started = format!(
                 "{} started  0:00:00  {}",
                 paint("●", COLOR_RUNNING, colored),
                 timer.label.as_deref().unwrap_or("untitled")
-            ));
+            );
+            if provisional {
+                started.push_str(&queued_suffix(colored));
+            }
+            lines.push(started);
             Ok(Outcome {
-                out,
+                out: lines,
                 err: vec![],
                 code: 0,
             })
@@ -428,7 +458,17 @@ async fn toggle(
     queued: &QueuedClient,
     colored: bool,
 ) -> Result<Outcome, ApiError> {
-    let timer = api.timer().await?;
+    // Toggle needs to know the direction (paused → resume, else pause). Offline,
+    // read it off the effective (folded) timer so the same keystroke flips the
+    // local clock; with nothing locally known there is no direction to pick.
+    let timer = match api.timer().await {
+        Ok(t) => t,
+        Err(ApiError::Transport(_)) => match queued.effective_timer(jiff::Timestamp::now()) {
+            Some((t, _)) => t,
+            None => return Ok(Outcome::refuse("nothing running")),
+        },
+        Err(e) => return Err(e),
+    };
     if !timer.running {
         return Ok(Outcome::refuse("nothing running"));
     }
@@ -488,25 +528,50 @@ async fn resume(queued: &QueuedClient, colored: bool) -> Result<Outcome, ApiErro
     }
 }
 
-async fn stop(api: &ApiClient, reclaim_verb: Option<String>) -> Result<Outcome, ApiError> {
+async fn stop(
+    api: &ApiClient,
+    queued: &QueuedClient,
+    reclaim_verb: Option<String>,
+    colored: bool,
+) -> Result<Outcome, ApiError> {
     // `--reclaim` decides the idle tail first: `stop` maps straight to the
     // reclaim endpoint (segment ends at last input); `trim`/`keep` settle the
-    // tail, then the plain stop below saves to now.
+    // tail, then the plain stop below saves to now. Reclaim is the server's
+    // idle verdict — it can't be synthesized locally, so it stays live-only and
+    // refuses clearly offline rather than queueing a half-decided stop.
     match reclaim_verb.as_deref() {
         None => {}
-        Some("stop") => return reclaim(api, "stop", false).await,
-        Some(other) => {
-            let settled = reclaim(api, other, false).await?;
-            if settled.code != 0 {
+        Some(verb) => {
+            let settled = match reclaim(api, verb, false).await {
+                Ok(s) => s,
+                Err(ApiError::Transport(_)) => return Ok(Outcome::refuse(RECLAIM_OFFLINE)),
+                Err(e) => return Err(e),
+            };
+            // `stop` ends the segment at the reclaim endpoint; a failed trim/keep
+            // stops here too. Only a clean trim/keep falls through to save now.
+            if verb == "stop" || settled.code != 0 {
                 return Ok(settled);
             }
         }
     }
-    match api.stop_timer().await {
-        Ok(stopped) => Ok(Outcome::ok(format!(
-            "■ saved {}m (segment {})",
-            stopped.minutes, stopped.segment_id
-        ))),
+    match queued.stop_timer().await {
+        Ok(out) => {
+            // Provisional stop carries no segment id — it's server-minted on
+            // replay (the negative sentinel stays a private side channel).
+            let mut line = if out.is_provisional() {
+                format!("■ saved {}m", out.value().minutes)
+            } else {
+                format!(
+                    "■ saved {}m (segment {})",
+                    out.value().minutes,
+                    out.value().segment_id
+                )
+            };
+            if out.is_provisional() {
+                line.push_str(&queued_suffix(colored));
+            }
+            Ok(Outcome::ok(line))
+        }
         Err(ApiError::Problem { title, detail, .. }) => Ok(Outcome::refuse(format!(
             "{} — bind or discard first",
             problem_text(&title, &detail)
@@ -515,12 +580,39 @@ async fn stop(api: &ApiClient, reclaim_verb: Option<String>) -> Result<Outcome, 
     }
 }
 
-async fn bind(api: &ApiClient, query: &str) -> Result<Outcome, ApiError> {
-    let Some(candidate) = api.timer_candidates(Some(query)).await?.first().cloned() else {
-        return Ok(Outcome::refuse(format!("no activity matches \"{query}\"")));
+/// One spelling of the offline-reclaim refusal — `--reclaim` needs a live idle
+/// verdict from the server, so it can't be settled from a tunnel.
+const RECLAIM_OFFLINE: &str = "offline — reclaim needs the server's idle verdict; retry online";
+
+async fn bind(
+    api: &ApiClient,
+    queued: &QueuedClient,
+    query: &str,
+    colored: bool,
+) -> Result<Outcome, ApiError> {
+    // Resolving the query is a live candidates read (same constraint as a
+    // query'd start). Offline we can't match it, so refuse with the way forward
+    // rather than bind the wrong activity.
+    let candidate = match api.timer_candidates(Some(query)).await {
+        Ok(list) => match list.first().cloned() {
+            Some(c) => c,
+            None => return Ok(Outcome::refuse(format!("no activity matches \"{query}\""))),
+        },
+        Err(ApiError::Transport(_)) => {
+            return Ok(Outcome::refuse(format!(
+                "offline — can't resolve \"{query}\"; retry online"
+            )));
+        }
+        Err(e) => return Err(e),
     };
-    match api.bind_timer(Some(candidate.id), None).await {
-        Ok(_) => Ok(Outcome::ok(format!("⚑ bound to {}", candidate.title))),
+    match queued.bind_timer(Some(candidate.id), None).await {
+        Ok(out) => {
+            let mut line = format!("⚑ bound to {}", candidate.title);
+            if out.is_provisional() {
+                line.push_str(&queued_suffix(colored));
+            }
+            Ok(Outcome::ok(line))
+        }
         Err(ApiError::Problem { title, detail, .. }) => {
             Ok(Outcome::refuse(problem_text(&title, &detail)))
         }
@@ -532,8 +624,22 @@ async fn bind(api: &ApiClient, query: &str) -> Result<Outcome, ApiError> {
 /// `--force`. One shared fence with the Timer screen.
 use crate::app::screens::timer::DISCARD_CONFIRM_SECS;
 
-async fn discard(api: &ApiClient, force: bool) -> Result<Outcome, ApiError> {
-    let timer = api.timer().await?;
+async fn discard(
+    api: &ApiClient,
+    queued: &QueuedClient,
+    force: bool,
+    colored: bool,
+) -> Result<Outcome, ApiError> {
+    // The elapsed the force fence guards comes from the effective (folded) local
+    // clock offline, so `--force` reads the same "how much work" the user sees.
+    let timer = match api.timer().await {
+        Ok(t) => t,
+        Err(ApiError::Transport(_)) => match queued.effective_timer(jiff::Timestamp::now()) {
+            Some((t, _)) => t,
+            None => return Ok(Outcome::refuse("nothing running")),
+        },
+        Err(e) => return Err(e),
+    };
     if !timer.running {
         return Ok(Outcome::refuse("nothing running"));
     }
@@ -544,11 +650,12 @@ async fn discard(api: &ApiClient, force: bool) -> Result<Outcome, ApiError> {
             fmt_elapsed(elapsed)
         )));
     }
-    api.discard_timer().await?;
-    Ok(Outcome::ok(format!(
-        "✗ discarded {} — nothing written",
-        fmt_elapsed(elapsed)
-    )))
+    let out = queued.discard_timer().await?;
+    let mut line = format!("✗ discarded {} — nothing written", fmt_elapsed(elapsed));
+    if out.is_provisional() {
+        line.push_str(&queued_suffix(colored));
+    }
+    Ok(Outcome::ok(line))
 }
 
 // ---------------------------------------------------------------- shapes
@@ -1300,6 +1407,271 @@ mod tests {
             "the drained queue no longer wears the marker: {}",
             outcome.out[0]
         );
+    }
+
+    // ------------------------------------------- offline headless verbs (#104)
+
+    use crate::queue::{IntentKind, QueueStore};
+
+    /// Seed a running (optionally paused) bound timer in the read cache, anchored
+    /// `elapsed_s` seconds ago so the folded clock reads that exact elapsed.
+    fn seed_running(dir: &std::path::Path, elapsed_s: i64, paused: bool) {
+        let now = jiff::Timestamp::now();
+        let started = jiff::Timestamp::from_second(now.as_second() - elapsed_s).unwrap();
+        crate::timer_cache::store_at(
+            &dir.join("timer-cache.json"),
+            &timer(serde_json::json!({
+                "running": true, "paused": paused, "bound": true, "activity_id": 9,
+                "label": "systems", "started_at": started.to_string(), "elapsed_seconds": 0
+            })),
+        );
+    }
+
+    fn pending(dir: &std::path::Path) -> Vec<crate::queue::Intent> {
+        QueueStore::at(dir.join("queue.json")).pending().unwrap()
+    }
+
+    #[tokio::test]
+    async fn offline_bare_start_queues_a_provisional_clock() {
+        let api = dead_api();
+        let dir = scratch();
+        let queued = queued_at(&api, &dir);
+
+        let outcome = dispatch(
+            &api,
+            &queued,
+            Some(TimerCmd::Start {
+                query: None,
+                switch: false,
+            }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.code, 0, "a bare offline start is never refused");
+        assert!(outcome.out[0].contains("started"), "{}", outcome.out[0]);
+        assert!(outcome.out[0].contains("0:00:00"), "{}", outcome.out[0]);
+        assert!(
+            outcome.out[0].contains("queued (offline)"),
+            "{}",
+            outcome.out[0]
+        );
+        let intents = pending(&dir);
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].kind.word(), "start");
+    }
+
+    #[tokio::test]
+    async fn offline_query_start_refuses_it_cannot_resolve() {
+        let api = dead_api();
+        let dir = scratch();
+        let queued = queued_at(&api, &dir);
+
+        let outcome = dispatch(
+            &api,
+            &queued,
+            Some(TimerCmd::Start {
+                query: Some("raft".into()),
+                switch: false,
+            }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.err[0].contains("can't resolve \"raft\""));
+        assert!(outcome.err[0].contains("start bare"));
+        assert_eq!(
+            queued.queue_summary().depth,
+            0,
+            "a refusal enqueues nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn offline_stop_prints_the_queued_save_and_carries_local_elapsed() {
+        let api = dead_api();
+        let dir = scratch();
+        seed_running(&dir, 2700, false); // 45 minutes
+        let queued = queued_at(&api, &dir);
+
+        let outcome = dispatch(
+            &api,
+            &queued,
+            Some(TimerCmd::Stop { reclaim: None }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.code, 0);
+        assert_eq!(
+            outcome.out[0], "■ saved 45m  · queued (offline)",
+            "the provisional save mirrors the confirmed line, marked queued"
+        );
+        assert!(
+            !outcome.out[0].contains("segment"),
+            "no provisional id shown"
+        );
+        assert!(
+            !outcome.out[0].contains("-1"),
+            "no negative sentinel leaked"
+        );
+
+        let intents = pending(&dir);
+        assert_eq!(intents[0].kind.word(), "stop");
+        match &intents[0].kind {
+            IntentKind::TimerStop {
+                local_elapsed_s, ..
+            } => assert!(
+                (2699..=2701).contains(local_elapsed_s),
+                "the stop carries the folded local elapsed: {local_elapsed_s}"
+            ),
+            other => panic!("expected a stop intent, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn offline_stop_reclaim_refuses_live_only() {
+        let api = dead_api();
+        let dir = scratch();
+        seed_running(&dir, 2700, false);
+        let queued = queued_at(&api, &dir);
+
+        let outcome = dispatch(
+            &api,
+            &queued,
+            Some(TimerCmd::Stop {
+                reclaim: Some("trim".into()),
+            }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.err[0].contains("reclaim needs the server's idle verdict"));
+        assert_eq!(queued.queue_summary().depth, 0, "no stop was queued");
+    }
+
+    #[tokio::test]
+    async fn offline_toggle_pauses_then_resumes() {
+        // Running → toggle pauses.
+        let api = dead_api();
+        let dir = scratch();
+        seed_running(&dir, 600, false);
+        let queued = queued_at(&api, &dir);
+        let paused = dispatch(&api, &queued, Some(TimerCmd::Toggle), false, false)
+            .await
+            .unwrap();
+        assert_eq!(paused.code, 0);
+        assert!(paused.out[0].contains("paused"), "{}", paused.out[0]);
+        assert!(paused.out[0].contains("queued (offline)"));
+        assert_eq!(pending(&dir)[0].kind.word(), "pause");
+
+        // Paused → toggle resumes (fresh queue + cache).
+        let dir = scratch();
+        seed_running(&dir, 600, true);
+        let queued = queued_at(&api, &dir);
+        let resumed = dispatch(&api, &queued, Some(TimerCmd::Toggle), false, false)
+            .await
+            .unwrap();
+        assert_eq!(resumed.code, 0);
+        assert!(resumed.out[0].contains("resumed"), "{}", resumed.out[0]);
+        assert!(resumed.out[0].contains("queued (offline)"));
+        assert_eq!(pending(&dir)[0].kind.word(), "resume");
+    }
+
+    #[tokio::test]
+    async fn offline_bind_refuses_it_cannot_resolve() {
+        let api = dead_api();
+        let dir = scratch();
+        seed_running(&dir, 600, false);
+        let queued = queued_at(&api, &dir);
+
+        let outcome = dispatch(
+            &api,
+            &queued,
+            Some(TimerCmd::Bind {
+                query: "raft".into(),
+            }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.err[0].contains("can't resolve \"raft\""));
+        assert_eq!(queued.queue_summary().depth, 0, "no bind was queued");
+    }
+
+    #[tokio::test]
+    async fn offline_discard_under_the_fence_queues_the_delete() {
+        let api = dead_api();
+        let dir = scratch();
+        seed_running(&dir, 30, false); // under the ~2 minute fence
+        let queued = queued_at(&api, &dir);
+
+        let outcome = dispatch(
+            &api,
+            &queued,
+            Some(TimerCmd::Discard { force: false }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.code, 0);
+        assert!(outcome.out[0].contains("discarded"), "{}", outcome.out[0]);
+        assert!(outcome.out[0].contains("queued (offline)"));
+        assert_eq!(pending(&dir)[0].kind.word(), "discard");
+    }
+
+    #[tokio::test]
+    async fn offline_discard_over_the_fence_needs_force() {
+        let api = dead_api();
+        let dir = scratch();
+        seed_running(&dir, 2700, false); // 45 minutes — over the fence
+        let queued = queued_at(&api, &dir);
+
+        let refused = dispatch(
+            &api,
+            &queued,
+            Some(TimerCmd::Discard { force: false }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(refused.code, 1);
+        assert!(refused.err[0].contains("--force"), "{}", refused.err[0]);
+        assert_eq!(
+            queued.queue_summary().depth,
+            0,
+            "the fence refuses before queueing"
+        );
+
+        let forced = dispatch(
+            &api,
+            &queued,
+            Some(TimerCmd::Discard { force: true }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(forced.code, 0);
+        assert!(forced.out[0].contains("discarded"));
+        assert!(forced.out[0].contains("queued (offline)"));
+        assert_eq!(pending(&dir)[0].kind.word(), "discard");
     }
 
     fn queued_seed(dir: &std::path::Path, n: usize) {
