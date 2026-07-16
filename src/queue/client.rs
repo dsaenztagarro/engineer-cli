@@ -16,7 +16,7 @@ use crate::timer_cache;
 use crate::timer_clock;
 
 use super::fold::{self, Provenance};
-use super::intent::IntentKind;
+use super::intent::{Intent, IntentKind};
 use super::replay::{self, ReplayError, ReplayReport};
 use super::store::{QueueStore, QueueSummary};
 
@@ -131,6 +131,28 @@ impl QueuedClient {
         }
         if let Err(e) = self.drain().await {
             tracing::warn!(target: "engineer_cli::queue", error = %e, "queue drain failed");
+        }
+    }
+
+    /// The reconnect drain the TUI header poll fires: like [`drain_best_effort`],
+    /// but streaming each acknowledged intent to `on_replay` so the caller can
+    /// paint the reconnect transcript (`back online · replaying the queue…`).
+    /// Same best-effort contract — skips instantly on an empty queue (no lock
+    /// taken, so no false transcript), swallows a failed pass with a log line —
+    /// and returns the [`ReplayReport`] the `✓ synced` tile reads. `None` when
+    /// there was nothing to drain, so the caller shows nothing.
+    ///
+    /// [`drain_best_effort`]: Self::drain_best_effort
+    pub async fn drain_reporting(&self, on_replay: impl FnMut(&Intent)) -> Option<ReplayReport> {
+        if self.queue_summary().depth == 0 {
+            return None;
+        }
+        match replay::drain_reporting(&self.api, &self.store, on_replay).await {
+            Ok(report) => Some(report),
+            Err(e) => {
+                tracing::warn!(target: "engineer_cli::queue", error = %e, "reconnect drain failed");
+                None
+            }
         }
     }
 

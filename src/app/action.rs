@@ -4,6 +4,7 @@ use crate::api::{
 };
 use crate::app::screens::review::Rating;
 use crate::app::screens::ScreenKind;
+use crate::queue::ReplayReport;
 use crate::ui::notify::Level;
 
 /// Reducer-style messages dispatched by event handlers and async tasks.
@@ -124,6 +125,20 @@ pub enum Action {
     /// returns provisionally (`◔`). Both the app snapshot and the Timer screen
     /// take it — the screen flips its provisional marker on, unlike `TimerStale`.
     TimerProvisional(Box<Timer>),
+    /// The reconnect drain acknowledged one queued intent — its verb word,
+    /// streamed into the ambient replay transcript as it lands (`back online ·
+    /// replaying the queue…`). One per acknowledged intent; the reducer appends
+    /// it to the one-line status. Reuses the `TimerProvisional`-style plumbing:
+    /// the spawned drain task streams these back into the reducer.
+    ReplayProgress {
+        word: String,
+    },
+    /// The reconnect drain finished — the [`ReplayReport`] the synced tile reads.
+    /// A clean pass that replayed ≥1 lands `✓ synced — N queued writes
+    /// reconciled` (auto-dismissing on the notify TTL); an empty pass or one
+    /// halted by divergence shows nothing here (the diverged markers stand; the
+    /// reconcile panel is #106).
+    ReplayFinished(ReplayReport),
     TimerCleared,
     TimerReload,
     /// The `s` key — stage-dependent primary: starts the clock when absent,
