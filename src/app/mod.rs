@@ -15,13 +15,14 @@ use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::{stdout, Stdout};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::api::{ApiClient, Timer};
 use crate::auth::TokenProvider;
 use crate::config::Config;
-use crate::queue::QueueStore;
+use crate::queue::{QueueStore, QueuedClient};
 use crate::ui::notify::{Level, Notification};
 
 mod action;
@@ -94,6 +95,11 @@ pub struct App {
     /// suspends the TUI, spawns the editor, and feeds the result back — set by
     /// the capture overlay's `Ctrl-E`.
     pub pending_editor: Option<String>,
+    /// The verb words replayed so far in the current reconnect drain — the
+    /// running one-line transcript (`back online · replaying the queue… start ·
+    /// pause`). Grows on each `ReplayProgress` and is emptied when the drain
+    /// finishes (`ReplayFinished`). Empty when no drain is in flight.
+    pub reconnect_words: Vec<String>,
 }
 
 pub async fn run(config: Config) -> Result<()> {
@@ -144,6 +150,7 @@ async fn run_loop(
         overrun_pinged: None,
         heartbeat_last: Instant::now(),
         pending_editor: None,
+        reconnect_words: Vec::new(),
     };
 
     // Kick off initial loads (only meaningful once authenticated).
@@ -177,9 +184,7 @@ async fn run_loop(
                 }
             }
             _ = ticker.tick() => {
-                if app.notification.as_ref().is_some_and(Notification::is_expired) {
-                    app.notification = None;
-                }
+                app.expire_stale_notification();
                 app.poll_timer_if_due();
                 app.refresh_queued_writes();
             }
@@ -280,6 +285,81 @@ fn format_minutes(minutes: u32) -> String {
     }
 }
 
+/// The synced-tile count, pluralized: `1 queued write reconciled` vs. `N queued
+/// writes reconciled`.
+fn writes_reconciled(n: usize) -> String {
+    if n == 1 {
+        "1 queued write reconciled".to_string()
+    } else {
+        format!("{n} queued writes reconciled")
+    }
+}
+
+/// The header poll's task body. Reconnect-drains the queue first — streaming
+/// each landed intent's verb word into the ambient transcript, then the report
+/// the `✓ synced` tile reads — then reads the live snapshot (warming the read
+/// cache) or folds the cached clock on a transport failure. This is what makes
+/// the TUI reconcile on its own, not only on the next write.
+///
+/// Extracted from the `RefreshTimer` handler so the wiremock tests can drive the
+/// drain → transcript path with a scratch queue + cache. `queued` is the write
+/// seam (`None` when the state dir is unavailable); `cache_path` warms a scratch
+/// cache in tests (`None` → the shared XDG cache).
+async fn run_timer_poll(
+    api: ApiClient,
+    tx: mpsc::UnboundedSender<Action>,
+    queued: Option<QueuedClient>,
+    cache_path: Option<PathBuf>,
+) {
+    // Reconnect drain: replay any pending intents before the read so the poll
+    // reflects what just synced. `drain_reporting` streams a `ReplayProgress`
+    // per acknowledged intent (the transcript) and returns the report; it skips
+    // instantly — streaming nothing — on an empty queue or a held replay lock,
+    // so a false transcript can never appear.
+    if let Some(q) = &queued {
+        let tx2 = tx.clone();
+        let report = q
+            .drain_reporting(|intent| {
+                let _ = tx2.send(Action::ReplayProgress {
+                    word: intent.kind.word().to_string(),
+                });
+            })
+            .await;
+        if let Some(report) = report {
+            let _ = tx.send(Action::ReplayFinished(report));
+        }
+    }
+
+    match api.timer().await {
+        Ok(t) => {
+            // Warm the read cache with server truth (the headless read caches
+            // the same way at `timer_cli::fetch_timer`). Without a snapshot a
+            // TUI-only session would have nothing to synthesize an offline
+            // pause/resume/stop/bind/discard from, and would refuse the keystroke.
+            match &cache_path {
+                Some(path) => crate::timer_cache::store_at(path, &t),
+                None => crate::timer_cache::store(&t),
+            }
+            let _ = tx.send(Action::TimerLoaded(Box::new(t)));
+        }
+        // Offline (the same seam the headless read falls back on): render the
+        // effective local timer — cached snapshot ⊕ pending queue — instead of
+        // letting the header quietly extrapolate a clock the queue may have
+        // paused or stopped.
+        Err(crate::api::ApiError::Transport(e)) => {
+            tracing::warn!(target: "engineer_cli::api", error = %e, "timer poll failed; folding cache + queue");
+            if let Some(q) = &queued {
+                if let Some((t, _)) = q.effective_timer(jiff::Timestamp::now()) {
+                    let _ = tx.send(Action::TimerStale(Box::new(t)));
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(target: "engineer_cli::api", error = %e, "timer poll failed");
+        }
+    }
+}
+
 fn init_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut out = stdout();
@@ -348,41 +428,8 @@ impl App {
                 let api = self.api.clone();
                 let tx = self.tx.clone();
                 tokio::spawn(async move {
-                    let queued = crate::queue::QueuedClient::new(&api).ok();
-                    // Reconnect drain: replay any pending intents before the read
-                    // so the poll reflects what just synced (best-effort, skips
-                    // instantly when the queue is empty). This is what makes the
-                    // TUI reconcile on its own, not only on the next write.
-                    if let Some(q) = &queued {
-                        q.drain_best_effort().await;
-                    }
-                    match api.timer().await {
-                        Ok(t) => {
-                            // Warm the read cache with server truth (the headless
-                            // read caches the same way at `timer_cli::fetch_timer`).
-                            // Without this a TUI-only session has no snapshot, so
-                            // an offline pause/resume/stop/bind/discard would find
-                            // nothing to synthesize from and refuse the keystroke.
-                            crate::timer_cache::store(&t);
-                            let _ = tx.send(Action::TimerLoaded(Box::new(t)));
-                        }
-                        // Offline (the same seam the headless read falls back
-                        // on): render the effective local timer — cached
-                        // snapshot ⊕ pending queue — instead of letting the
-                        // header quietly extrapolate a clock the queue may
-                        // have paused or stopped.
-                        Err(crate::api::ApiError::Transport(e)) => {
-                            tracing::warn!(target: "engineer_cli::api", error = %e, "timer poll failed; folding cache + queue");
-                            if let Some(q) = &queued {
-                                if let Some((t, _)) = q.effective_timer(jiff::Timestamp::now()) {
-                                    let _ = tx.send(Action::TimerStale(Box::new(t)));
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(target: "engineer_cli::api", error = %e, "timer poll failed");
-                        }
-                    }
+                    let queued = QueuedClient::new(&api).ok();
+                    run_timer_poll(api, tx, queued, None).await;
                 });
             }
             Action::TimerLoaded(t) => {
@@ -430,6 +477,36 @@ impl App {
                     .current
                     .handle(Action::TimerProvisional(t), &self.api, &self.tx)
                     .await;
+            }
+            // The reconnect drain streamed a landed intent's verb word: append
+            // it to the running one-line transcript and render it in the shipped
+            // notify surface (`back online · replaying the queue… start · pause`)
+            // — quiet and ambient, never a modal takeover.
+            Action::ReplayProgress { word } => {
+                self.reconnect_words.push(word);
+                self.notify(
+                    Level::Info,
+                    format!(
+                        "back online · replaying the queue… {}",
+                        self.reconnect_words.join(" · ")
+                    ),
+                );
+            }
+            // The drain finished. A clean pass that reconciled ≥1 write lands one
+            // calm `✓ synced` tile (auto-dismissing on the notify TTL, ~4s). An
+            // empty pass shows nothing; a pass halted by divergence retires the
+            // transcript and lets the existing diverged markers stand — the loud
+            // reconcile panel is #106, not this ticket.
+            Action::ReplayFinished(report) => {
+                let showed_transcript = !std::mem::take(&mut self.reconnect_words).is_empty();
+                if report.replayed >= 1 && !report.diverged {
+                    self.notify(
+                        Level::Success,
+                        format!("synced — {}", writes_reconciled(report.replayed)),
+                    );
+                } else if showed_transcript {
+                    self.notification = None;
+                }
             }
             // Store-and-forward like TimerLoaded: the app keeps the knobs for
             // the header cell, the current screen gets its own copy.
@@ -665,6 +742,19 @@ impl App {
         });
     }
 
+    /// Drop the active notification once it outlives its level's TTL — run each
+    /// tick. The `✓ synced` reconnect tile rides this to auto-dismiss (~4s,
+    /// `Level::Success`'s TTL), the same self-expiry every notification uses.
+    fn expire_stale_notification(&mut self) {
+        if self
+            .notification
+            .as_ref()
+            .is_some_and(Notification::is_expired)
+        {
+            self.notification = None;
+        }
+    }
+
     /// Re-poll the header timer snapshot when a poll is due and we're signed in.
     fn poll_timer_if_due(&mut self) {
         if self.user.is_some() && self.timer_last_poll.elapsed() >= TIMER_POLL_INTERVAL {
@@ -748,6 +838,7 @@ mod tests {
             overrun_pinged: None,
             heartbeat_last: Instant::now(),
             pending_editor: None,
+            reconnect_words: Vec::new(),
         };
         (app, rx)
     }
@@ -964,6 +1055,182 @@ mod tests {
             .await;
         assert!(app.timer.as_ref().is_some_and(|t| t.running));
         assert!(!app.timer_stale, "a fresh local write is not a stale read");
+    }
+
+    // --- Reconnect UX: the replay transcript + the synced tile (#105) ---
+
+    fn replay_report(
+        replayed: usize,
+        remaining: usize,
+        diverged: bool,
+    ) -> crate::queue::ReplayReport {
+        crate::queue::ReplayReport {
+            replayed,
+            remaining,
+            diverged,
+        }
+    }
+
+    #[tokio::test]
+    async fn reconnect_transcript_streams_then_lands_the_synced_tile() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+
+        // Each landed intent appends its verb word to the one-line transcript.
+        app.handle(Action::ReplayProgress {
+            word: "start".into(),
+        })
+        .await;
+        let n = app.notification.as_ref().expect("the transcript shows");
+        assert_eq!(
+            n.level,
+            Level::Info,
+            "the transcript is quiet, not a success"
+        );
+        assert!(n.text.contains("back online"), "{}", n.text);
+        assert!(n.text.contains("start"), "{}", n.text);
+
+        app.handle(Action::ReplayProgress {
+            word: "pause".into(),
+        })
+        .await;
+        let n = app.notification.as_ref().unwrap();
+        assert!(
+            n.text.contains("start") && n.text.contains("pause"),
+            "each word accumulates: {}",
+            n.text
+        );
+
+        // A clean drain lands one calm success tile and empties the transcript.
+        app.handle(Action::ReplayFinished(replay_report(2, 0, false)))
+            .await;
+        let n = app.notification.as_ref().expect("the synced tile lands");
+        assert_eq!(n.level, Level::Success);
+        assert_eq!(n.text, "synced — 2 queued writes reconciled");
+        assert!(
+            app.reconnect_words.is_empty(),
+            "transcript reset for next drain"
+        );
+    }
+
+    #[tokio::test]
+    async fn synced_tile_uses_singular_copy_for_one_write() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.handle(Action::ReplayFinished(replay_report(1, 0, false)))
+            .await;
+        assert_eq!(
+            app.notification.as_ref().unwrap().text,
+            "synced — 1 queued write reconciled"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn synced_tile_auto_dismisses_after_its_ttl() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.handle(Action::ReplayFinished(replay_report(2, 0, false)))
+            .await;
+        assert_eq!(app.notification.as_ref().unwrap().level, Level::Success);
+
+        // Still fresh — the tick's expiry leaves it be.
+        app.expire_stale_notification();
+        assert!(app.notification.is_some(), "not yet past its TTL");
+
+        // Past the Success TTL, the same self-expiry every notification uses
+        // clears it — the glance, not a report.
+        tokio::time::advance(Level::Success.ttl() + Duration::from_secs(1)).await;
+        app.expire_stale_notification();
+        assert!(app.notification.is_none(), "auto-dismissed after ~4s");
+    }
+
+    #[tokio::test]
+    async fn a_diverged_drain_shows_no_synced_tile() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        // A transcript was showing when the server diverged mid-drain.
+        app.handle(Action::ReplayProgress {
+            word: "start".into(),
+        })
+        .await;
+        assert!(app.notification.is_some());
+
+        // Divergence retires the transcript and shows no "synced" — the existing
+        // diverged markers stand (the reconcile panel is #106).
+        app.handle(Action::ReplayFinished(replay_report(1, 1, true)))
+            .await;
+        assert!(app.notification.is_none(), "no synced tile on divergence");
+        assert!(app.reconnect_words.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_empty_drain_shows_nothing() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.handle(Action::ReplayFinished(replay_report(0, 0, false)))
+            .await;
+        assert!(
+            app.notification.is_none(),
+            "a drain that replayed nothing is silent"
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_with_a_queued_write_drains_and_streams_the_transcript() {
+        use crate::queue::{IntentKind, QueueStore, QueuedClient};
+        use url::Url;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // The queued pause replays on reconnect...
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/pause"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "paused": true
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // ...then the live read lands.
+        Mock::given(method("GET"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "bound": true, "elapsed_seconds": 300
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = std::env::temp_dir().join(format!("engineer-poll-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = QueueStore::at(dir.join("queue.json"));
+        store
+            .enqueue(IntentKind::TimerPause {
+                at: "2026-07-15T09:30:00Z".parse().unwrap(),
+            })
+            .unwrap();
+
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let cache = dir.join("timer-cache.json");
+        let queued = QueuedClient::with_paths(&api, store, cache.clone());
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        super::run_timer_poll(api, tx, Some(queued), Some(cache)).await;
+
+        let actions = drain(&mut rx);
+        // The transcript: one ReplayProgress per replayed intent, its verb word.
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, Action::ReplayProgress { word } if word == "pause")),
+            "{actions:?}"
+        );
+        // The report the synced tile reads.
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, Action::ReplayFinished(r) if r.replayed == 1 && !r.diverged)),
+            "{actions:?}"
+        );
+        // The read landed after the drain.
+        assert!(actions.iter().any(|a| matches!(a, Action::TimerLoaded(_))));
     }
 
     #[tokio::test]

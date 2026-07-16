@@ -44,6 +44,19 @@ pub enum ReplayError {
 /// pass the same way a fresh divergence halts it: everything queued behind
 /// the choice stays queued.
 pub async fn drain(api: &ApiClient, store: &QueueStore) -> Result<ReplayReport, ReplayError> {
+    drain_reporting(api, store, |_| {}).await
+}
+
+/// [`drain`], but reporting each acknowledged intent to `on_replay` as it lands
+/// — the TUI streams these into its reconnect transcript (`back online ·
+/// replaying the queue…`). The callback fires only for intents the server
+/// *acknowledges*, so a pass that replays nothing (still offline, a held replay
+/// lock, an already-parked divergence) never calls it: the transcript can't lie.
+pub async fn drain_reporting(
+    api: &ApiClient,
+    store: &QueueStore,
+    mut on_replay: impl FnMut(&Intent),
+) -> Result<ReplayReport, ReplayError> {
     let Some(_guard) = store.try_replay_lock()? else {
         return report(store, 0);
     };
@@ -63,6 +76,7 @@ pub async fn drain(api: &ApiClient, store: &QueueStore) -> Result<ReplayReport, 
                 // leaves the queue (under the writer lock, like all mutation).
                 store.mutate(|doc| doc.intents_mut().retain(|i| i.id != intent.id))?;
                 replayed += 1;
+                on_replay(&intent);
             }
             Err(ApiError::Transport(msg)) => {
                 // The wire dropped again. Everything stays pending; only the
@@ -221,6 +235,48 @@ mod tests {
             ],
             "wire order is queue order, each carrying its own stored key"
         );
+    }
+
+    #[tokio::test]
+    async fn drain_reporting_streams_each_verb_word_in_order() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "running": true })),
+            )
+            .expect(3)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("reporting");
+        store.enqueue(IntentKind::TimerPause { at: at() }).unwrap();
+        store.enqueue(IntentKind::TimerResume { at: at() }).unwrap();
+        store.enqueue(IntentKind::TimerPause { at: at() }).unwrap();
+
+        let mut words = Vec::new();
+        let report = drain_reporting(&client(&server), &store, |i| words.push(i.kind.word()))
+            .await
+            .unwrap();
+        assert_eq!(report.replayed, 3);
+        assert_eq!(
+            words,
+            vec!["pause", "resume", "pause"],
+            "one word per ack, in FIFO order"
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_reporting_never_fires_when_the_lock_is_held() {
+        let store = tmp_store("reporting-held");
+        store.enqueue(IntentKind::TimerPause { at: at() }).unwrap();
+        let _guard = store.try_replay_lock().unwrap().expect("free lock");
+
+        let mut fired = false;
+        let report = drain_reporting(&dead_api(), &store, |_| fired = true)
+            .await
+            .unwrap();
+        assert_eq!(report.replayed, 0);
+        assert!(!fired, "a skipped pass streams no transcript");
     }
 
     #[tokio::test]
