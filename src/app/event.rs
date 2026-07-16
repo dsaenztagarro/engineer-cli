@@ -331,6 +331,9 @@ fn week_key(key: crossterm::event::KeyEvent) -> Option<Action> {
         (KeyCode::Char('a'), _) => Some(Action::WeekAddBegin),
         (KeyCode::Char('e'), _) => Some(Action::WeekAdjustBegin),
         (KeyCode::Char('d'), _) => Some(Action::WeekDrop),
+        // `i` — the retro reflection, per the design's footer (`r` is the global
+        // refresh key, so reflect takes the design's vim-ish `i` = "write").
+        (KeyCode::Char('i'), _) => Some(Action::WeekReflect),
         (KeyCode::Char('['), _) => Some(Action::WeekStep(-1)),
         (KeyCode::Char(']'), _) => Some(Action::WeekStep(1)),
         (KeyCode::Char('t'), _) => Some(Action::WeekReset),

@@ -216,6 +216,29 @@ pub enum Action {
     /// An offline declare landed in the queue: its title, for the provisional
     /// `◔ … queued` row the board renders until the create replays.
     WeekPlanQueued(String),
+    /// `i` — the retro reflection (#117): the week board reads its current note
+    /// body and dispatches `WeekReflectEdit` to open `$EDITOR` (the git-commit
+    /// pattern). No-op until the week has loaded.
+    WeekReflect,
+    /// App-level: stash the seeded note body for the run loop to open in
+    /// `$EDITOR`, tagged to persist back to `iso_week`'s note. Mirrors
+    /// `CaptureEditExternal` — the terminal-owned suspend/spawn is the run loop's.
+    WeekReflectEdit {
+        iso_week: String,
+        seed: String,
+    },
+    /// The editor saved: persist the reflection through `QueuedClient`. An empty
+    /// `body` clears the note deliberately (the server treats empty as clear).
+    WeekReflectSave {
+        iso_week: String,
+        body: String,
+    },
+    /// The editor aborted (quit-without-write): keep the stored note untouched
+    /// (capture-is-sacred across the boundary) — the board only says so.
+    WeekReflectAbort,
+    /// An offline reflection landed in the queue: the written body, for the retro
+    /// band's `◔ queued` render until the note write replays.
+    WeekReflectQueued(String),
 
     // Segment audit (`Progress ▸ audit`, `:audit`).
     AuditLoaded(Box<AuditRead>),

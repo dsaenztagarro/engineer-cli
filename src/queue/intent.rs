@@ -90,6 +90,16 @@ pub enum IntentKind {
     ActivityArchive {
         id: i64,
     },
+    /// Write the week's retro reflection — a deferred `PATCH
+    /// /api/v1/weeks/:iso_week/note` (the board's `i`, deferred while offline).
+    /// Carries the whole body so the replay re-sends it verbatim; the route
+    /// upserts the single note row, so it is naturally idempotent (a re-send
+    /// overwrites with the same body) and replays as a plain call. Stream
+    /// `"week:<iso_week>"`: one note per week, ordered on its own.
+    WeekNoteWrite {
+        iso_week: String,
+        body: String,
+    },
 }
 
 impl IntentKind {
@@ -108,6 +118,9 @@ impl IntentKind {
             Self::ActivityUpdate { id, .. } | Self::ActivityArchive { id } => {
                 format!("activity:{id}")
             }
+            // One note per week, ordered on its own stream — a later reflection
+            // for the same week supersedes the earlier queued one in FIFO order.
+            Self::WeekNoteWrite { iso_week, .. } => format!("week:{iso_week}"),
         }
     }
 
@@ -123,6 +136,7 @@ impl IntentKind {
             Self::ActivityCreate { .. } => "plan",
             Self::ActivityUpdate { .. } => "adjust",
             Self::ActivityArchive { .. } => "drop",
+            Self::WeekNoteWrite { .. } => "reflect",
         }
     }
 }

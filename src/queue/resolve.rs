@@ -350,13 +350,14 @@ fn compose_local_session(
                 ));
             }
             IntentKind::TimerStart { .. } | IntentKind::TimerBind { .. } => {}
-            // A timer-stream group never holds a plan write (activity intents
-            // key on the `activity`/`activity:<id>` streams), so this is
-            // unreachable — the match stays exhaustive over `IntentKind`.
+            // A timer-stream group never holds a plan write or a week note
+            // (those key on the `activity`/`activity:<id>`/`week:<iso>` streams),
+            // so this is unreachable — the match stays exhaustive over `IntentKind`.
             IntentKind::ActivityCreate { .. }
             | IntentKind::ActivityUpdate { .. }
-            | IntentKind::ActivityArchive { .. } => {
-                unreachable!("a plan write never shares a timer session's stream")
+            | IntentKind::ActivityArchive { .. }
+            | IntentKind::WeekNoteWrite { .. } => {
+                unreachable!("a non-timer write never shares a timer session's stream")
             }
         }
     }

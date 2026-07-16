@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 use crate::api::{ApiClient, Timer};
 use crate::auth::TokenProvider;
 use crate::config::Config;
+use crate::editor::EditorOutcome;
 use crate::queue::{QueueStore, QueuedClient};
 use crate::ui::notify::{Level, Notification};
 
@@ -47,6 +48,24 @@ const TIMER_POLL_INTERVAL: Duration = Duration::from_secs(15);
 /// Matches the web pill's once-a-minute throttle — the server beat is
 /// presence-only, so the rate limit is the client's job.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+
+/// A pending `$EDITOR` hand-off the run loop performs between frames: suspend the
+/// TUI, spawn the editor seeded with `seed`, and route the saved buffer to
+/// `target`.
+pub struct PendingEditor {
+    seed: String,
+    target: EditorTarget,
+}
+
+/// Where a finished `$EDITOR` buffer lands, and how an abort/empty save is read.
+pub enum EditorTarget {
+    /// The quick-capture overlay's draft (#88) — a non-empty save updates it; an
+    /// abort or an empty buffer keeps it (capture-is-sacred).
+    Capture,
+    /// The week's retro reflection (#117) — a save persists (empty clears); an
+    /// abort keeps the stored note (abort ≠ empty-save).
+    WeekNote { iso_week: String },
+}
 
 pub struct App {
     pub config: Config,
@@ -96,10 +115,11 @@ pub struct App {
     pub overrun_pinged: Option<i64>,
     /// When the last presence heartbeat was sent, to honour `HEARTBEAT_INTERVAL`.
     pub heartbeat_last: Instant,
-    /// A pending request to edit prose in `$EDITOR` (the seed text). The run loop
-    /// suspends the TUI, spawns the editor, and feeds the result back — set by
-    /// the capture overlay's `Ctrl-E`.
-    pub pending_editor: Option<String>,
+    /// A pending `$EDITOR` hand-off — the run loop suspends the TUI, spawns the
+    /// editor seeded with the current text, and routes the saved buffer to its
+    /// target. Set by the capture overlay's `Ctrl-E` (the draft) or the week
+    /// board's `i` (the retro reflection).
+    pub pending_editor: Option<PendingEditor>,
     /// The verb words replayed so far in the current reconnect drain — the
     /// running one-line transcript (`back online · replaying the queue… start ·
     /// pause`). Grows on each `ReplayProgress` and is emptied when the drain
@@ -208,25 +228,36 @@ async fn run_loop(
     Ok(())
 }
 
-/// Suspend the TUI, open the note body in `$EDITOR` (seeded from the capture
-/// overlay), and feed the result back — the `git commit` pattern.
+/// Suspend the TUI, open the seed in `$EDITOR`, and route the saved buffer to
+/// its target — the capture draft or the week reflection (the `git commit`
+/// pattern). The alt screen is handed to the child and re-entered after.
 fn run_editor(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
-    let Some(seed) = app.pending_editor.take() else {
+    let Some(pending) = app.pending_editor.take() else {
         return Ok(());
     };
     restore_terminal(terminal)?; // leave the alt screen + raw mode to the child
-    let edited = spawn_editor(&seed);
+    let edited = crate::editor::edit(&pending.seed);
     resume_terminal(terminal)?;
-    match edited {
-        // `None` = the editor aborted or the buffer came back empty — keep the
-        // original body rather than clobbering it (the empty-buffer-cancels rule).
-        Ok(Some(text)) => {
-            if let Some(cap) = app.capture.as_mut() {
-                cap.set_content(&text);
+    let outcome = edited?;
+    match pending.target {
+        // The capture draft: a non-empty save updates it; an abort or an empty
+        // buffer keeps the original (capture-is-sacred, empty-buffer-cancels).
+        EditorTarget::Capture => {
+            if let EditorOutcome::Saved(text) = outcome {
+                if !text.trim().is_empty() {
+                    if let Some(cap) = app.capture.as_mut() {
+                        cap.set_content(&text);
+                    }
+                }
             }
         }
-        Ok(None) => {}
-        Err(e) => return Err(e),
+        // The reflection: a save persists (an empty buffer clears the note
+        // deliberately — abort ≠ empty-save); an abort keeps the stored note.
+        // Both route back to the week screen's queue seam, which owns the write.
+        EditorTarget::WeekNote { iso_week } => match outcome {
+            EditorOutcome::Saved(body) => app.dispatch(Action::WeekReflectSave { iso_week, body }),
+            EditorOutcome::Aborted => app.dispatch(Action::WeekReflectAbort),
+        },
     }
     Ok(())
 }
@@ -238,48 +269,6 @@ fn resume_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<
     terminal.hide_cursor()?;
     terminal.clear()?;
     Ok(())
-}
-
-/// Open the seed in `$VISUAL`/`$EDITOR` (falling back to `vi`) and read it back.
-fn spawn_editor(seed: &str) -> Result<Option<String>> {
-    run_editor_cmd(&resolve_editor(), seed)
-}
-
-/// `$VISUAL` then `$EDITOR`, else `vi`.
-fn resolve_editor() -> String {
-    std::env::var("VISUAL")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            std::env::var("EDITOR")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-        })
-        .unwrap_or_else(|| "vi".to_string())
-}
-
-/// Write the seed to a temp file, run `editor` on it, and read it back.
-/// `Ok(None)` when the editor aborts or the buffer comes back empty (cancel).
-/// `editor` may carry flags (`code -w`), so split on whitespace.
-fn run_editor_cmd(editor: &str, seed: &str) -> Result<Option<String>> {
-    let path = std::env::temp_dir().join(format!("engineer-note-{}.md", std::process::id()));
-    std::fs::write(&path, seed)?;
-
-    let mut parts = editor.split_whitespace();
-    let program = parts.next().unwrap_or("vi");
-    let status = std::process::Command::new(program)
-        .args(parts)
-        .arg(&path)
-        .status()?;
-
-    let content = std::fs::read_to_string(&path).unwrap_or_default();
-    let _ = std::fs::remove_file(&path);
-
-    let content = content.trim_end_matches('\n').to_string();
-    if !status.success() || content.trim().is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(content))
 }
 
 fn format_minutes(minutes: u32) -> String {
@@ -586,8 +575,21 @@ impl App {
             // terminal, so the suspend/spawn/restore happens there, not here).
             Action::CaptureEditExternal => {
                 if let Some(cap) = &self.capture {
-                    self.pending_editor = Some(cap.body());
+                    self.pending_editor = Some(PendingEditor {
+                        seed: cap.body(),
+                        target: EditorTarget::Capture,
+                    });
                 }
+            }
+            // The week board's `i` reflect: stash the current note body for the
+            // run loop to open in $EDITOR, tagged to persist back to the week's
+            // note. Same terminal-owned suspend/spawn as the capture path — only
+            // the completion target differs.
+            Action::WeekReflectEdit { iso_week, seed } => {
+                self.pending_editor = Some(PendingEditor {
+                    seed,
+                    target: EditorTarget::WeekNote { iso_week },
+                });
             }
             capture_action @ (Action::CaptureKey(_)
             | Action::CaptureSave
@@ -894,41 +896,6 @@ mod tests {
             .collect()
     }
 
-    #[cfg(unix)]
-    fn write_fake_editor(name: &str, script: &str) -> std::path::PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-        let path = std::env::temp_dir().join(format!("engineer-{name}-{}.sh", std::process::id()));
-        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        path
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn editor_cmd_roundtrips_the_edited_buffer() {
-        // A fake editor that overwrites the file it's given ($1).
-        let editor = write_fake_editor("fakeed", "printf 'edited body' > \"$1\"");
-        let out = super::run_editor_cmd(editor.to_str().unwrap(), "seed").unwrap();
-        let _ = std::fs::remove_file(&editor);
-        assert_eq!(out.as_deref(), Some("edited body"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn editor_cmd_empty_buffer_cancels() {
-        let editor = write_fake_editor("emptyed", ": > \"$1\"");
-        let out = super::run_editor_cmd(editor.to_str().unwrap(), "seed").unwrap();
-        let _ = std::fs::remove_file(&editor);
-        assert!(out.is_none(), "an empty buffer keeps the original body");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn editor_cmd_nonzero_exit_cancels() {
-        // `false` exits 1 without touching the file — an abort keeps the seed.
-        assert!(super::run_editor_cmd("false", "seed").unwrap().is_none());
-    }
-
     #[tokio::test]
     async fn header_shows_signed_in_user() {
         let (mut app, _rx) = test_app(Some("alice@example.com".into()));
@@ -946,6 +913,24 @@ mod tests {
         let (mut app, _rx) = test_app(None);
         app.handle(Action::SetUser("bob@example.com".into())).await;
         assert_eq!(app.user.as_deref(), Some("bob@example.com"));
+    }
+
+    #[tokio::test]
+    async fn week_reflect_edit_stashes_the_seed_and_target_for_the_run_loop() {
+        // The week board's `i` hands the note seed to the app; the run loop reads
+        // `pending_editor` between frames to suspend the TUI and open $EDITOR.
+        let (mut app, _rx) = test_app(Some("a@b.c".into()));
+        app.handle(Action::WeekReflectEdit {
+            iso_week: "2026-W29".into(),
+            seed: "the current note".into(),
+        })
+        .await;
+        let pending = app.pending_editor.expect("the hand-off is stashed");
+        assert_eq!(pending.seed, "the current note");
+        assert!(matches!(
+            pending.target,
+            EditorTarget::WeekNote { iso_week } if iso_week == "2026-W29"
+        ));
     }
 
     fn idle_snapshot() -> Timer {

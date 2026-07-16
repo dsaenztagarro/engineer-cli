@@ -1,26 +1,47 @@
-//! Headless `engineer week` (the planned-vs-done readout) and `engineer plan`
-//! (declare a plan item) — week-planning.brief.md's unblocked core: a readout
-//! and a one-liner, not a planning canvas. The retro reflection is read-only
-//! until the server exposes a v1 week-note write.
+//! Headless `engineer week` (the planned-vs-done readout), `engineer week
+//! reflect` (the `$EDITOR` retro reflection write), and `engineer plan` (declare
+//! a plan item) — week-planning.brief.md's core: a readout, a one-liner, and one
+//! stored line, not a planning canvas. The reflection persists through the v1
+//! week-note route (dsaenztagarro/engineer#805, engineer PR #807), routed through
+//! `QueuedClient` so an offline write queues like every other mutation.
 
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Read};
 
-use clap::Args;
+use clap::{Args, Subcommand};
 use color_eyre::eyre::Result;
 use jiff::{civil::Date, Zoned};
 
 use crate::api::{ActivityCreate, ApiClient, ApiError, Week};
 use crate::auth::TokenProvider;
 use crate::config::Config;
+use crate::queue::QueuedClient;
 
 #[derive(Args)]
 pub struct WeekArgs {
     /// ISO week id (`YYYY-Www`); defaults to the current study week.
-    #[arg(long)]
+    #[arg(long, global = true)]
     week: Option<String>,
-    /// Emit the aggregate as JSON.
-    #[arg(long)]
+    /// Emit as JSON.
+    #[arg(long, global = true)]
     json: bool,
+    #[command(subcommand)]
+    cmd: Option<WeekCmd>,
+}
+
+#[derive(Subcommand)]
+enum WeekCmd {
+    /// Write this week's retro reflection — the one stored line. Opens `$EDITOR`
+    /// (the `git commit` pattern) on a TTY; takes the body from `-m/--message` or
+    /// piped stdin otherwise. An empty body clears the note.
+    Reflect(ReflectArgs),
+}
+
+#[derive(Args)]
+pub struct ReflectArgs {
+    /// The reflection text, inline (`git commit -m`). Omit to open `$EDITOR` (a
+    /// TTY) or read piped stdin.
+    #[arg(long, short = 'm')]
+    message: Option<String>,
 }
 
 #[derive(Args)]
@@ -45,9 +66,17 @@ pub struct PlanArgs {
 }
 
 pub async fn run_week(cfg: &Config, args: WeekArgs) -> Result<i32> {
+    match args.cmd {
+        Some(WeekCmd::Reflect(reflect)) => run_reflect(cfg, args.week, args.json, reflect).await,
+        None => run_readout(cfg, args.week, args.json).await,
+    }
+}
+
+/// The planned-vs-done readout (`engineer week [--week] [--json]`).
+async fn run_readout(cfg: &Config, week: Option<String>, json: bool) -> Result<i32> {
     let api = client(cfg).await?;
     let colored = colored();
-    let iso = args.week.unwrap_or_else(current_iso_week);
+    let iso = week.unwrap_or_else(current_iso_week);
     let week = match api.get_week(&iso).await {
         Ok(w) => w,
         Err(e) => {
@@ -55,7 +84,7 @@ pub async fn run_week(cfg: &Config, args: WeekArgs) -> Result<i32> {
             return Ok(1);
         }
     };
-    if args.json {
+    if json {
         println!("{}", json_week(&week));
     } else {
         for line in human_week(&week, colored) {
@@ -63,6 +92,114 @@ pub async fn run_week(cfg: &Config, args: WeekArgs) -> Result<i32> {
         }
     }
     Ok(0)
+}
+
+/// The `$EDITOR` retro reflection write (`engineer week reflect`). The git-commit
+/// shape: `-m` inline, else piped stdin, else `$EDITOR` seeded from the current
+/// note (a TTY). An empty body clears the note. Routes through `QueuedClient`, so
+/// an offline write queues; `--json` echoes the persisted note.
+async fn run_reflect(
+    cfg: &Config,
+    week: Option<String>,
+    json: bool,
+    args: ReflectArgs,
+) -> Result<i32> {
+    let api = client(cfg).await?;
+    let queued = QueuedClient::new(&api).map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
+    let colored = colored();
+    let iso = week.unwrap_or_else(current_iso_week);
+
+    let body = if let Some(message) = args.message {
+        message
+    } else if !std::io::stdin().is_terminal() {
+        // Piped stdin (`echo "…" | engineer week reflect`): the whole stream is
+        // the body, one trailing newline trimmed.
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf)?;
+        buf.trim_end_matches('\n').to_string()
+    } else {
+        // A TTY: open $EDITOR seeded with the current note (the git-commit
+        // pattern). A quit-without-write leaves the note untouched.
+        let seed = match api.get_week(&iso).await {
+            Ok(w) => w.note.body,
+            Err(e) => {
+                eprintln!("{}", problem_text(e));
+                return Ok(1);
+            }
+        };
+        match crate::editor::edit(&seed)? {
+            crate::editor::EditorOutcome::Saved(body) => body,
+            crate::editor::EditorOutcome::Aborted => {
+                println!("reflection unchanged");
+                return Ok(0);
+            }
+        }
+    };
+
+    let outcome = reflect_dispatch(&queued, &iso, &body, json, colored).await;
+    for line in &outcome.out {
+        println!("{line}");
+    }
+    for line in &outcome.err {
+        eprintln!("{line}");
+    }
+    Ok(outcome.code)
+}
+
+struct Outcome {
+    out: Vec<String>,
+    err: Vec<String>,
+    code: i32,
+}
+
+impl Outcome {
+    fn ok(line: impl Into<String>) -> Self {
+        Self {
+            out: vec![line.into()],
+            err: vec![],
+            code: 0,
+        }
+    }
+
+    fn refuse(reason: impl Into<String>) -> Self {
+        Self {
+            out: vec![],
+            err: vec![reason.into()],
+            code: 1,
+        }
+    }
+}
+
+/// Persist the reflection through the queue seam and render the persisted note
+/// (`--json`) or a confirmation line. An empty body reads as a clear. Testable in
+/// isolation with a scratch `QueuedClient` (a dead address exercises the offline
+/// enqueue).
+async fn reflect_dispatch(
+    queued: &QueuedClient,
+    iso: &str,
+    body: &str,
+    json: bool,
+    colored: bool,
+) -> Outcome {
+    match queued.update_week_note(iso, body).await {
+        Ok(outcome) => {
+            let provisional = outcome.is_provisional();
+            if json {
+                return Outcome::ok(serde_json::to_string(outcome.value()).unwrap_or_default());
+            }
+            let verb = if body.trim().is_empty() {
+                "reflection cleared"
+            } else {
+                "reflection saved"
+            };
+            let mut line = format!("{} {verb} · {iso}", paint("●", COLOR_OK, colored));
+            if provisional {
+                line.push_str(&paint("  · queued (offline)", COLOR_MUTED, colored));
+            }
+            Outcome::ok(line)
+        }
+        Err(e) => Outcome::refuse(problem_text(e)),
+    }
 }
 
 pub async fn run_plan(cfg: &Config, args: PlanArgs) -> Result<i32> {
@@ -257,5 +394,137 @@ mod tests {
         assert_eq!(v["items"].as_array().unwrap().len(), 2);
         assert_eq!(v["items"][0]["done"], true);
         assert_eq!(v["planned_vs_done"]["done"], 1);
+    }
+
+    // --- reflect (#117): the retro write through the queue seam ---
+
+    mod reflect {
+        use super::super::reflect_dispatch;
+        use crate::api::ApiClient;
+        use crate::queue::{QueueStore, QueuedClient};
+        use url::Url;
+        use wiremock::matchers::{body_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn scratch() -> std::path::PathBuf {
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "engineer-week-cli-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        }
+
+        fn queued_at(api: &ApiClient, dir: &std::path::Path) -> QueuedClient {
+            QueuedClient::with_paths(
+                api,
+                QueueStore::at(dir.join("queue.json")),
+                dir.join("timer-cache.json"),
+            )
+        }
+
+        fn dead_api() -> ApiClient {
+            ApiClient::with_token(Url::parse("http://127.0.0.1:1/").unwrap(), "t".into())
+        }
+
+        #[tokio::test]
+        async fn writes_the_wrapped_body_and_confirms() {
+            let server = MockServer::start().await;
+            Mock::given(method("PATCH"))
+                .and(path("/api/v1/weeks/2026-W29/note"))
+                .and(body_json(serde_json::json!({
+                    "note": { "body": "Read the paper first, build second." }
+                })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "iso_week": "2026-W29",
+                    "body": "Read the paper first, build second.",
+                    "updated_at": "2026-07-17T09:30:00Z"
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "t".into());
+            let dir = scratch();
+            let queued = queued_at(&api, &dir);
+            let out = reflect_dispatch(
+                &queued,
+                "2026-W29",
+                "Read the paper first, build second.",
+                false,
+                false,
+            )
+            .await;
+            assert_eq!(out.code, 0);
+            assert!(
+                out.out[0].contains("reflection saved · 2026-W29"),
+                "{:?}",
+                out.out
+            );
+        }
+
+        #[tokio::test]
+        async fn json_echoes_the_persisted_note() {
+            let server = MockServer::start().await;
+            Mock::given(method("PATCH"))
+                .and(path("/api/v1/weeks/2026-W29/note"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "iso_week": "2026-W29", "body": "build second",
+                    "updated_at": "2026-07-17T09:30:00Z"
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "t".into());
+            let dir = scratch();
+            let queued = queued_at(&api, &dir);
+            let out = reflect_dispatch(&queued, "2026-W29", "build second", true, false).await;
+            assert_eq!(out.code, 0);
+            let v: serde_json::Value = serde_json::from_str(&out.out[0]).unwrap();
+            assert_eq!(v["iso_week"], "2026-W29");
+            assert_eq!(v["body"], "build second");
+        }
+
+        #[tokio::test]
+        async fn an_empty_body_reads_as_a_clear() {
+            let server = MockServer::start().await;
+            Mock::given(method("PATCH"))
+                .and(path("/api/v1/weeks/2026-W29/note"))
+                .and(body_json(serde_json::json!({ "note": { "body": "" } })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "iso_week": "2026-W29", "body": ""
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "t".into());
+            let dir = scratch();
+            let queued = queued_at(&api, &dir);
+            let out = reflect_dispatch(&queued, "2026-W29", "", false, false).await;
+            assert_eq!(out.code, 0);
+            assert!(out.out[0].contains("reflection cleared"), "{:?}", out.out);
+        }
+
+        #[tokio::test]
+        async fn a_dead_address_enqueues_the_write() {
+            // Offline: the write can't bounce — it queues, and the CLI still
+            // exits 0 with the `queued (offline)` tail.
+            let dir = scratch();
+            let queued = queued_at(&dead_api(), &dir);
+            let out =
+                reflect_dispatch(&queued, "2026-W29", "queued while offline", false, false).await;
+            assert_eq!(out.code, 0);
+            assert!(out.out[0].contains("queued (offline)"), "{:?}", out.out);
+
+            let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+            assert_eq!(intents.len(), 1, "the reflection landed in the queue");
+            assert_eq!(intents[0].kind.word(), "reflect");
+            assert_eq!(intents[0].stream, "week:2026-W29");
+        }
     }
 }

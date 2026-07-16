@@ -70,6 +70,7 @@ seeded by the web designs.
 | Notes capture + browser | `notes.html` | built (`screens/notes.rs`) |
 | Review (dashboard / browse / sitting) | `review.html` | built (`screens/review.rs`) |
 | Progress (pace meters) | `progress.html` | built (`screens/progress.rs`) |
+| Week planning + retro | `week-planning.dc.html` | built (`screens/week.rs`) |
 | Command palette (`:`) | `Command Palette v2.html` | built — `:` grammar (`src/app/command.rs`) |
 | Roadmaps + book progress | `Roadmaps and Book Progress v2.html` | next |
 | Shard / environment indicator | `Tenancy, Shard & Environment Indicators v3.html` | next — belongs in the header chrome |
@@ -122,5 +123,6 @@ Layout is three stacked rows (`../../src/ui/layout.rs::render_chrome`):
 | `README.md` | This brief — the kit's entry point |
 | `design-system.dc.html` | Palette & component legend — the canvas kit's style anchor |
 | `timer.dc.html` | Timer screens — hero, status-line, start picker, idle reclaim, focus, audit, headless |
+| `week-planning.dc.html` | Week board — plan ⇄ retro, the planned-vs-done readout, the `$EDITOR` reflection, headless twins |
 | `support.js` | Claude Design canvas runtime the `.dc.html` docs load |
 | `briefs/` | Problem-first design briefs and gap analyses (`proposed/` → `shipped/` lifecycle) |

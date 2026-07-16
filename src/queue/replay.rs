@@ -194,6 +194,13 @@ async fn send_intent(api: &ApiClient, intent: &Intent) -> Result<bool, ApiError>
             .await
             .map(|_| false),
         IntentKind::ActivityArchive { id } => api.archive_activity(*id).await.map(|_| false),
+        // The note write replays as a plain PATCH: the route upserts the single
+        // note row, so re-sending the same body is naturally idempotent and needs
+        // no key. A stored replay is indistinguishable from a first ack here, so
+        // report `false` (never a dedupe).
+        IntentKind::WeekNoteWrite { iso_week, body } => {
+            api.update_week_note(iso_week, body).await.map(|_| false)
+        }
     }
 }
 
@@ -750,5 +757,37 @@ mod tests {
         assert_eq!(report.replayed, 2);
         assert_eq!(report.deduped, 0, "plain calls are never a stored replay");
         assert_eq!(report.remaining, 0);
+    }
+
+    // --- reflection (#117): the week note replays as a plain PATCH ---
+
+    #[tokio::test]
+    async fn week_note_write_replays_as_a_plain_patch() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/weeks/2026-W29/note"))
+            .and(body_json(serde_json::json!({
+                "note": { "body": "Read the paper first, build second." }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "iso_week": "2026-W29", "body": "Read the paper first, build second."
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("week-note");
+        store
+            .enqueue(IntentKind::WeekNoteWrite {
+                iso_week: "2026-W29".into(),
+                body: "Read the paper first, build second.".into(),
+            })
+            .unwrap();
+
+        let report = drain(&client(&server), &store).await.unwrap();
+        assert_eq!(report.replayed, 1);
+        assert_eq!(report.deduped, 0, "a plain PATCH is never a stored replay");
+        assert_eq!(report.remaining, 0);
+        assert!(store.intents().unwrap().is_empty(), "the reflection synced");
     }
 }

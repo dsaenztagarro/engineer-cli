@@ -2,7 +2,8 @@
 
 **For:** Claude Design (the **engineer-cli** terminal project — not the web `engineer` project; see `../../README.md` for why they're kept apart).
 **Produces:** the terminal week-planning board and its headless twins — the **plan side** (declare what to study this week) and the **retro** (a planned-vs-done readout plus a free-text reflection that opens in `$EDITOR`). Extend `../../design-system.dc.html` (the style anchor); a `week-planning.dc.html` board is the natural home for the mock, mirroring `timer.dc.html` and the `progress.dc.html` the Progress brief calls for.
-**Status:** **proposed.** Nothing is built for this module — no planning screen, no weeks API client. It needs its own design pass and sits behind the higher-leverage progress/home slices; §8 phases it.
+**Status:** **shipped.** (epic #113 → v0.9.0; headless readout #89 → v0.7.0)
+The Plan pillar is live: the headless `engineer week` / `engineer plan` readout and one-liner shipped first (#89), then the board — the planned-vs-done screen (`src/app/screens/week.rs`), declaring/adjusting/dropping plan items from it, the Plan↔timer seam (`s` starts the timer on a planned item), and the `$EDITOR` retro reflection persisted through the v1 week-note route (`src/api/weeks.rs::update_week_note`). This brief is kept as the module record; the server gap in §5 is now closed (see the RESOLVED note there).
 
 > **Module note.** This brief is one of the per-module briefs the terminal client decomposes into (see `../README.md`). It carries the plan-and-retrospect slice of the retired omnibus (`terminal-client.brief.md` job 9) plus the ground truth verified against the shipped `engineer` API. The shared house format — workflow → jobs → principles → orientation → the API it consumes → visual language → phasing — is common to every module brief.
 
@@ -56,6 +57,10 @@ The **read** is shipped server-side; the **plan writes** ride the shipped activi
 - **Plan writes** — the activities API, no new endpoint. `POST /api/v1/activities` declares a plan item (an activity with `planned_on` for the target week); `PATCH /api/v1/activities/:id` adjusts it; `member { patch :complete }` closes a plan item as done (`routes.rb:338–352`). This is the reuse the week-read's route comment mandates.
 
 ### Server gap — no v1 route persists the retro reflection (raise it, as timer's §C once was)
+
+> **RESOLVED (epic #113 → #117).** The v1 route shipped — `PATCH /api/v1/weeks/:iso_week/note` with `{ "note": { "body": … } }`, returning the bare persisted note `{ iso_week, body, updated_at }` (dsaenztagarro/engineer#805, engineer PR #807) — exactly the ask below, mirroring how the timer-hygiene endpoints unblocked the timer module.
+> The CLI now persists the reflection through it: `src/api/weeks.rs::update_week_note`, routed through `QueuedClient` (`IntentKind::WeekNoteWrite`, stream `week:<iso_week>`, replayed as a plain idempotent PATCH), driven by the board's `i` (`$EDITOR`, the git-commit pattern) and the headless `engineer week reflect`.
+> An empty body is a deliberate clear (the `week_notes` contract treats empty as clear), kept distinct from a quit-without-write abort (capture-is-sacred). The original gap analysis is kept below as the record of what drove the design.
 
 The reflection is meant to open in `$EDITOR` and save to the week's note. The server *does* have a week-note write — `patch "weeks/:iso_week/note"` → `week_notes#update` (`routes.rb:129`) — but it lives in the **top-level web namespace, not `api/v1`**: it is the Turbo/HTML autosave behind the web retro band's textarea (`week-planning.html §E`), not a token-authenticated JSON endpoint the CLI can call. Inside `namespace :api { namespace :v1 }` there is **no** week-note write: `weeks/:iso_week` is `GET`-only (`routes.rb:428`), and the v1 `resources :notes` (`routes.rb:365`) are the standalone reading-notes resource — a different thing from the per-week retro line.
 
