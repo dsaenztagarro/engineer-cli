@@ -117,6 +117,7 @@ fn goto(app: &App, key: crossterm::event::KeyEvent) -> Option<Action> {
         KeyCode::Char('p') => Some(Action::Goto(Progress)),
         KeyCode::Char('w') => Some(Action::Goto(Week)),
         KeyCode::Char('r') => Some(Action::Goto(Review)),
+        KeyCode::Char('i') => Some(Action::Goto(Inbox)),
         KeyCode::Char('h') => Some(Action::Goto(Home)),
         KeyCode::Char('b') => Some(Action::Goto(Books)),
         KeyCode::Char('n') => Some(Action::Goto(Notes)),
@@ -159,6 +160,9 @@ fn screen_key(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action> 
             KeyCode::Char('b') => Some(Action::Goto(Books)),
             KeyCode::Char('p') => Some(Action::Goto(Progress)),
             KeyCode::Char('n') => Some(Action::Goto(Notes)),
+            // `i` to triage — the design's ambient-count affordance (the Home
+            // chip / the notify tile's "i to triage").
+            KeyCode::Char('i') => Some(Action::Goto(Inbox)),
             KeyCode::Char('c') => Some(Action::CaptureOpen),
             _ => None,
         },
@@ -171,11 +175,50 @@ fn screen_key(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action> 
         Timer => timer_key(key),
         Notes => notes_key(key),
         Review => review_key(app, key),
+        Inbox => inbox_key(app, key),
         Settings => match key.code {
             KeyCode::Char('h') | KeyCode::Esc => Some(Action::Goto(Home)),
             _ => None,
         },
         Audit => audit_key(key),
+    }
+}
+
+/// Inbox draft-triage keys (§Inbox · pending / §Inbox · draft). The reject-reason
+/// capture owns its keys via the screen's `intercept_key`, which runs before
+/// this, so those never reach here. `⏎` is stage-dependent — the design's
+/// "open / accept": it opens the selected draft on the list, and accepts it
+/// (the server's `complete`) on the detail. `x`/`a` reject/acknowledge from
+/// either stage; on the detail `h`/Esc steps back to the list, not home.
+fn inbox_key(app: &App, key: crossterm::event::KeyEvent) -> Option<Action> {
+    use crate::app::screens::inbox::Stage;
+    let Screen::Inbox(s) = &app.current else {
+        return None;
+    };
+    match s.stage() {
+        Stage::List => match key.code {
+            KeyCode::Char('j') | KeyCode::Down => Some(Action::InboxMove(1)),
+            KeyCode::Char('k') | KeyCode::Up => Some(Action::InboxMove(-1)),
+            KeyCode::Enter | KeyCode::Char('l') => Some(Action::InboxOpen),
+            KeyCode::Char('x') => Some(Action::InboxRejectBegin),
+            KeyCode::Char('a') => Some(Action::InboxAck),
+            KeyCode::Char('h') | KeyCode::Esc => Some(Action::Goto(ScreenKind::Home)),
+            _ => None,
+        },
+        Stage::Draft => match key.code {
+            KeyCode::Enter => Some(Action::InboxAccept),
+            // `J`/`K` (and plain j/k) step to the next/previous draft.
+            KeyCode::Char('J') | KeyCode::Char('j') | KeyCode::Down => {
+                Some(Action::InboxDraftStep(1))
+            }
+            KeyCode::Char('K') | KeyCode::Char('k') | KeyCode::Up => {
+                Some(Action::InboxDraftStep(-1))
+            }
+            KeyCode::Char('x') => Some(Action::InboxRejectBegin),
+            KeyCode::Char('a') => Some(Action::InboxAck),
+            KeyCode::Char('h') | KeyCode::Esc => Some(Action::InboxCloseDetail),
+            _ => None,
+        },
     }
 }
 
@@ -427,6 +470,7 @@ fn refresh_for(kind: ScreenKind) -> Action {
         ScreenKind::Notes => Action::RefreshNotes,
         ScreenKind::Activities => Action::RefreshActivities,
         ScreenKind::Review => Action::RefreshReview,
+        ScreenKind::Inbox => Action::RefreshInbox,
         ScreenKind::Settings => Action::SettingsReload,
         ScreenKind::Audit => Action::AuditReload,
         _ => Action::RefreshHome,

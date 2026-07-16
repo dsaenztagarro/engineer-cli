@@ -1,6 +1,7 @@
 use crate::api::{
     Activity, AuditAcknowledged, AuditRead, Book, BookChapter, Dashboard, DayMinutes, Domain, Note,
-    Progress, RateResult, Timer, TimerCandidate, TimerSettings, TimerStopped, Today, Topic, Week,
+    Progress, RateResult, Task, Timer, TimerCandidate, TimerSettings, TimerStopped, Today, Topic,
+    Week,
 };
 use crate::app::screens::review::Rating;
 use crate::app::screens::ScreenKind;
@@ -33,6 +34,15 @@ pub enum Action {
     /// as a notification tile from the load task).
     HomeLoadFailed,
     RefreshHome,
+    /// The ambient pending-drafts count for Home's inbox chip (§Inbox · the
+    /// ambient count). Loaded by a light `list_pending_tasks()` fetch on Home
+    /// load — the `/today` aggregate doesn't carry a drafts count, and the CLI
+    /// invents no server endpoint. `expiring` is set when a draft is near its
+    /// expiry (the chip's amber escalation). A failed fetch stays silent.
+    HomeInboxLoaded {
+        pending: usize,
+        expiring: bool,
+    },
 
     // Books
     BooksLoaded(Vec<Book>),
@@ -340,6 +350,41 @@ pub enum Action {
     ReviewBrowseOpenDetail,
     ReviewBrowseDetailLoaded(Box<Topic>),
     ReviewBrowseCloseDetail,
+
+    // Inbox — the draft-triage screen (`src/app/screens/inbox.rs`, `:inbox`,
+    // `g i`) over the assisted-capture automations. `InboxLoaded` carries the
+    // pending drafts (sorted expiring-first on receipt); the verbs
+    // (accept/reject/ack) are LIVE-ONLY fire-then-re-read calls — not queued —
+    // so each spawns a server PATCH and, on a resolved outcome, dispatches
+    // `RefreshInbox` (the draft left the scope). A stale `422` is a soft
+    // re-read; a transport failure refuses (offline) via `InboxActionFailed`,
+    // which clears the in-flight guard without a re-read.
+    InboxLoaded(Vec<Task>),
+    InboxLoadFailed(String),
+    RefreshInbox,
+    InboxMove(i32),
+    /// `⏎`/`l` on the list — open the selected draft's detail.
+    InboxOpen,
+    /// `h`/`Esc` on the detail — back to the pending list.
+    InboxCloseDetail,
+    /// `J`/`K` on the detail — step to the next/previous pending draft.
+    InboxDraftStep(i32),
+    /// `⏎` on the detail — accept (the server's `complete`, which mints the
+    /// activity).
+    InboxAccept,
+    /// `a` — acknowledge (seen, keep for later).
+    InboxAck,
+    /// `x` — open the optional-reason capture (§Inbox · reject).
+    InboxRejectBegin,
+    InboxRejectInput(char),
+    InboxRejectBackspace,
+    /// `⏎` in the reason capture — reject with the typed reason (bare if empty).
+    InboxRejectSubmit,
+    /// `Esc` in the reason capture — cancel the reject (no server call).
+    InboxRejectCancel,
+    /// A live-only verb failed without a re-read (offline / server rejection) —
+    /// clears the in-flight guard so the gesture can be retried.
+    InboxActionFailed,
 
     // Quick-capture overlay (`src/app/capture.rs`). Reachable from any screen
     // via the `<Space>` leader; also opened pre-filled to edit an existing note

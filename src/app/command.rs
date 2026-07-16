@@ -127,6 +127,14 @@ pub const ENTRIES: &[Entry] = &[
         target: Target::Nav(ScreenKind::Week),
     },
     Entry {
+        verb: "inbox",
+        aliases: &[],
+        kind: Kind::Nav,
+        arg: Arg::None,
+        help: "triage the assisted-capture drafts",
+        target: Target::Nav(ScreenKind::Inbox),
+    },
+    Entry {
         verb: "settings",
         aliases: &[],
         kind: Kind::Nav,
@@ -210,6 +218,7 @@ const NAV_VERBS: &[&str] = &[
     "review",
     "progress",
     "week",
+    "inbox",
     "timer",
 ];
 
