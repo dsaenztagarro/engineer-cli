@@ -46,7 +46,7 @@ pub fn load() -> Option<StaleTimer> {
     load_at(&path()?)
 }
 
-fn store_at(path: &Path, timer: &Timer) {
+pub(crate) fn store_at(path: &Path, timer: &Timer) {
     let cached = Cached {
         cached_at: jiff::Timestamp::now().as_second(),
         timer: timer.clone(),
@@ -60,7 +60,7 @@ fn store_at(path: &Path, timer: &Timer) {
     let _ = std::fs::write(path, json);
 }
 
-fn load_at(path: &Path) -> Option<StaleTimer> {
+pub(crate) fn load_at(path: &Path) -> Option<StaleTimer> {
     let json = std::fs::read_to_string(path).ok()?;
     let cached: Cached = serde_json::from_str(&json).ok()?;
     let age = (jiff::Timestamp::now().as_second() - cached.cached_at).max(0);
