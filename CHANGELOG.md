@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Offline `timer pause`/`resume` — the write queue becomes visible behavior.** The first slice of the offline *write* half (the read half shipped in v0.7.0): when the wire is down, `engineer timer pause`/`resume` (and `toggle`) no longer refuse the keystroke — the gesture lands in a persisted local queue (`queue.json`, sibling to the read cache) and the output says so plainly (`‖ paused at 47:12 · queued (offline)`), with the reads wearing the marker until it syncs (`↑N` on `--short`, `queued=N` on `status`, `"queued"`/`"queue_depth"` in `--json`). When the network returns the queue drains itself — strict FIFO, one intent at a time, each re-send carrying the per-intent `Idempotency-Key` minted at enqueue so a lost ack can never double-write — triggered before any live timer write (a fresh write never jumps the queue) and after any successful headless read. A server rejection halts the drain loudly: that intent is marked `diverged` with the full RFC 7807 payload kept, and nothing later replays past the open choice. And `engineer queue` makes it observable headlessly: the bare read prints a `#  INTENT  TARGET  AGE  STATE` table (`queue empty` when calm), `sync` runs a drain now (`✓ synced — 2 replayed` / `3 still queued, offline`), `--json` emits `{ depth, oldest_age_s, diverged, intents: [...] }`, and the exit codes answer "does the queue need me?": `0` drained/empty · `3` queued offline (not a failure — cron must not page on a tunnel) · `4` a divergence is waiting · `5` replay failed. (The full local clock — all timer verbs offline — the reconnect transcript, and the divergence *resolve* flow are the next slices; `offline-write.brief.md`, EPIC #98.)
+
 ## [0.7.0] - 2026-07-15
 
 ### Added

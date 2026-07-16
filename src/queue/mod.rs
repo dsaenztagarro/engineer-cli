@@ -9,11 +9,14 @@
 
 mod client;
 mod intent;
+mod replay;
 mod store;
 
 #[allow(unused_imports)]
 pub use client::{QueuedClient, WriteOutcome};
 #[allow(unused_imports)]
 pub use intent::{Intent, IntentKind, IntentState};
+#[allow(unused_imports)]
+pub use replay::{drain, ReplayError, ReplayReport};
 #[allow(unused_imports)]
 pub use store::{QueueDocView, QueueError, QueueStore, QueueSummary, ReplayGuard};

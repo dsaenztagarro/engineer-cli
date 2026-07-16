@@ -157,7 +157,6 @@ impl ApiClient {
     // The `post`/`post_empty` twins that carry an `Idempotency-Key` header —
     // the offline queue's replay path (`crate::queue`) re-sends stored intents
     // through these so a lost ack can never double-write. `send()` unchanged.
-    #[allow(dead_code)]
     pub(crate) async fn post_idempotent<B: Serialize, T: DeserializeOwned>(
         &self,
         path: &str,
@@ -172,7 +171,6 @@ impl ApiClient {
         send(req).await
     }
 
-    #[allow(dead_code)]
     pub(crate) async fn post_empty_idempotent<T: DeserializeOwned>(
         &self,
         path: &str,

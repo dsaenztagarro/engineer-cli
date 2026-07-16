@@ -45,10 +45,20 @@ engineer timer reclaim <verb>      # idle tail: trim (→ paused time, keeps run
 engineer timer bind <query>        # name a running unnamed timer
 engineer timer discard [--force]   # throw the timer away; past ~2 minutes requires --force
 engineer timer settings [--json]   # the per-user timer knobs, read-only (edit on the web)
+
+engineer queue                     # the offline write queue — one row per unsynced intent (--json for machines)
+engineer queue sync                # replay the queue now: pending intents re-send in order
 ```
 
 Timer exit codes answer "is the clock counting?": `0` counting (running / focus work) · `1` nothing running (and verb refusals) · `3` idle, reclaim pending · `4` not counting (paused / focus break).
 Output is plain when piped — ANSI colour only on a TTY, and never when `NO_COLOR` is set.
+
+Offline, `timer pause`/`resume` still take the keystroke:
+the write lands in a local queue and replays in order when the wire returns —
+drained automatically before any live timer write and after a successful read.
+Queue exit codes answer "does the queue need me?":
+`0` drained/empty · `3` queued, offline (not a failure — a cron job must not page on a tunnel) ·
+`4` a divergence is waiting on a choice · `5` replay failed.
 
 ## How authentication works
 

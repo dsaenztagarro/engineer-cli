@@ -245,10 +245,18 @@ async fn settings(api: &ApiClient, json: bool) -> Result<Outcome, ApiError> {
 /// Read the live timer, caching it on success; on a *transport* failure fall
 /// back to the last-known cached value (the offline status-bar case). Auth and
 /// other errors propagate. Returns the age in seconds when the value is stale.
-async fn fetch_timer(api: &ApiClient) -> Result<(Timer, Option<i64>), ApiError> {
+async fn fetch_timer(
+    api: &ApiClient,
+    queued: &QueuedClient<'_>,
+) -> Result<(Timer, Option<i64>), ApiError> {
     match api.timer().await {
         Ok(t) => {
             crate::timer_cache::store(&t);
+            // A successful read proves the wire is back — the one-shot's
+            // chance to drain the queue. Inline and best-effort: it skips
+            // instantly when the queue is empty, and a failed drain never
+            // spoils the read the user asked for.
+            queued.drain_best_effort().await;
             Ok((t, None))
         }
         Err(ApiError::Transport(msg)) => match crate::timer_cache::load() {
@@ -265,7 +273,7 @@ async fn read(
     json: bool,
     colored: bool,
 ) -> Result<Outcome, ApiError> {
-    let (timer, stale) = fetch_timer(api).await?;
+    let (timer, stale) = fetch_timer(api, queued).await?;
     let depth = queued.queue_summary().depth;
     let code = exit_code(&timer);
     let line = if json {
@@ -302,7 +310,7 @@ async fn status(
     short: bool,
     colored: bool,
 ) -> Result<Outcome, ApiError> {
-    let (timer, stale) = fetch_timer(api).await?;
+    let (timer, stale) = fetch_timer(api, queued).await?;
     let depth = queued.queue_summary().depth;
     let code = exit_code(&timer);
     let line = if short {
@@ -1181,6 +1189,45 @@ mod tests {
         .await
         .unwrap();
         assert!(plain.out[0].ends_with(" queued=3"), "{}", plain.out[0]);
+    }
+
+    #[tokio::test]
+    async fn a_successful_read_drains_the_queue() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "elapsed_seconds": 3134
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/pause"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "paused": true
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let api = client(&server);
+        let dir = scratch();
+        let queued = queued_at(&api, &dir);
+        queued_seed(&dir, 2);
+
+        let outcome = dispatch(&api, &queued, None, false, false).await.unwrap();
+        assert_eq!(outcome.code, 0);
+        assert_eq!(
+            queued.queue_summary().depth,
+            0,
+            "the read's success triggered the drain"
+        );
+        assert!(
+            !outcome.out[0].contains("queued"),
+            "the drained queue no longer wears the marker: {}",
+            outcome.out[0]
+        );
     }
 
     fn queued_seed(dir: &std::path::Path, n: usize) {
