@@ -12,6 +12,7 @@
 //! - **Stopped** — the written segment (minutes + activity) so the ledger is
 //!   trusted; `↵` dismisses.
 
+use std::path::PathBuf;
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -23,11 +24,34 @@ use ratatui::Frame;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::{
-    ApiClient, ReclaimVerb, Reclaimed, Timer as TimerSnapshot, TimerCandidate, TimerStopped,
+    ApiClient, ApiError, ReclaimVerb, Reclaimed, Timer as TimerSnapshot, TimerCandidate,
+    TimerStopped,
 };
 use crate::app::action::Action;
+use crate::queue::{QueueStore, QueuedClient, WriteOutcome};
 use crate::ui::notify::Level;
 use crate::ui::{layout::bordered, theme, widgets};
+
+/// Queue + read-cache locations for the offline write seam. `None` (production)
+/// uses the shared XDG paths (`QueuedClient::new`); tests inject a scratch dir
+/// so a spawned write never touches the real queue.
+type QueuePaths = Option<(PathBuf, PathBuf)>;
+
+/// Build the write seam a spawned task enqueues through — the shared XDG queue,
+/// or the test scratch paths when the screen was handed some.
+fn open_queued(
+    api: &ApiClient,
+    paths: &QueuePaths,
+) -> Result<QueuedClient, crate::queue::QueueError> {
+    match paths {
+        Some((queue, cache)) => Ok(QueuedClient::with_paths(
+            api,
+            QueueStore::at(queue.clone()),
+            cache.clone(),
+        )),
+        None => QueuedClient::new(api),
+    }
+}
 
 /// The four timer sub-verbs the `:` palette dispatches (`:timer start|pause|
 /// resume|stop`). Defined here, next to the actions they drive, so the grammar
@@ -67,6 +91,7 @@ pub(crate) fn palette_dispatch(
     snap: Option<&TimerSnapshot>,
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
+    paths: QueuePaths,
 ) -> Option<(Level, String)> {
     let running = snap.is_some_and(|s| s.running);
     let paused = snap.is_some_and(|s| s.paused);
@@ -76,7 +101,7 @@ pub(crate) fn palette_dispatch(
             if running {
                 Some((Level::Warning, "a timer is already running".into()))
             } else {
-                spawn_start_blank(api, tx, false);
+                spawn_start_blank(api, tx, paths, false);
                 None
             }
         }
@@ -86,7 +111,7 @@ pub(crate) fn palette_dispatch(
             } else if paused {
                 Some((Level::Warning, "timer is already paused".into()))
             } else {
-                spawn_op(api, tx, TimerOp::Pause);
+                spawn_op(api, tx, paths, TimerOp::Pause);
                 None
             }
         }
@@ -96,7 +121,7 @@ pub(crate) fn palette_dispatch(
             } else if !paused {
                 Some((Level::Warning, "timer isn't paused".into()))
             } else {
-                spawn_op(api, tx, TimerOp::Resume);
+                spawn_op(api, tx, paths, TimerOp::Resume);
                 None
             }
         }
@@ -104,7 +129,7 @@ pub(crate) fn palette_dispatch(
             if !running {
                 Some((Level::Warning, "no timer to stop".into()))
             } else if bound {
-                spawn_stop(api, tx);
+                spawn_stop(api, tx, paths);
                 None
             } else {
                 Some((
@@ -264,6 +289,13 @@ pub struct Timer {
     /// A `d` past the confirm fence arms this; only the very next `d`
     /// confirms the discard.
     discard_armed: bool,
+    /// True while the shown clock is a provisional offline write (queued, not
+    /// yet server-confirmed) — the watch face wears the `◔` marker. Cleared by
+    /// the next live `TimerLoaded`.
+    provisional: bool,
+    /// Queue + cache locations for the offline write seam; `None` in production
+    /// (the shared XDG paths). Tests inject a scratch dir.
+    queue_paths: QueuePaths,
     /// The per-user knobs — the reclaim default and the focus copy read them.
     settings: Option<crate::api::TimerSettings>,
     query: String,
@@ -391,6 +423,31 @@ impl Timer {
                 }
                 self.base = Some(Instant::now());
                 self.snapshot = Some(t);
+                // A live read is server truth — the clock is confirmed again.
+                self.provisional = false;
+            }
+            // The offline twin of `TimerLoaded`: a queued write's synthesized
+            // clock. The screen keeps it (unlike the header-only `TimerStale`)
+            // and flips the provisional marker on. A pending stop confirmation
+            // is preserved, exactly as `TimerLoaded` guards it.
+            Action::TimerProvisional(t) => {
+                if matches!(self.stage, Stage::Stopped { .. }) {
+                    return None;
+                }
+                let t = *t;
+                self.stage = if t.running {
+                    Stage::Live
+                } else {
+                    Stage::Absent
+                };
+                // A landed bind closes the picker (bound now); a discard that
+                // left nothing running closes it too.
+                if matches!(self.panel, Some(Panel::Bind { .. })) && (t.bound || !t.running) {
+                    self.close_panel();
+                }
+                self.base = Some(Instant::now());
+                self.snapshot = Some(t);
+                self.provisional = true;
             }
             Action::TimerReload => spawn_load(api, tx),
             // `s` — stage-dependent primary: open the start picker when
@@ -400,7 +457,7 @@ impl Timer {
                 Stage::Absent => self.open_start_panel(api, tx),
                 Stage::Live => {
                     if self.snapshot.as_ref().is_some_and(|s| s.bound) {
-                        spawn_stop(api, tx);
+                        spawn_stop(api, tx, self.queue_paths.clone());
                     } else {
                         // §Bind at stop: freeze the clock and name it to save it.
                         self.open_bind_at_stop(api, tx);
@@ -450,9 +507,9 @@ impl Timer {
             Action::TimerPauseResume => {
                 if matches!(self.stage, Stage::Live) {
                     if self.snapshot.as_ref().is_some_and(|s| s.paused) {
-                        spawn_op(api, tx, TimerOp::Resume);
+                        spawn_op(api, tx, self.queue_paths.clone(), TimerOp::Resume);
                     } else {
-                        spawn_op(api, tx, TimerOp::Pause);
+                        spawn_op(api, tx, self.queue_paths.clone(), TimerOp::Pause);
                     }
                 }
             }
@@ -461,14 +518,18 @@ impl Timer {
                     return None;
                 }
                 if self.snapshot.as_ref().is_some_and(|s| s.bound) {
-                    spawn_stop(api, tx);
+                    spawn_stop(api, tx, self.queue_paths.clone());
                 } else {
                     self.open_bind_at_stop(api, tx);
                 }
             }
             Action::TimerUndo => {
                 if let Stage::Stopped { result, .. } = &self.stage {
-                    spawn_undo(api, tx, result.activity_id, result.segment_id);
+                    // A queued stop has no server segment to delete yet — the
+                    // undo is unavailable until it syncs.
+                    if result.segment_id >= 0 {
+                        spawn_undo(api, tx, result.activity_id, result.segment_id);
+                    }
                 }
             }
             Action::TimerUndone => {
@@ -511,7 +572,7 @@ impl Timer {
                     ));
                 }
                 self.discard_armed = false;
-                spawn_discard(api, tx);
+                spawn_discard(api, tx, self.queue_paths.clone());
             }
             Action::TimerBindBegin => match self.stage {
                 // Unbound: name the running timer in place. Bound: open the
@@ -548,7 +609,7 @@ impl Timer {
                         froze,
                     }) => {
                         if *froze {
-                            spawn_op(api, tx, TimerOp::Resume);
+                            spawn_op(api, tx, self.queue_paths.clone(), TimerOp::Resume);
                         }
                         self.close_panel();
                     }
@@ -607,9 +668,9 @@ impl Timer {
                 if let Some(target) = self.bind_target() {
                     self.close_panel();
                     if save {
-                        spawn_bind_then_stop(api, tx, target);
+                        spawn_bind_then_stop(api, tx, self.queue_paths.clone(), target);
                     } else {
-                        spawn_bind(api, tx, target);
+                        spawn_bind(api, tx, self.queue_paths.clone(), target);
                     }
                 }
                 None
@@ -619,7 +680,7 @@ impl Timer {
                 // Second ⏎ on the conflict banner: stop & save, then start.
                 if let Some(picked) = confirm.take() {
                     self.close_panel();
-                    spawn_start_switch(api, tx, picked.id, focus);
+                    spawn_start_switch(api, tx, self.queue_paths.clone(), picked.id, focus);
                     return None;
                 }
                 let running = self.snapshot.as_ref().is_some_and(|s| s.running);
@@ -632,15 +693,15 @@ impl Timer {
                     }
                     Some(StartTarget::Candidate(picked)) => {
                         self.close_panel();
-                        spawn_start_bound(api, tx, picked.id, focus);
+                        spawn_start_bound(api, tx, self.queue_paths.clone(), picked.id, focus);
                     }
                     Some(StartTarget::Create(title)) => {
                         self.close_panel();
-                        spawn_create_and_start(api, tx, title, focus);
+                        spawn_create_and_start(api, tx, self.queue_paths.clone(), title, focus);
                     }
                     Some(StartTarget::JustStart) => {
                         self.close_panel();
-                        spawn_start_blank(api, tx, focus);
+                        spawn_start_blank(api, tx, self.queue_paths.clone(), focus);
                     }
                     None => {}
                 }
@@ -689,7 +750,7 @@ impl Timer {
     fn open_bind_at_stop(&mut self, api: &ApiClient, tx: &UnboundedSender<Action>) {
         let already_paused = self.snapshot.as_ref().is_some_and(|s| s.paused);
         if !already_paused {
-            spawn_op(api, tx, TimerOp::Pause);
+            spawn_op(api, tx, self.queue_paths.clone(), TimerOp::Pause);
         }
         self.open_panel(
             Panel::Bind {
@@ -818,6 +879,16 @@ impl Timer {
         let offer = self.current_offer();
 
         let mut lines: Vec<Line<'static>> = Vec::new();
+        // The provisional marker (§Offline): the shown clock is a queued write,
+        // real to you but not yet confirmed by the server.
+        if self.provisional {
+            lines.push(Line::from(Span::styled(
+                "◔  QUEUED — will sync when you reconnect",
+                Style::default()
+                    .fg(theme::WARN)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
         // State label above the number.
         lines.push(if idle {
             // Reclaim was deferred with Esc — the face says the guard is
@@ -1129,14 +1200,50 @@ impl Timer {
                 let activity = label
                     .clone()
                     .unwrap_or_else(|| format!("activity #{}", result.activity_id));
-                let lines = vec![
-                    Line::from(""),
+                // A queued stop (§Offline): the segment is real to you but not
+                // yet written server-side, so there is no id and no undo yet.
+                let queued = result.segment_id < 0;
+                let heading = if queued {
+                    Line::from(Span::styled(
+                        "◔ segment queued",
+                        Style::default()
+                            .fg(theme::WARN)
+                            .add_modifier(Modifier::BOLD),
+                    ))
+                } else {
                     Line::from(Span::styled(
                         "✓ segment written",
                         Style::default()
                             .fg(theme::SUCCESS)
                             .add_modifier(Modifier::BOLD),
-                    )),
+                    ))
+                };
+                let detail = if queued {
+                    Line::from(Span::styled("will sync when you reconnect", theme::muted()))
+                } else {
+                    Line::from(Span::styled(
+                        format!("segment #{}", result.segment_id),
+                        theme::muted(),
+                    ))
+                };
+                let footer = if queued {
+                    Line::from(vec![
+                        Span::raw("Press "),
+                        Span::styled("↵", theme::focused()),
+                        Span::raw(" to dismiss — it syncs on its own."),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::raw("Press "),
+                        Span::styled("↵", theme::focused()),
+                        Span::raw(" to dismiss, or "),
+                        Span::styled("u", theme::focused()),
+                        Span::raw(" to undo — deletes this segment."),
+                    ])
+                };
+                let lines = vec![
+                    Line::from(""),
+                    heading,
                     Line::from(""),
                     Line::from(vec![
                         Span::styled(
@@ -1146,23 +1253,16 @@ impl Timer {
                         Span::styled("  →  ", theme::muted()),
                         Span::raw(activity),
                     ]),
-                    Line::from(Span::styled(
-                        format!("segment #{}", result.segment_id),
-                        theme::muted(),
-                    )),
+                    detail,
                     Line::from(""),
-                    Line::from(vec![
-                        Span::raw("Press "),
-                        Span::styled("↵", theme::focused()),
-                        Span::raw(" to dismiss, or "),
-                        Span::styled("u", theme::focused()),
-                        Span::raw(" to undo — deletes this segment."),
-                    ]),
+                    footer,
                 ];
-                frame.render_widget(
-                    Paragraph::new(lines).block(bordered("Timer · stopped")),
-                    area,
-                );
+                let title = if queued {
+                    "Timer · stopped (queued)"
+                } else {
+                    "Timer · stopped"
+                };
+                frame.render_widget(Paragraph::new(lines).block(bordered(title)), area);
             }
             Stage::Live if matches!(self.panel, Some(Panel::Bind { .. })) => {
                 self.render_bind_panel(frame, area)
@@ -1504,6 +1604,10 @@ impl Timer {
         match &self.stage {
             Stage::Loading => widgets::footer_hints(&[("h", "home")]),
             Stage::Absent => widgets::footer_hints(&[("s", "start"), ("h", "home")]),
+            // A queued stop has no server segment to undo yet — drop the `u`.
+            Stage::Stopped { result, .. } if result.segment_id < 0 => {
+                widgets::footer_hints(&[("↵", "dismiss"), ("h", "home")])
+            }
             Stage::Stopped { .. } => {
                 widgets::footer_hints(&[("u", "undo"), ("↵", "dismiss"), ("h", "home")])
             }
@@ -1616,6 +1720,40 @@ enum TimerOp {
     Resume,
 }
 
+/// Forward a queued write's outcome to the reducer: a confirmed write lands as a
+/// live snapshot (`TimerLoaded`), a queued one as the provisional twin
+/// (`TimerProvisional`, the `◔` marker), and any non-transport error keeps
+/// today's notify-tile semantics.
+fn forward_write(
+    tx: &UnboundedSender<Action>,
+    result: Result<WriteOutcome<TimerSnapshot>, ApiError>,
+    context: &str,
+) {
+    match result {
+        Ok(WriteOutcome::Confirmed(t)) => {
+            let _ = tx.send(Action::TimerLoaded(Box::new(t)));
+        }
+        Ok(WriteOutcome::Provisional(t)) => {
+            let _ = tx.send(Action::TimerProvisional(Box::new(t)));
+        }
+        Err(e) => {
+            let _ = tx.send(Action::Notify {
+                level: Level::Error,
+                text: format!("{context}: {e}"),
+            });
+        }
+    }
+}
+
+/// Loud failure when the queue seam itself can't open — the write can't even be
+/// deferred, so say so rather than dropping the gesture.
+fn notify_seam_error(tx: &UnboundedSender<Action>, context: &str, e: impl std::fmt::Display) {
+    let _ = tx.send(Action::Notify {
+        level: Level::Error,
+        text: format!("{context}: {e}"),
+    });
+}
+
 /// Today's logged minutes for the rail — the same today-window read the Home
 /// screen uses, reduced to one number.
 fn spawn_today(api: &ApiClient, tx: &UnboundedSender<Action>) {
@@ -1683,40 +1821,57 @@ async fn into_mode(
     }
 }
 
-fn spawn_start_blank(api: &ApiClient, tx: &UnboundedSender<Action>, focus: bool) {
+fn spawn_start_blank(
+    api: &ApiClient,
+    tx: &UnboundedSender<Action>,
+    paths: QueuePaths,
+    focus: bool,
+) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
-        match api.start_timer(None, false).await {
-            Ok(t) => {
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => return notify_seam_error(&tx, "start failed", e),
+        };
+        match queued.start_timer(None, false).await {
+            Ok(WriteOutcome::Confirmed(t)) => {
                 let t = into_mode(&api, &tx, t, focus).await;
                 let _ = tx.send(Action::TimerLoaded(Box::new(t)));
             }
-            Err(e) => {
-                let _ = tx.send(Action::Notify {
-                    level: Level::Error,
-                    text: format!("start failed: {e}"),
-                });
+            // Offline: the queued start is a stopwatch — the focus mode hop is
+            // a live-only call, not one of the offline verbs.
+            Ok(WriteOutcome::Provisional(t)) => {
+                let _ = tx.send(Action::TimerProvisional(Box::new(t)));
             }
+            Err(e) => notify_seam_error(&tx, "start failed", e),
         }
     });
 }
 
 /// Start bound to an existing activity (no switch — a running timer should
 /// have routed through the conflict banner first; a racing 409 still surfaces).
-fn spawn_start_bound(api: &ApiClient, tx: &UnboundedSender<Action>, activity_id: i64, focus: bool) {
+fn spawn_start_bound(
+    api: &ApiClient,
+    tx: &UnboundedSender<Action>,
+    paths: QueuePaths,
+    activity_id: i64,
+    focus: bool,
+) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
-        match api.start_timer(Some(activity_id), false).await {
-            Ok(t) => {
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => return notify_seam_error(&tx, "start failed", e),
+        };
+        match queued.start_timer(Some(activity_id), false).await {
+            Ok(WriteOutcome::Confirmed(t)) => {
                 let t = into_mode(&api, &tx, t, focus).await;
                 let _ = tx.send(Action::TimerLoaded(Box::new(t)));
             }
-            Err(e) => {
-                let _ = tx.send(Action::Notify {
-                    level: Level::Error,
-                    text: format!("start failed: {e}"),
-                });
+            Ok(WriteOutcome::Provisional(t)) => {
+                let _ = tx.send(Action::TimerProvisional(Box::new(t)));
             }
+            Err(e) => notify_seam_error(&tx, "start failed", e),
         }
     });
 }
@@ -1726,169 +1881,195 @@ fn spawn_start_bound(api: &ApiClient, tx: &UnboundedSender<Action>, activity_id:
 fn spawn_start_switch(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
+    paths: QueuePaths,
     activity_id: i64,
     focus: bool,
 ) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
-        match api.start_timer(Some(activity_id), true).await {
-            Ok(t) => {
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => return notify_seam_error(&tx, "stop & switch failed", e),
+        };
+        // `switch` rides the intent, so an offline switch replays as stop & save
+        // then start — the same server verb, deferred.
+        match queued.start_timer(Some(activity_id), true).await {
+            Ok(WriteOutcome::Confirmed(t)) => {
                 let t = into_mode(&api, &tx, t, focus).await;
                 let _ = tx.send(Action::TimerLoaded(Box::new(t)));
             }
-            Err(e) => {
-                let _ = tx.send(Action::Notify {
-                    level: Level::Error,
-                    text: format!("stop & switch failed: {e}"),
-                });
+            Ok(WriteOutcome::Provisional(t)) => {
+                let _ = tx.send(Action::TimerProvisional(Box::new(t)));
             }
+            Err(e) => notify_seam_error(&tx, "stop & switch failed", e),
         }
     });
 }
 
 /// The "＋ new activity" row: a blank start followed by a bind-with-title —
 /// the same call pair the bind panel uses, so the server mints the activity.
+/// Offline, both halves queue: the replay creates the activity, then binds.
 fn spawn_create_and_start(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
+    paths: QueuePaths,
     title: String,
     focus: bool,
 ) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
-        if let Err(e) = api.start_timer(None, false).await {
-            let _ = tx.send(Action::Notify {
-                level: Level::Error,
-                text: format!("start failed: {e}"),
-            });
-            return;
-        }
-        match api.bind_timer(None, Some(title)).await {
-            Ok(t) => {
-                let t = into_mode(&api, &tx, t, focus).await;
-                let _ = tx.send(Action::TimerLoaded(Box::new(t)));
-            }
-            Err(e) => {
-                // The clock is running but unnamed — say so instead of hiding it.
-                let _ = tx.send(Action::TimerReload);
-                let _ = tx.send(Action::Notify {
-                    level: Level::Warning,
-                    text: format!("started, but naming it failed: {e} — bind with `/`"),
-                });
-            }
-        }
-    });
-}
-
-fn spawn_op(api: &ApiClient, tx: &UnboundedSender<Action>, op: TimerOp) {
-    let (api, tx) = (api.clone(), tx.clone());
-    tokio::spawn(async move {
-        let result = match op {
-            TimerOp::Pause => api.pause_timer().await,
-            TimerOp::Resume => api.resume_timer().await,
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => return notify_seam_error(&tx, "start failed", e),
         };
-        match result {
-            Ok(t) => {
-                let _ = tx.send(Action::TimerLoaded(Box::new(t)));
+        match queued.start_timer(None, false).await {
+            Ok(WriteOutcome::Confirmed(_)) => match queued.bind_timer(None, Some(title)).await {
+                Ok(out) => {
+                    let t = into_mode(&api, &tx, out.into_value(), focus).await;
+                    let _ = tx.send(Action::TimerLoaded(Box::new(t)));
+                }
+                Err(e) => {
+                    // The clock is running but unnamed — say so, don't hide it.
+                    let _ = tx.send(Action::TimerReload);
+                    let _ = tx.send(Action::Notify {
+                        level: Level::Warning,
+                        text: format!("started, but naming it failed: {e} — bind with `/`"),
+                    });
+                }
+            },
+            Ok(WriteOutcome::Provisional(started)) => {
+                // Offline: queue the name too so the provisional face reads bound.
+                match queued.bind_timer(None, Some(title)).await {
+                    Ok(out) => {
+                        let _ = tx.send(Action::TimerProvisional(Box::new(out.into_value())));
+                    }
+                    Err(_) => {
+                        let _ = tx.send(Action::TimerProvisional(Box::new(started)));
+                    }
+                }
             }
-            Err(e) => {
-                let _ = tx.send(Action::Notify {
-                    level: Level::Error,
-                    text: format!("timer op failed: {e}"),
-                });
-            }
+            Err(e) => notify_seam_error(&tx, "start failed", e),
         }
     });
 }
 
-fn spawn_stop(api: &ApiClient, tx: &UnboundedSender<Action>) {
+fn spawn_op(api: &ApiClient, tx: &UnboundedSender<Action>, paths: QueuePaths, op: TimerOp) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
-        match api.stop_timer().await {
-            Ok(stopped) => {
-                let _ = tx.send(Action::TimerStopped(Box::new(stopped)));
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => return notify_seam_error(&tx, "timer op failed", e),
+        };
+        let result = match op {
+            TimerOp::Pause => queued.pause_timer().await,
+            TimerOp::Resume => queued.resume_timer().await,
+        };
+        forward_write(&tx, result, "timer op failed");
+    });
+}
+
+fn spawn_stop(api: &ApiClient, tx: &UnboundedSender<Action>, paths: QueuePaths) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => return notify_seam_error(&tx, "stop failed", e),
+        };
+        match queued.stop_timer().await {
+            // The confirmation view reads `segment_id < 0` to render the queued
+            // stop; a live stop carries the real, server-minted id.
+            Ok(out) => {
+                let _ = tx.send(Action::TimerStopped(Box::new(out.into_value())));
                 // Clear the header cell without disturbing the screen's
                 // confirmation view (TimerCleared is app-only).
                 let _ = tx.send(Action::TimerCleared);
             }
-            Err(e) => {
-                let _ = tx.send(Action::Notify {
-                    level: Level::Error,
-                    text: format!("stop failed: {e}"),
-                });
-            }
+            Err(e) => notify_seam_error(&tx, "stop failed", e),
         }
     });
 }
 
-fn spawn_discard(api: &ApiClient, tx: &UnboundedSender<Action>) {
+fn spawn_discard(api: &ApiClient, tx: &UnboundedSender<Action>, paths: QueuePaths) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
-        if let Err(e) = api.discard_timer().await {
-            let _ = tx.send(Action::Notify {
-                level: Level::Error,
-                text: format!("discard failed: {e}"),
-            });
-            return;
-        }
-        // Re-fetch so the screen lands on Absent and the header clears.
-        match api.timer().await {
-            Ok(t) => {
-                let _ = tx.send(Action::TimerLoaded(Box::new(t)));
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => return notify_seam_error(&tx, "discard failed", e),
+        };
+        match queued.discard_timer().await {
+            Ok(WriteOutcome::Confirmed(_)) => {
+                // Re-fetch so the screen lands on Absent and the header clears.
+                match api.timer().await {
+                    Ok(t) => {
+                        let _ = tx.send(Action::TimerLoaded(Box::new(t)));
+                    }
+                    Err(_) => {
+                        let _ = tx.send(Action::TimerCleared);
+                    }
+                }
             }
-            Err(_) => {
+            // Offline: discarded locally (nothing running), queued. The screen
+            // goes Absent; the header clears.
+            Ok(WriteOutcome::Provisional(t)) => {
+                let _ = tx.send(Action::TimerProvisional(Box::new(t)));
                 let _ = tx.send(Action::TimerCleared);
             }
+            Err(e) => notify_seam_error(&tx, "discard failed", e),
         }
     });
 }
 
-fn spawn_bind(api: &ApiClient, tx: &UnboundedSender<Action>, target: BindTarget) {
+fn spawn_bind(
+    api: &ApiClient,
+    tx: &UnboundedSender<Action>,
+    paths: QueuePaths,
+    target: BindTarget,
+) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
-        let result = match target {
-            BindTarget::Existing(id) => api.bind_timer(Some(id), None).await,
-            BindTarget::Create(title) => api.bind_timer(None, Some(title)).await,
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => return notify_seam_error(&tx, "bind failed", e),
         };
-        match result {
-            Ok(t) => {
-                let _ = tx.send(Action::TimerLoaded(Box::new(t)));
-            }
-            Err(e) => {
-                let _ = tx.send(Action::Notify {
-                    level: Level::Error,
-                    text: format!("bind failed: {e}"),
-                });
-            }
-        }
+        let result = match target {
+            BindTarget::Existing(id) => queued.bind_timer(Some(id), None).await,
+            BindTarget::Create(title) => queued.bind_timer(None, Some(title)).await,
+        };
+        forward_write(&tx, result, "bind failed");
     });
 }
 
 /// §Bind at stop's ⏎: bind (existing or minted-from-title), then stop — the
 /// server's bound-only save with the picker in between. The bind result is
 /// forwarded first so the stop confirmation can name the activity.
-fn spawn_bind_then_stop(api: &ApiClient, tx: &UnboundedSender<Action>, target: BindTarget) {
+fn spawn_bind_then_stop(
+    api: &ApiClient,
+    tx: &UnboundedSender<Action>,
+    paths: QueuePaths,
+    target: BindTarget,
+) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => return notify_seam_error(&tx, "bind failed", e),
+        };
         let bound = match target {
-            BindTarget::Existing(id) => api.bind_timer(Some(id), None).await,
-            BindTarget::Create(title) => api.bind_timer(None, Some(title)).await,
+            BindTarget::Existing(id) => queued.bind_timer(Some(id), None).await,
+            BindTarget::Create(title) => queued.bind_timer(None, Some(title)).await,
         };
         match bound {
-            Ok(t) => {
+            Ok(WriteOutcome::Confirmed(t)) => {
                 let _ = tx.send(Action::TimerLoaded(Box::new(t)));
             }
-            Err(e) => {
-                let _ = tx.send(Action::Notify {
-                    level: Level::Error,
-                    text: format!("bind failed: {e}"),
-                });
-                return;
+            Ok(WriteOutcome::Provisional(t)) => {
+                let _ = tx.send(Action::TimerProvisional(Box::new(t)));
             }
+            Err(e) => return notify_seam_error(&tx, "bind failed", e),
         }
-        match api.stop_timer().await {
-            Ok(stopped) => {
-                let _ = tx.send(Action::TimerStopped(Box::new(stopped)));
+        match queued.stop_timer().await {
+            Ok(out) => {
+                let _ = tx.send(Action::TimerStopped(Box::new(out.into_value())));
                 let _ = tx.send(Action::TimerCleared);
             }
             Err(e) => {
@@ -2065,15 +2246,35 @@ mod tests {
     use crate::config::{Config, Environment};
     use tokio::sync::mpsc;
 
+    /// A per-test scratch (queue.json, cache) so a spawned offline write lands
+    /// in a throwaway dir, never the shared XDG queue.
+    fn scratch_paths() -> (PathBuf, PathBuf) {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "engineer-timer-screen-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        (dir.join("queue.json"), dir.join("timer-cache.json"))
+    }
+
     /// A screen plus a live api/tx. The receiver is leaked so the background
     /// tasks spawned by intent actions still have a live sender (their results,
-    /// which would hit a non-existent dev server, are irrelevant to state).
+    /// which would hit a non-existent dev server, are irrelevant to state). The
+    /// screen's queue seam points at a scratch dir, so those tasks never touch
+    /// the shared XDG queue.
     fn setup() -> (Timer, ApiClient, mpsc::UnboundedSender<Action>) {
         let config = Config::for_environment(Environment::Development);
         let api = ApiClient::with_token(config.api_url.clone(), "tok".into());
         let (tx, rx) = mpsc::unbounded_channel();
         Box::leak(Box::new(rx));
-        (Timer::default(), api, tx)
+        let screen = Timer {
+            queue_paths: Some(scratch_paths()),
+            ..Timer::default()
+        };
+        (screen, api, tx)
     }
 
     fn snapshot(json: serde_json::Value) -> TimerSnapshot {
@@ -2373,6 +2574,147 @@ mod tests {
         assert!(matches!(s.stage, Stage::Stopped { .. }));
     }
 
+    /// The buffer text of the screen rendered at 100×32 — the offline markers
+    /// are read straight from the watch face / confirmation view.
+    fn rendered(s: &mut Timer) -> String {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal
+            .draw(|frame| s.render(frame, frame.area()))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn provisional_write_flips_the_marker_and_a_live_read_clears_it() {
+        let (mut s, api, tx) = setup();
+        // A queued offline pause lands as the provisional twin.
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerProvisional(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "paused": true,
+                "label": "consensus", "elapsed_seconds": 1800
+            })))),
+        )
+        .await;
+        assert!(matches!(s.stage, Stage::Live));
+        assert!(s.provisional, "a queued write is provisional");
+        assert!(
+            rendered(&mut s).contains("QUEUED"),
+            "the watch face wears the ◔ queued marker"
+        );
+
+        // A live read is server truth — the marker clears.
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "paused": true, "label": "consensus"
+            })))),
+        )
+        .await;
+        assert!(!s.provisional, "a confirmed read clears it");
+        assert!(!rendered(&mut s).contains("QUEUED"));
+    }
+
+    #[tokio::test]
+    async fn offline_stop_confirmation_reads_queued_not_written() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "label": "consensus"
+            })))),
+        )
+        .await;
+        // The offline stop's synthesized confirmation: a negative segment id.
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerStopped(Box::new(TimerStopped {
+                stopped: true,
+                activity_id: 9,
+                segment_id: -1,
+                minutes: 25,
+            })),
+        )
+        .await;
+        let text = rendered(&mut s);
+        assert!(text.contains("segment queued"), "{text}");
+        assert!(text.contains("will sync"), "{text}");
+        assert!(!text.contains("segment written"), "not confirmed: {text}");
+        // The undo key is gone — there is no server segment to delete yet.
+        let hints: String = s
+            .hints()
+            .spans
+            .iter()
+            .map(|sp| sp.content.as_ref())
+            .collect();
+        assert!(!hints.contains("undo"), "{hints}");
+        // And `u` is inert while it is queued.
+        assert!(s.handle(Action::TimerUndo, &api, &tx).await.is_none());
+        assert!(matches!(s.stage, Stage::Stopped { .. }), "still confirming");
+    }
+
+    #[tokio::test]
+    async fn an_offline_keystroke_lands_in_the_queue() {
+        // The full wiring, offline: a keystroke → the spawned write helper →
+        // `QueuedClient` → the persisted queue. A dead api forces the offline
+        // arm; the seeded read cache is the snapshot the pause freezes.
+        use url::Url;
+        let (queue_path, cache_path) = scratch_paths();
+        crate::timer_cache::store_at(
+            &cache_path,
+            &snapshot(serde_json::json!({
+                "running": true, "bound": true, "label": "consensus", "elapsed_seconds": 1800
+            })),
+        );
+        // reqwest fails before any response on this port — `ApiError::Transport`.
+        let api = ApiClient::with_token(Url::parse("http://127.0.0.1:1/").unwrap(), "tok".into());
+        let (tx, rx) = mpsc::unbounded_channel();
+        Box::leak(Box::new(rx));
+        let mut s = Timer {
+            queue_paths: Some((queue_path.clone(), cache_path)),
+            ..Timer::default()
+        };
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "label": "consensus", "elapsed_seconds": 1800
+            })))),
+        )
+        .await;
+        // The pause gesture is never refused offline — it queues.
+        feed(&mut s, &api, &tx, Action::TimerPauseResume).await;
+
+        // The write is spawned; wait for it to land (the dead port refuses fast).
+        let store = QueueStore::at(&queue_path);
+        let mut pending = store.pending().unwrap();
+        for _ in 0..100 {
+            if !pending.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            pending = store.pending().unwrap();
+        }
+        assert_eq!(pending.len(), 1, "the gesture landed in the queue");
+        assert_eq!(pending[0].kind.word(), "pause");
+    }
+
     /// `palette_dispatch` returns `Some(warning)` for an invalid transition and
     /// `None` when it accepts the action (and spawns the API op). The receiver
     /// is leaked so the spawned tasks keep a live sender.
@@ -2382,7 +2724,7 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         Box::leak(Box::new(rx));
         let snap = snap.map(snapshot);
-        super::palette_dispatch(verb, snap.as_ref(), &api, &tx)
+        super::palette_dispatch(verb, snap.as_ref(), &api, &tx, Some(scratch_paths()))
     }
 
     #[test]

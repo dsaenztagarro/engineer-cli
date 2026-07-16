@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 use crate::api::{ApiClient, Timer};
 use crate::auth::TokenProvider;
 use crate::config::Config;
+use crate::queue::QueueStore;
 use crate::ui::notify::{Level, Notification};
 
 mod action;
@@ -74,6 +75,13 @@ pub struct App {
     pub timer_stale: bool,
     /// When the last header poll was dispatched, to honour `TIMER_POLL_INTERVAL`.
     pub timer_last_poll: Instant,
+    /// The shared write queue, for the header's ` ↑N` unsynced-writes count.
+    /// `None` when the state dir is unavailable (the count reads 0). Read-only
+    /// here — writes go through `QueuedClient`.
+    pub queue: Option<QueueStore>,
+    /// Pending queued writes (the queue depth), refreshed each tick — the header
+    /// cell's ` ↑N` complication (quiet accent, the shipped stale marker's family).
+    pub queued_writes: usize,
     /// The per-user timer knobs, fetched once after sign-in — the header cell
     /// reads them to spot a finished focus phase (the offer pill).
     pub settings: Option<crate::api::TimerSettings>,
@@ -130,6 +138,8 @@ async fn run_loop(
         timer_base: None,
         timer_stale: false,
         timer_last_poll: Instant::now(),
+        queue: QueueStore::open_default().ok(),
+        queued_writes: 0,
         settings: None,
         overrun_pinged: None,
         heartbeat_last: Instant::now(),
@@ -171,6 +181,7 @@ async fn run_loop(
                     app.notification = None;
                 }
                 app.poll_timer_if_due();
+                app.refresh_queued_writes();
             }
         }
 
@@ -337,8 +348,22 @@ impl App {
                 let api = self.api.clone();
                 let tx = self.tx.clone();
                 tokio::spawn(async move {
+                    let queued = crate::queue::QueuedClient::new(&api).ok();
+                    // Reconnect drain: replay any pending intents before the read
+                    // so the poll reflects what just synced (best-effort, skips
+                    // instantly when the queue is empty). This is what makes the
+                    // TUI reconcile on its own, not only on the next write.
+                    if let Some(q) = &queued {
+                        q.drain_best_effort().await;
+                    }
                     match api.timer().await {
                         Ok(t) => {
+                            // Warm the read cache with server truth (the headless
+                            // read caches the same way at `timer_cli::fetch_timer`).
+                            // Without this a TUI-only session has no snapshot, so
+                            // an offline pause/resume/stop/bind/discard would find
+                            // nothing to synthesize from and refuse the keystroke.
+                            crate::timer_cache::store(&t);
                             let _ = tx.send(Action::TimerLoaded(Box::new(t)));
                         }
                         // Offline (the same seam the headless read falls back
@@ -348,9 +373,8 @@ impl App {
                         // have paused or stopped.
                         Err(crate::api::ApiError::Transport(e)) => {
                             tracing::warn!(target: "engineer_cli::api", error = %e, "timer poll failed; folding cache + queue");
-                            if let Ok(queued) = crate::queue::QueuedClient::new(&api) {
-                                if let Some((t, _)) = queued.effective_timer(jiff::Timestamp::now())
-                                {
+                            if let Some(q) = &queued {
+                                if let Some((t, _)) = q.effective_timer(jiff::Timestamp::now()) {
                                     let _ = tx.send(Action::TimerStale(Box::new(t)));
                                 }
                             }
@@ -393,6 +417,19 @@ impl App {
                 self.timer = Some(*t);
                 self.timer_base = Some(Instant::now());
                 self.timer_stale = true;
+            }
+            // A queued write's provisional clock. Updates the header snapshot
+            // (so the cell advances) and is forwarded to the Timer screen, which
+            // flips its `◔` marker on. Not stale — it is the freshest local
+            // truth; the ` ↑N` count (from the queue) says it is unsynced.
+            Action::TimerProvisional(t) => {
+                self.timer = Some((*t).clone());
+                self.timer_base = Some(Instant::now());
+                self.timer_stale = false;
+                let _ = self
+                    .current
+                    .handle(Action::TimerProvisional(t), &self.api, &self.tx)
+                    .await;
             }
             // Store-and-forward like TimerLoaded: the app keeps the knobs for
             // the header cell, the current screen gets its own copy.
@@ -550,9 +587,13 @@ impl App {
             // the header cell shows the result, and an invalid transition surfaces
             // the same warning the Timer screen would.
             Command::Timer(verb) => {
-                if let Some((level, text)) =
-                    screens::timer::palette_dispatch(verb, self.timer.as_ref(), &self.api, &self.tx)
-                {
+                if let Some((level, text)) = screens::timer::palette_dispatch(
+                    verb,
+                    self.timer.as_ref(),
+                    &self.api,
+                    &self.tx,
+                    None,
+                ) {
                     self.notify(level, text);
                 }
             }
@@ -632,6 +673,18 @@ impl App {
         }
     }
 
+    /// Refresh the unsynced-writes count from the shared queue for the header's
+    /// ` ↑N`. Read on the tick (≤4×/s of a tiny, lock-free file), so it also
+    /// reflects a drain, a divergence, or another process enqueuing — the queue
+    /// file is the single source of truth, exactly as `engineer timer` reads it.
+    fn refresh_queued_writes(&mut self) {
+        self.queued_writes = self
+            .queue
+            .as_ref()
+            .and_then(|q| q.summary().ok())
+            .map_or(0, |s| s.depth);
+    }
+
     /// The header timer cell spans, with the displayed elapsed ticked locally
     /// from the last snapshot. `None` when no timer is running.
     fn timer_cell_spans(&self, narrow: bool) -> Option<Vec<ratatui::text::Span<'static>>> {
@@ -648,6 +701,14 @@ impl App {
         // is showing the folded local clock, not a live server read.
         if self.timer_stale {
             spans.push(ratatui::text::Span::styled(" ~", crate::ui::theme::muted()));
+        }
+        // ` ↑N` — unsynced local writes, the quiet queued complication (accent,
+        // the same idiom `engineer timer --short` prints).
+        if self.queued_writes > 0 {
+            spans.push(ratatui::text::Span::styled(
+                format!(" ↑{}", self.queued_writes),
+                ratatui::style::Style::default().fg(crate::ui::theme::ACCENT),
+            ));
         }
         Some(spans)
     }
@@ -680,6 +741,9 @@ mod tests {
             timer_base: None,
             timer_stale: false,
             timer_last_poll: Instant::now(),
+            // Tests never touch the shared queue — the header count stays 0.
+            queue: None,
+            queued_writes: 0,
             settings: None,
             overrun_pinged: None,
             heartbeat_last: Instant::now(),
@@ -877,6 +941,29 @@ mod tests {
         let text = rendered_text(&mut app);
         assert!(text.contains("● 04:32"), "{text}");
         assert!(!text.contains("04:32 consensus ~"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn header_shows_the_queued_up_count_when_writes_are_pending() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.timer = Some(running_timer(272));
+        app.timer_base = Some(Instant::now());
+        // Two unsynced offline writes — the quiet ` ↑N` complication.
+        app.queued_writes = 2;
+        let text = rendered_text(&mut app);
+        assert!(text.contains("↑2"), "{text}");
+        // It clears once the queue drains.
+        app.queued_writes = 0;
+        assert!(!rendered_text(&mut app).contains('↑'));
+    }
+
+    #[tokio::test]
+    async fn timer_provisional_updates_the_header_snapshot_unstale() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.handle(Action::TimerProvisional(Box::new(running_timer(60))))
+            .await;
+        assert!(app.timer.as_ref().is_some_and(|t| t.running));
+        assert!(!app.timer_stale, "a fresh local write is not a stale read");
     }
 
     #[tokio::test]
