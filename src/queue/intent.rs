@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::{ConflictInfo, FieldError};
+use crate::api::{ActivityCreate, ConflictInfo, FieldError};
 
 /// A single deferred write: a mutation the user performed while the wire was
 /// down, persisted until it replays. Stored only until it syncs — the queue is
@@ -72,6 +72,24 @@ pub enum IntentKind {
         title: Option<String>,
     },
     TimerDiscard,
+    /// Declare a plan item — a `planned` activity with `planned_on` set (the
+    /// board's `a`, deferred while offline). Carries the whole create body so
+    /// the replay re-sends it verbatim; the queued `Idempotency-Key` makes the
+    /// re-send safe. Stream `"activity"`: there is no server id yet to order a
+    /// per-activity stream on.
+    ActivityCreate {
+        body: ActivityCreate,
+    },
+    /// Adjust a plan item's title in place — a deferred `PATCH
+    /// /api/v1/activities/:id` (the board's `e`).
+    ActivityUpdate {
+        id: i64,
+        title: String,
+    },
+    /// Drop a plan item — a deferred archive (the board's `d`, second press).
+    ActivityArchive {
+        id: i64,
+    },
 }
 
 impl IntentKind {
@@ -84,6 +102,12 @@ impl IntentKind {
             | Self::TimerStop { .. }
             | Self::TimerBind { .. }
             | Self::TimerDiscard => "timer".into(),
+            // A declare has no server id yet — it orders in the shared activity
+            // stream; adjust/drop key on the row they act on.
+            Self::ActivityCreate { .. } => "activity".into(),
+            Self::ActivityUpdate { id, .. } | Self::ActivityArchive { id } => {
+                format!("activity:{id}")
+            }
         }
     }
 
@@ -96,6 +120,9 @@ impl IntentKind {
             Self::TimerStop { .. } => "stop",
             Self::TimerBind { .. } => "bind",
             Self::TimerDiscard => "discard",
+            Self::ActivityCreate { .. } => "plan",
+            Self::ActivityUpdate { .. } => "adjust",
+            Self::ActivityArchive { .. } => "drop",
         }
     }
 }

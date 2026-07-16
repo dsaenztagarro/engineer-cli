@@ -11,7 +11,9 @@
 
 use std::path::PathBuf;
 
-use crate::api::{ApiClient, ApiError, Timer, TimerStopped};
+use crate::api::{
+    Activity, ActivityCreate, ActivityUpdate, ApiClient, ApiError, Timer, TimerStopped,
+};
 use crate::timer_cache;
 use crate::timer_clock;
 
@@ -25,6 +27,11 @@ use super::store::{QueueStore, QueueSummary};
 /// server-minted on replay, so the provisional confirmation carries a negative
 /// sentinel and the caller renders "queued" instead of `segment #N`.
 pub const PROVISIONAL_SEGMENT_ID: i64 = -1;
+
+/// A stand-in `id` for a plan item declared while offline: the real id is
+/// server-minted on replay, so the provisional row carries a negative sentinel
+/// and the board renders it `◔ … queued` instead of a real activity id.
+pub const PROVISIONAL_ACTIVITY_ID: i64 = -1;
 
 /// How a write landed: on the server, or into the queue with a locally
 /// synthesized stand-in the caller renders as provisional.
@@ -334,7 +341,92 @@ impl QueuedClient {
         }
     }
 
-    /// The offline arm shared by every wrapped verb: enqueue first (the
+    /// Declare a plan item — a `planned` activity carrying `planned_on` (the
+    /// board's `a`). Drain-before-live, then the live POST; offline it enqueues
+    /// an [`IntentKind::ActivityCreate`] and returns a provisional negative-id
+    /// row the board renders `◔ queued`. Like [`start_timer`](Self::start_timer),
+    /// an offline create needs no cached snapshot — declaring a fresh item is
+    /// legitimate with nothing local to fold over.
+    pub async fn create_activity(
+        &self,
+        body: &ActivityCreate,
+    ) -> Result<WriteOutcome<Activity>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.create_activity(body).await {
+            Ok(a) => Ok(WriteOutcome::Confirmed(a)),
+            Err(ApiError::Transport(_)) => self.defer_activity(
+                IntentKind::ActivityCreate { body: body.clone() },
+                provisional_activity(body),
+            ),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Adjust a plan item's title in place (the board's `e`). Offline enqueues
+    /// an [`IntentKind::ActivityUpdate`] and returns the row with the new title.
+    pub async fn update_activity(
+        &self,
+        id: i64,
+        title: &str,
+    ) -> Result<WriteOutcome<Activity>, ApiError> {
+        self.drain_best_effort().await;
+        let body = ActivityUpdate {
+            title: Some(title.to_string()),
+        };
+        match self.api.update_activity(id, &body).await {
+            Ok(a) => Ok(WriteOutcome::Confirmed(a)),
+            Err(ApiError::Transport(_)) => self.defer_activity(
+                IntentKind::ActivityUpdate {
+                    id,
+                    title: title.to_string(),
+                },
+                Activity {
+                    id,
+                    title: title.to_string(),
+                    ..Default::default()
+                },
+            ),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Drop a plan item — archive it (the board's `d`, second press). Offline
+    /// enqueues an [`IntentKind::ActivityArchive`] and returns the row marked
+    /// archived.
+    pub async fn archive_activity(&self, id: i64) -> Result<WriteOutcome<Activity>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.archive_activity(id).await {
+            Ok(a) => Ok(WriteOutcome::Confirmed(a)),
+            Err(ApiError::Transport(_)) => self.defer_activity(
+                IntentKind::ActivityArchive { id },
+                Activity {
+                    id,
+                    archived_at: Some(jiff::Timestamp::now()),
+                    ..Default::default()
+                },
+            ),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The offline arm the plan-write verbs share: enqueue the intent (the
+    /// gesture must never be lost — a loud error if even that fails), then
+    /// return the provisional stand-in. Unlike the timer [`defer`](Self::defer),
+    /// no cached snapshot is required — a plan write names its own row (a fresh
+    /// negative id for a create, the target id for adjust/drop), so there is
+    /// always something to synthesize.
+    fn defer_activity(
+        &self,
+        kind: IntentKind,
+        provisional: Activity,
+    ) -> Result<WriteOutcome<Activity>, ApiError> {
+        self.store.enqueue(kind).map_err(|e| {
+            ApiError::Transport(format!("offline, and queueing the write failed: {e}"))
+        })?;
+        Ok(WriteOutcome::Provisional(provisional))
+    }
+
+    /// The offline arm shared by every wrapped timer verb: enqueue first (the
     /// gesture must never be lost), then synthesize from the last known
     /// snapshot. With no snapshot there is nothing locally known to act on —
     /// the transport error propagates, exactly like the read path.
@@ -363,6 +455,18 @@ impl QueuedClient {
             None => timer_cache::load(),
             Some(path) => timer_cache::load_at(path),
         }
+    }
+}
+
+/// A negative-id `planned` stand-in for a queued declare, seeded from the create
+/// body — the board renders it `◔ … queued` until the replay mints the real row.
+fn provisional_activity(body: &ActivityCreate) -> Activity {
+    Activity {
+        id: PROVISIONAL_ACTIVITY_ID,
+        title: body.title.clone(),
+        kind: body.kind.clone(),
+        status: Some("planned".into()),
+        ..Default::default()
     }
 }
 
@@ -658,5 +762,107 @@ mod tests {
 
         let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
         assert_eq!(intents[0].kind.word(), "discard");
+    }
+
+    // --- plan writes (#115): create / update / archive through the seam ---
+
+    #[tokio::test]
+    async fn live_create_is_confirmed_and_queues_nothing() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/activities"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 7, "title": "one systems paper", "status": "planned"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let dir = tmp_dir("live-create");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let body = ActivityCreate {
+            title: "one systems paper".into(),
+            ..Default::default()
+        };
+        let out = queued.create_activity(&body).await.unwrap();
+        assert!(!out.is_provisional());
+        assert_eq!(out.value().id, 7);
+        assert_eq!(queued.queue_summary().depth, 0);
+    }
+
+    #[tokio::test]
+    async fn offline_create_enqueues_and_synthesizes_a_provisional_row() {
+        // Unlike the other verbs, a declare needs no cached snapshot — there is
+        // nothing local to fold; a fresh negative-id row is always legitimate.
+        let api = dead_api();
+        let dir = tmp_dir("offline-create");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"), // never written
+        );
+
+        let body = ActivityCreate {
+            title: "one systems paper".into(),
+            planned_on: Some("2026-07-13".parse().unwrap()),
+            ..Default::default()
+        };
+        let out = queued.create_activity(&body).await.unwrap();
+        assert!(out.is_provisional());
+        assert_eq!(out.value().title, "one systems paper");
+        assert!(out.value().id < 0, "a queued declare has no server id yet");
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].kind.word(), "plan");
+        assert_eq!(intents[0].stream, "activity");
+    }
+
+    #[tokio::test]
+    async fn offline_update_enqueues_and_synthesizes() {
+        let api = dead_api();
+        let dir = tmp_dir("offline-update");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let out = queued.update_activity(42, "new title").await.unwrap();
+        assert!(out.is_provisional());
+        assert_eq!(out.value().id, 42);
+        assert_eq!(out.value().title, "new title");
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents[0].kind.word(), "adjust");
+        assert_eq!(
+            intents[0].stream, "activity:42",
+            "keyed on the row it edits"
+        );
+    }
+
+    #[tokio::test]
+    async fn offline_archive_enqueues_and_marks_archived() {
+        let api = dead_api();
+        let dir = tmp_dir("offline-archive");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let out = queued.archive_activity(42).await.unwrap();
+        assert!(out.is_provisional());
+        assert!(out.value().is_archived());
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents[0].kind.word(), "drop");
+        assert_eq!(intents[0].stream, "activity:42");
     }
 }

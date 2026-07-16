@@ -316,13 +316,19 @@ fn progress_key(key: crossterm::event::KeyEvent) -> Option<Action> {
     }
 }
 
-/// Week-board keys (§Week · board). `j`/`k` move the full-row cursor over the
-/// plan rows (the seam the #115/#116 gestures ride in later); `[`/`]`/`t` step
-/// the week in the same dialect as Progress; `h`/Esc steps home.
+/// Week-board keys (§Week · board / §Week · add an intent). `j`/`k` move the
+/// full-row cursor over the plan rows; `a` declares a new intent, `e` adjusts
+/// the selected one, `d` drops it (confirmed on a second press) — the plan-write
+/// gestures (#115). The one-line input, while open, owns keys via the screen's
+/// `intercept_key`, so those never reach here. `[`/`]`/`t` step the week in the
+/// same dialect as Progress; `h`/Esc steps home.
 fn week_key(key: crossterm::event::KeyEvent) -> Option<Action> {
     match (key.code, key.modifiers) {
         (KeyCode::Char('j'), _) | (KeyCode::Down, _) => Some(Action::WeekSelectMove(1)),
         (KeyCode::Char('k'), _) | (KeyCode::Up, _) => Some(Action::WeekSelectMove(-1)),
+        (KeyCode::Char('a'), _) => Some(Action::WeekAddBegin),
+        (KeyCode::Char('e'), _) => Some(Action::WeekAdjustBegin),
+        (KeyCode::Char('d'), _) => Some(Action::WeekDrop),
         (KeyCode::Char('['), _) => Some(Action::WeekStep(-1)),
         (KeyCode::Char(']'), _) => Some(Action::WeekStep(1)),
         (KeyCode::Char('t'), _) => Some(Action::WeekReset),

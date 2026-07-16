@@ -1,5 +1,7 @@
 //! Screen routing. Each screen is a self-contained reducer + renderer.
 
+use std::path::PathBuf;
+
 use crossterm::event::KeyEvent;
 use jiff::{ToSpan, Zoned};
 use ratatui::layout::Rect;
@@ -9,6 +11,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::ApiClient;
 use crate::app::action::Action;
+use crate::queue::{QueueStore, QueuedClient};
 use crate::ui::notify::Level;
 
 pub mod activities;
@@ -54,6 +57,41 @@ pub(crate) fn pad_or_truncate(s: &str, width: usize) -> String {
     } else {
         format!("{s:<width$}")
     }
+}
+
+/// Queue + read-cache locations for the offline write seam. `None` (production)
+/// uses the shared XDG paths (`QueuedClient::new`); tests inject a scratch dir so
+/// a spawned write never touches the real queue. Shared by every screen that
+/// routes writes through `QueuedClient` (Timer, Week).
+pub(crate) type QueuePaths = Option<(PathBuf, PathBuf)>;
+
+/// Build the write seam a spawned task enqueues through — the shared XDG queue,
+/// or the test scratch paths when the screen was handed some.
+pub(crate) fn open_queued(
+    api: &ApiClient,
+    paths: &QueuePaths,
+) -> Result<QueuedClient, crate::queue::QueueError> {
+    match paths {
+        Some((queue, cache)) => Ok(QueuedClient::with_paths(
+            api,
+            QueueStore::at(queue.clone()),
+            cache.clone(),
+        )),
+        None => QueuedClient::new(api),
+    }
+}
+
+/// Loud failure when the queue seam itself can't open — the write can't even be
+/// deferred, so say so rather than dropping the gesture.
+pub(crate) fn notify_seam_error(
+    tx: &UnboundedSender<Action>,
+    context: &str,
+    e: impl std::fmt::Display,
+) {
+    let _ = tx.send(Action::Notify {
+        level: Level::Error,
+        text: format!("{context}: {e}"),
+    });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +225,7 @@ impl Screen {
             Self::Timer(s) => s.intercept_key(key),
             Self::Notes(s) => s.intercept_key(key),
             Self::Review(s) => s.intercept_key(key),
+            Self::Week(s) => s.intercept_key(key),
             _ => None,
         }
     }

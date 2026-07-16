@@ -85,6 +85,16 @@ pub fn fold_timer(
                 t
             }
             (IntentKind::TimerDiscard, Some(_)) => Timer::default(),
+            // Activity intents never reach here — the `stream == "timer"` filter
+            // above admits only the timer stream — but the match stays exhaustive
+            // over `IntentKind`. The timer fold has nothing to say about a plan
+            // write; a later slice may fold an effective week the same way.
+            (
+                IntentKind::ActivityCreate { .. }
+                | IntentKind::ActivityUpdate { .. }
+                | IntentKind::ActivityArchive { .. },
+                _,
+            ) => unreachable!("activity intents are excluded by the timer-stream filter"),
         });
         queue_depth += 1;
         oldest_folded.get_or_insert(intent.queued_at);

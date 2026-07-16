@@ -26,7 +26,7 @@ mod timer;
 mod today;
 mod weeks;
 
-pub use activities::{Activity, ActivityCreate, ActivityFilters};
+pub use activities::{Activity, ActivityCreate, ActivityFilters, ActivityUpdate};
 pub use audit::{AuditAcknowledged, AuditRead, AuditSegment};
 pub use automations::Task;
 pub use books::{Book, BookChapter, BookStatus, BookUpdate};

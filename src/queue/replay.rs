@@ -7,7 +7,7 @@
 //! and the pass halts the instant the server *disagrees* — a divergence needs
 //! a human choice before anything later replays, or ordering would lie.
 
-use crate::api::{ApiClient, ApiError};
+use crate::api::{ActivityUpdate, ApiClient, ApiError};
 
 use super::intent::{Intent, IntentKind, IntentState};
 use super::store::{QueueError, QueueStore};
@@ -173,6 +173,27 @@ async fn send_intent(api: &ApiClient, intent: &Intent) -> Result<bool, ApiError>
         // DELETE needs no idempotent variant: deleting the singleton twice is
         // naturally idempotent — the second delete finds nothing to write.
         IntentKind::TimerDiscard => api.discard_timer().await.map(|()| false),
+        // A declare re-sends the whole create body under the stored key, so a
+        // lost ack can never mint the plan item twice (the server's
+        // Idempotency-Key contract, like the timer starts).
+        IntentKind::ActivityCreate { body } => api
+            .create_activity_idempotent(body, key)
+            .await
+            .map(|k| k.replayed),
+        // Adjust/drop replay as plain calls: re-sending the same title or a
+        // second archive is naturally idempotent server-side, so they need no
+        // key. A stored replay is indistinguishable from a first ack here, so
+        // report `false` (never a dedupe).
+        IntentKind::ActivityUpdate { id, title } => api
+            .update_activity(
+                *id,
+                &ActivityUpdate {
+                    title: Some(title.clone()),
+                },
+            )
+            .await
+            .map(|_| false),
+        IntentKind::ActivityArchive { id } => api.archive_activity(*id).await.map(|_| false),
     }
 }
 
@@ -655,5 +676,79 @@ mod tests {
         assert_eq!(intents.len(), 1, "the parked intent is still stored");
         assert_eq!(intents[0].id, parked.id);
         assert!(intents[0].is_parked(), "kept for review — never deleted");
+    }
+
+    // --- plan writes (#115): create replays keyed, adjust/drop replay plain ---
+
+    #[tokio::test]
+    async fn activity_create_replays_with_the_stored_idempotency_key() {
+        use crate::api::ActivityCreate;
+        let server = MockServer::start().await;
+        let store = tmp_store("activity-create");
+        let body = ActivityCreate {
+            title: "one systems paper".into(),
+            planned_on: Some("2026-07-13".parse().unwrap()),
+            ..Default::default()
+        };
+        let intent = store.enqueue(IntentKind::ActivityCreate { body }).unwrap();
+        // The whole create body re-sends verbatim, carrying the queued key so a
+        // lost ack can never mint the plan item twice.
+        Mock::given(method("POST"))
+            .and(path("/api/v1/activities"))
+            .and(header("Idempotency-Key", intent.idempotency_key.as_str()))
+            .and(body_json(serde_json::json!({
+                "activity": { "title": "one systems paper", "planned_on": "2026-07-13" }
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 7, "title": "one systems paper", "status": "planned"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let report = drain(&client(&server), &store).await.unwrap();
+        assert_eq!(report.replayed, 1);
+        assert_eq!(report.remaining, 0);
+        assert!(store.intents().unwrap().is_empty(), "the declare synced");
+    }
+
+    #[tokio::test]
+    async fn activity_update_and_archive_replay_as_plain_calls() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/activities/5"))
+            .and(body_json(serde_json::json!({
+                "activity": { "title": "revised" }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 5, "title": "revised", "status": "planned"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/activities/5/archive"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 5, "title": "revised", "archived_at": "2026-07-16T00:00:00Z"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("activity-update-archive");
+        store
+            .enqueue(IntentKind::ActivityUpdate {
+                id: 5,
+                title: "revised".into(),
+            })
+            .unwrap();
+        store
+            .enqueue(IntentKind::ActivityArchive { id: 5 })
+            .unwrap();
+
+        let report = drain(&client(&server), &store).await.unwrap();
+        assert_eq!(report.replayed, 2);
+        assert_eq!(report.deduped, 0, "plain calls are never a stored replay");
+        assert_eq!(report.remaining, 0);
     }
 }
