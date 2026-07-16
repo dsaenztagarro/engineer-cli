@@ -206,6 +206,13 @@ pub enum Action {
     WeekInputSubmit,
     WeekInputCancel,
     WeekDrop,
+    /// `s` — the Plan↔timer seam (#116): start (or stop & switch) the timer
+    /// bound to the selected plan item's activity. Nothing running starts it
+    /// outright; a timer already elsewhere warns first (naming the running
+    /// session) then switches on the second press; a still-queued row (an
+    /// offline declare the server hasn't minted) refuses. Reuses
+    /// `QueuedClient::start_timer` — the verb, not the Timer screen.
+    WeekStartTimer,
     /// An offline declare landed in the queue: its title, for the provisional
     /// `◔ … queued` row the board renders until the create replays.
     WeekPlanQueued(String),
