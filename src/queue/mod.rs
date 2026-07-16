@@ -8,12 +8,15 @@
 #![allow(dead_code)]
 
 mod client;
+mod fold;
 mod intent;
 mod replay;
 mod store;
 
 #[allow(unused_imports)]
 pub use client::{QueuedClient, WriteOutcome};
+#[allow(unused_imports)]
+pub use fold::{fold_timer, Provenance};
 #[allow(unused_imports)]
 pub use intent::{Intent, IntentKind, IntentState};
 #[allow(unused_imports)]
