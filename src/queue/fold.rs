@@ -190,6 +190,8 @@ mod tests {
             detail: String::new(),
             type_uri: None,
             errors: Vec::<FieldError>::new(),
+            code: None,
+            conflict: Default::default(),
         };
         i
     }

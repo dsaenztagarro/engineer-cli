@@ -9,12 +9,20 @@
 //! stops & saves the server session, a `create_segment` carrying the local
 //! minutes) or *keeps* ([`IntentState::Parked`] — the intents stay in
 //! `queue.json`, visible as `parked`, excluded from replay, never deleted).
-//! When the stored payload can't compose a resolution (the generic RFC 7807
-//! fallback carries no segment id or server snapshot until engineer#806 /
-//! #107), the arm refuses with [`ResolveError::CannotCompose`] and the intent
-//! stays diverged — loud, unresolved, un-dropped.
+//!
+//! The coded conflicts (engineer#806, ADR 0036) sharpen the compositions the
+//! generic RFC 7807 fallback couldn't support: a `no-live-timer` divergence
+//! proves the session is gone server-side, so keep-local on a pause/resume
+//! composes the local minutes into a `create_segment` instead of switching (a
+//! switch against a gone session would restart the clock at zero — a silent
+//! loss); a `timer-already-running` conflict carries the server session's
+//! `current.activity_id`, the last-resort anchor for an otherwise-unbound
+//! keep-both. Where the payload *still* can't compose a resolution (no code,
+//! no anchor anywhere, no server segment id for the drift composition), the
+//! arm refuses with [`ResolveError::CannotCompose`] naming what's missing, and
+//! the intent stays diverged — loud, unresolved, un-dropped.
 
-use crate::api::{ApiClient, ApiError, Timer};
+use crate::api::{codes, ApiClient, ApiError, ConflictInfo, Timer};
 use crate::timer_clock;
 
 use super::intent::{Intent, IntentKind, IntentState};
@@ -108,9 +116,19 @@ pub async fn resolve(
     let Some(intent) = intents.iter().find(|i| i.id == intent_id) else {
         return Err(ResolveError::NotDiverged(intent_id));
     };
-    let IntentState::Diverged { title, .. } = &intent.state else {
+    let IntentState::Diverged {
+        title,
+        code,
+        conflict,
+        ..
+    } = &intent.state
+    else {
         return Err(ResolveError::NotDiverged(intent_id));
     };
+    // `no-live-timer` is server proof the session is gone (ADR 0036) — the
+    // compositions below key on it. An absent or unknown code keeps every
+    // generic-fallback arm exactly as it was.
+    let no_live_timer = code.as_deref() == Some(codes::NO_LIVE_TIMER);
     // The local session's remaining gestures: the diverged intent plus every
     // in-play intent queued behind it on the same stream (FIFO means nothing
     // pending can sit before the head that hit the wall).
@@ -125,6 +143,13 @@ pub async fn resolve(
             IntentKind::TimerStart { activity_id, .. } => {
                 switch_to_local(api, store, intent.id, *activity_id).await
             }
+            IntentKind::TimerPause { .. } | IntentKind::TimerResume { .. } if no_live_timer => {
+                // The session is gone server-side: there is nothing to switch
+                // away from, and a fresh `start_timer` would restart the local
+                // clock at zero — a silent loss. The honest keep-local is the
+                // minutes themselves: compose the local session and write it.
+                write_local_session(api, store, cached, conflict, &group, now).await
+            }
             IntentKind::TimerPause { .. } | IntentKind::TimerResume { .. } => {
                 // The verb carries no session identity; the local session is
                 // the cached snapshot's.
@@ -135,7 +160,7 @@ pub async fn resolve(
                 local_elapsed_s,
             } => write_local_stop(api, store, cached, intent.id, *at, *local_elapsed_s).await,
             other => Err(ResolveError::CannotCompose(format!(
-                "a diverged {} has no keep-local composition in the generic fallback — take server (park), or resolve it on the web",
+                "a diverged {} has no keep-local composition — the conflict payload carries nothing to re-assert; take server (park), or resolve it on the web",
                 other.word()
             ))),
         },
@@ -143,13 +168,13 @@ pub async fn resolve(
             IntentKind::TimerStart { .. }
             | IntentKind::TimerPause { .. }
             | IntentKind::TimerResume { .. } => {
-                write_local_session(api, store, cached, &group, now).await
+                write_local_session(api, store, cached, conflict, &group, now).await
             }
             IntentKind::TimerStop { .. } => Err(ResolveError::CannotCompose(
-                "a diverged stop has one segment at stake — keep local writes it, take server parks it".into(),
+                "a diverged stop can't keep both — the conflict payload names no server segment to reconcile against; keep local writes your minutes, take server parks them".into(),
             )),
             other => Err(ResolveError::CannotCompose(format!(
-                "a diverged {} has no keep-both composition in the generic fallback — take server (park), or resolve it on the web",
+                "a diverged {} has no keep-both composition — the conflict payload names no second session to keep; take server (park), or resolve it on the web",
                 other.word()
             ))),
         },
@@ -196,9 +221,10 @@ async fn switch_to_local(
 }
 
 /// Keep-local on a diverged stop: the local minutes become an explicit
-/// `create_segment` — the honest fallback while the generic payload carries no
-/// server segment to `update_segment` against (the pick-an-elapsed
-/// composition arrives with the coded conflicts, #107).
+/// `create_segment` — the honest composition either way: a `no-live-timer`
+/// stop has no server segment to `update_segment` against (the session is
+/// gone), and none of the shipped conflict codes carries a segment id for the
+/// drift composition (ADR 0036), so the write is always a fresh segment.
 async fn write_local_stop(
     api: &ApiClient,
     store: &QueueStore,
@@ -209,7 +235,7 @@ async fn write_local_stop(
 ) -> Result<Resolved, ResolveError> {
     let Some(activity_id) = cached.and_then(|t| t.activity_id) else {
         return Err(ResolveError::CannotCompose(
-            "the stopped session's activity is unknown here — take server (park), or resolve it on the web".into(),
+            "the stopped session's activity is unknown — the conflict payload names none and no cached snapshot holds it; take server (park), or resolve it on the web".into(),
         ));
     };
     let started_at =
@@ -224,19 +250,21 @@ async fn write_local_stop(
     })
 }
 
-/// Keep-both: compose the local session from what is actually stored — the
-/// group's own verbs, seeded from a queued start or the cached snapshot — and
-/// write it via `create_segment`. The server session is untouched. The whole
-/// group leaves the queue only after the write lands: its outcome now lives in
-/// the segment.
+/// Write the local session as a segment (keep-both, and keep-local on a
+/// `no-live-timer` session verb): compose it from what is actually stored —
+/// the group's own verbs, seeded from a queued start, the cached snapshot, or
+/// the coded conflict's `current` — and write it via `create_segment`. Any
+/// server session is untouched. The whole group leaves the queue only after
+/// the write lands: its outcome now lives in the segment.
 async fn write_local_session(
     api: &ApiClient,
     store: &QueueStore,
     cached: Option<&Timer>,
+    conflict: &ConflictInfo,
     group: &[&Intent],
     now: jiff::Timestamp,
 ) -> Result<Resolved, ResolveError> {
-    let (activity_id, started_at, elapsed_s) = compose_local_session(cached, group, now)?;
+    let (activity_id, started_at, elapsed_s) = compose_local_session(cached, conflict, group, now)?;
     let minutes = to_minutes(elapsed_s);
     let segment = api.create_segment(activity_id, started_at, minutes).await?;
     let ids: Vec<u64> = group.iter().map(|i| i.id).collect();
@@ -249,13 +277,15 @@ async fn write_local_session(
 }
 
 /// The local session as the stored payload supports composing it:
-/// `activity_id` from a queued start/bind (else the cached snapshot),
-/// `started_at` from the queued start (else the cached anchor), elapsed from
-/// a queued stop's `local_elapsed_s` (else the group's pause/resume folded
-/// over the seed via `timer_clock`, materialized at `now`). Anything less
-/// refuses — the recorded boundary, never a guess.
+/// `activity_id` from a queued start/bind (else the cached snapshot, else the
+/// coded conflict's `current.activity_id`), `started_at` from the queued start
+/// (else the cached anchor), elapsed from a queued stop's `local_elapsed_s`
+/// (else the group's pause/resume folded over the seed via `timer_clock`,
+/// materialized at `now`). Anything less refuses — the recorded boundary,
+/// never a guess.
 fn compose_local_session(
     cached: Option<&Timer>,
+    conflict: &ConflictInfo,
     group: &[&Intent],
     now: jiff::Timestamp,
 ) -> Result<(i64, jiff::Timestamp, i64), ResolveError> {
@@ -268,9 +298,14 @@ fn compose_local_session(
             _ => None,
         })
         .or_else(|| cached.and_then(|t| t.activity_id))
+        // Last resort, `timer-already-running` only: the server session's
+        // activity. Not a guess — the panel showed that session (label and
+        // all) before the user chose to keep both, so the choice was made
+        // against exactly this anchor (the #106 boundary this dissolves).
+        .or_else(|| conflict.current.as_ref().and_then(|c| c.activity_id))
         .ok_or_else(|| {
             ResolveError::CannotCompose(
-                "the local session is unbound — no activity to write its segment on; keep local (switch) or take server (park)".into(),
+                "the local session is unbound and the conflict payload names no activity — nothing to write its segment on; take server (park), or resolve it on the web".into(),
             )
         })?;
 
@@ -286,7 +321,7 @@ fn compose_local_session(
             .cloned()
             .ok_or_else(|| {
                 ResolveError::CannotCompose(
-                    "the local session has no anchor to compose from — take server (park), or resolve it on the web".into(),
+                    "the local session has no anchor — no queued start and no cached running snapshot to compose from; take server (park), or resolve it on the web".into(),
                 )
             })?,
     };
@@ -350,19 +385,44 @@ mod tests {
     }
 
     fn diverge(store: &QueueStore, id: u64) {
+        diverge_as(store, id, 409, "Conflict", None, ConflictInfo::default());
+    }
+
+    /// Diverge with a coded conflict — the enriched contract (engineer#806).
+    fn diverge_as(
+        store: &QueueStore,
+        id: u64,
+        status: u16,
+        title: &str,
+        code: Option<&str>,
+        conflict: ConflictInfo,
+    ) {
         store
             .mutate(|doc| {
                 if let Some(i) = doc.intents_mut().iter_mut().find(|i| i.id == id) {
                     i.state = IntentState::Diverged {
-                        status: 409,
-                        title: "Conflict".into(),
+                        status,
+                        title: title.into(),
                         detail: "a timer is already running".into(),
                         type_uri: None,
                         errors: Vec::<FieldError>::new(),
+                        code: code.map(Into::into),
+                        conflict: Box::new(conflict),
                     };
                 }
             })
             .unwrap();
+    }
+
+    fn no_live_timer(store: &QueueStore, id: u64) {
+        diverge_as(
+            store,
+            id,
+            404,
+            "No running timer",
+            Some(codes::NO_LIVE_TIMER),
+            ConflictInfo::default(),
+        );
     }
 
     fn cached_running() -> Timer {
@@ -682,6 +742,179 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn keep_local_on_a_no_live_timer_pause_writes_the_minutes_instead_of_switching() {
+        let server = MockServer::start().await;
+        // The session is gone server-side (coded proof) — keep-local composes
+        // the local session and writes it: cached anchor 09:00, queued pause
+        // at 09:30 freezes the clock → 30m. No start_timer call: there is no
+        // session to switch away from, and a fresh start would zero the clock.
+        Mock::given(method("POST"))
+            .and(path("/api/v1/activities/9/segments"))
+            .and(body_partial_json(serde_json::json!({
+                "segment": {
+                    "started_at": "2026-07-15T09:00:00Z",
+                    "duration_minutes": 30
+                }
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 91, "activity_id": 9, "minutes": 30
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("keep-local-gone-pause");
+        let pause = store
+            .enqueue(IntentKind::TimerPause {
+                at: ts("2026-07-15T09:30:00Z"),
+            })
+            .unwrap();
+        no_live_timer(&store, pause.id);
+
+        let cached = cached_running();
+        let resolved = resolve(
+            &client(&server),
+            &store,
+            Some(&cached),
+            pause.id,
+            Resolution::KeepLocal,
+            now(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(
+                resolved,
+                Resolved::SegmentWritten {
+                    activity_id: 9,
+                    segment_id: 91,
+                    minutes: 30
+                }
+            ),
+            "got {resolved:?}"
+        );
+        assert!(store.intents().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn keep_local_on_a_no_live_timer_pause_without_an_anchor_refuses_loudly() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("keep-local-gone-noanchor");
+        let pause = store
+            .enqueue(IntentKind::TimerPause {
+                at: ts("2026-07-15T09:30:00Z"),
+            })
+            .unwrap();
+        no_live_timer(&store, pause.id);
+
+        // No cached snapshot: nothing names the gone session's activity, so
+        // there is nothing to write the composed segment on.
+        let err = resolve(
+            &client(&server),
+            &store,
+            None,
+            pause.id,
+            Resolution::KeepLocal,
+            now(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ResolveError::CannotCompose(_)), "{err}");
+        assert!(
+            err.to_string().contains("names no activity"),
+            "the refusal names what's missing: {err}"
+        );
+        assert!(
+            store.intents().unwrap()[0].is_diverged(),
+            "kept, not dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn keep_both_on_an_unbound_start_anchors_on_the_conflicts_current_activity() {
+        let server = MockServer::start().await;
+        // The #106 boundary this ticket dissolves: an unbound local start used
+        // to refuse keep-both ("no activity to write its segment on"); the
+        // coded conflict's `current.activity_id` now anchors it.
+        Mock::given(method("POST"))
+            .and(path("/api/v1/activities/42/segments"))
+            .and(body_partial_json(serde_json::json!({
+                "segment": {
+                    "started_at": "2026-07-15T09:13:00Z",
+                    "duration_minutes": 47
+                }
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 92, "activity_id": 42, "minutes": 47
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("keep-both-current-anchor");
+        let start = store
+            .enqueue(IntentKind::TimerStart {
+                activity_id: None,
+                switch: false,
+                at: ts("2026-07-15T09:13:00Z"),
+            })
+            .unwrap();
+        store
+            .enqueue(IntentKind::TimerStop {
+                at: ts("2026-07-15T10:00:12Z"),
+                local_elapsed_s: 2832,
+            })
+            .unwrap();
+        diverge_as(
+            &store,
+            start.id,
+            409,
+            "Timer already running",
+            Some(codes::TIMER_ALREADY_RUNNING),
+            serde_json::from_value(serde_json::json!({
+                "current": {
+                    "id": 114, "activity_id": 42, "label": "Ruby OOP Study",
+                    "started_at": "2026-07-15T08:59:03Z", "paused": false
+                },
+                "resolutions": ["switch", "keep-remote"]
+            }))
+            .unwrap(),
+        );
+
+        let resolved = resolve(
+            &client(&server),
+            &store,
+            None,
+            start.id,
+            Resolution::KeepBoth,
+            now(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            resolved,
+            Resolved::SegmentWritten {
+                activity_id: 42,
+                segment_id: 92,
+                minutes: 47
+            }
+        );
+        assert!(store.intents().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn compositions_the_payload_cannot_support_refuse_and_keep_the_intent() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -704,6 +937,10 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ResolveError::CannotCompose(_)), "{err}");
+        assert!(
+            err.to_string().contains("no server segment"),
+            "the refusal names the missing piece: {err}"
+        );
         assert!(store.intents().unwrap()[0].is_diverged(), "still diverged");
 
         // keep-local on a diverged stop with no cached activity: nothing to
@@ -713,11 +950,16 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, ResolveError::CannotCompose(_)), "{err}");
         assert!(
+            err.to_string().contains("names none"),
+            "the refusal names the missing piece: {err}"
+        );
+        assert!(
             store.intents().unwrap()[0].is_diverged(),
             "kept, not dropped"
         );
 
-        // keep-both on an unbound local session: no activity anywhere.
+        // keep-both on an unbound local session: no activity anywhere — not
+        // even a coded conflict snapshot to anchor on.
         let store = tmp_store("cannot-both-unbound");
         let start = store
             .enqueue(IntentKind::TimerStart {
@@ -731,6 +973,10 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ResolveError::CannotCompose(_)), "{err}");
+        assert!(
+            err.to_string().contains("names no activity"),
+            "the refusal names the missing piece: {err}"
+        );
         assert_eq!(store.intents().unwrap().len(), 1, "kept, not dropped");
     }
 

@@ -18,6 +18,11 @@ use super::store::{QueueError, QueueStore};
 pub struct ReplayReport {
     /// Intents the server acknowledged; they have left the queue.
     pub replayed: usize,
+    /// Of the replayed, how many were answered from the server's idempotency
+    /// store (`Idempotency-Replayed: true`) — the first attempt landed and
+    /// only the ack was lost. Counted in `replayed` too: a deduped intent is
+    /// consumed as confirmed, silently, exactly like a first execution.
+    pub deduped: usize,
     /// Intents still in play after the pass (pending + diverged). Parked
     /// intents are kept for review, not waiting to sync, so they never count.
     pub remaining: usize,
@@ -59,22 +64,35 @@ pub async fn drain_reporting(
     mut on_replay: impl FnMut(&Intent),
 ) -> Result<ReplayReport, ReplayError> {
     let Some(_guard) = store.try_replay_lock()? else {
-        return report(store, 0);
+        return report(store, 0, 0);
     };
 
     if store.summary()?.diverged > 0 {
-        return report(store, 0);
+        return report(store, 0, 0);
     }
 
     let mut pending = store.pending()?;
     pending.sort_by_key(|i| i.id);
     let mut replayed = 0usize;
+    let mut deduped = 0usize;
 
     for intent in pending {
         match send_intent(api, &intent).await {
-            Ok(()) => {
+            Ok(from_store) => {
                 // Acknowledged — the server is authoritative now; the intent
                 // leaves the queue (under the writer lock, like all mutation).
+                // A stored replay (the first attempt landed, the ack was lost)
+                // is consumed the same way, silently: the server already
+                // deduped it, so there is nothing to ask the user (engineer#806).
+                if from_store {
+                    deduped += 1;
+                    tracing::info!(
+                        target: "engineer_cli::queue",
+                        intent = intent.id,
+                        verb = intent.kind.word(),
+                        "stored response replayed — the first attempt had landed; consumed as confirmed"
+                    );
+                }
                 store.mutate(|doc| doc.intents_mut().retain(|i| i.id != intent.id))?;
                 replayed += 1;
                 on_replay(&intent);
@@ -96,9 +114,13 @@ pub async fn drain_reporting(
                 detail,
                 type_uri,
                 errors,
+                code,
+                conflict,
             }) => {
-                // The server moved on — persist its objection verbatim and
-                // halt: nothing later replays past an unresolved divergence.
+                // The server moved on — persist its objection verbatim (the
+                // coded conflict's `code` + extensions included, so the
+                // reconcile surfaces can render the server's side) and halt:
+                // nothing later replays past an unresolved divergence.
                 store.mutate(|doc| {
                     if let Some(i) = doc.intents_mut().iter_mut().find(|i| i.id == intent.id) {
                         i.attempts += 1;
@@ -108,6 +130,8 @@ pub async fn drain_reporting(
                             detail,
                             type_uri,
                             errors,
+                            code,
+                            conflict,
                         };
                     }
                 })?;
@@ -119,12 +143,14 @@ pub async fn drain_reporting(
         }
     }
 
-    report(store, replayed)
+    report(store, replayed, deduped)
 }
 
 /// Re-send one intent through the typed call for its kind, carrying the
-/// stored `Idempotency-Key` so a lost ack can never double-write.
-async fn send_intent(api: &ApiClient, intent: &Intent) -> Result<(), ApiError> {
+/// stored `Idempotency-Key` so a lost ack can never double-write. `Ok(true)`
+/// means the answer was a stored replay (`Idempotency-Replayed: true`) — the
+/// first attempt had landed.
+async fn send_intent(api: &ApiClient, intent: &Intent) -> Result<bool, ApiError> {
     let key = &intent.idempotency_key;
     match &intent.kind {
         IntentKind::TimerStart {
@@ -134,24 +160,31 @@ async fn send_intent(api: &ApiClient, intent: &Intent) -> Result<(), ApiError> {
         } => api
             .start_timer_idempotent(*activity_id, *switch, key)
             .await
-            .map(drop),
-        IntentKind::TimerPause { .. } => api.pause_timer_idempotent(key).await.map(drop),
-        IntentKind::TimerResume { .. } => api.resume_timer_idempotent(key).await.map(drop),
-        IntentKind::TimerStop { .. } => api.stop_timer_idempotent(key).await.map(drop),
+            .map(|k| k.replayed),
+        IntentKind::TimerPause { .. } => api.pause_timer_idempotent(key).await.map(|k| k.replayed),
+        IntentKind::TimerResume { .. } => {
+            api.resume_timer_idempotent(key).await.map(|k| k.replayed)
+        }
+        IntentKind::TimerStop { .. } => api.stop_timer_idempotent(key).await.map(|k| k.replayed),
         IntentKind::TimerBind { activity_id, title } => api
             .bind_timer_idempotent(*activity_id, title.clone(), key)
             .await
-            .map(drop),
+            .map(|k| k.replayed),
         // DELETE needs no idempotent variant: deleting the singleton twice is
         // naturally idempotent — the second delete finds nothing to write.
-        IntentKind::TimerDiscard => api.discard_timer().await,
+        IntentKind::TimerDiscard => api.discard_timer().await.map(|()| false),
     }
 }
 
-fn report(store: &QueueStore, replayed: usize) -> Result<ReplayReport, ReplayError> {
+fn report(
+    store: &QueueStore,
+    replayed: usize,
+    deduped: usize,
+) -> Result<ReplayReport, ReplayError> {
     let summary = store.summary()?;
     Ok(ReplayReport {
         replayed,
+        deduped,
         remaining: summary.in_play(),
         diverged: summary.diverged > 0,
     })
@@ -402,16 +435,121 @@ mod tests {
                 detail,
                 type_uri,
                 errors,
+                code,
+                conflict,
             } => {
                 assert_eq!(*status, 422);
                 assert_eq!(title, "Segment overlaps");
                 assert!(detail.contains("09:00"));
                 assert!(type_uri.as_deref().unwrap().contains("overlap"));
                 assert_eq!(errors.len(), 1, "the full RFC 7807 payload is kept");
+                assert!(code.is_none(), "a code-less problem stays code-less");
+                assert!(conflict.is_empty());
             }
             other => panic!("expected the rejected intent to be diverged, got {other:?}"),
         }
         assert!(intents[1].is_pending(), "the rest stays pending, untouched");
+    }
+
+    #[tokio::test]
+    async fn a_coded_conflict_persists_its_code_and_extensions_on_the_diverged_intent() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
+                "type": "https://engineer.example/problems/timer-already-running",
+                "title": "Timer already running",
+                "status": 409,
+                "detail": "Stop the running timer first, or pass switch=true to stop-and-switch.",
+                "code": "timer-already-running",
+                "current": {
+                    "id": 114, "activity_id": 258777238, "label": "Ruby OOP Study",
+                    "started_at": "2026-07-16T08:59:03.246Z", "paused": false
+                },
+                "resolutions": ["switch", "keep-remote"]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("coded-conflict");
+        store
+            .enqueue(IntentKind::TimerStart {
+                activity_id: Some(9),
+                switch: false,
+                at: at(),
+            })
+            .unwrap();
+
+        let report = drain(&client(&server), &store).await.unwrap();
+        assert!(report.diverged);
+
+        let intents = store.intents().unwrap();
+        match &intents[0].state {
+            IntentState::Diverged { code, conflict, .. } => {
+                assert_eq!(code.as_deref(), Some("timer-already-running"));
+                let current = conflict.current.as_ref().expect("the server session");
+                assert_eq!(current.label.as_deref(), Some("Ruby OOP Study"));
+                assert_eq!(current.activity_id, Some(258777238));
+                assert_eq!(
+                    conflict.resolutions,
+                    vec!["switch", "keep-remote"],
+                    "the resolution hints ride along"
+                );
+            }
+            other => panic!("expected diverged, got {other:?}"),
+        }
+    }
+
+    /// §Diverged · duplicate (offline-write.brief.md): the same intent re-sent
+    /// after a lost ack. The server answers from its idempotency store —
+    /// byte-identical body, `Idempotency-Replayed: true` — and the intent is
+    /// consumed as confirmed, silently: it leaves the queue, no divergence, no
+    /// prompt, and exactly one logical write ever existed server-side.
+    #[tokio::test]
+    async fn a_lost_ack_replay_dedupes_silently_with_no_duplicate_prompt() {
+        let store = tmp_store("dedupe");
+        let intent = store.enqueue(IntentKind::TimerPause { at: at() }).unwrap();
+
+        // First attempt: the write lands server-side but the ack is lost —
+        // from the queue's view this is a transport failure, so the intent
+        // stays pending with one recorded attempt.
+        let report = drain(&dead_api(), &store).await.unwrap();
+        assert_eq!(report.replayed, 0);
+        assert_eq!(store.intents().unwrap()[0].attempts, 1, "the lost ack");
+
+        // Reconnect: the re-sent intent carries the same stored key, and the
+        // server replays the stored first response instead of re-executing.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/pause"))
+            .and(header("Idempotency-Key", intent.idempotency_key.as_str()))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Idempotency-Replayed", "true")
+                    .set_body_json(serde_json::json!({ "running": true, "paused": true })),
+            )
+            .expect(1) // exactly one wire call — and it wrote nothing new
+            .mount(&server)
+            .await;
+
+        let mut words = Vec::new();
+        let report = drain_reporting(&client(&server), &store, |i| words.push(i.kind.word()))
+            .await
+            .unwrap();
+        assert_eq!(report.replayed, 1, "consumed as confirmed");
+        assert_eq!(report.deduped, 1, "…and known to be the stored replay");
+        assert_eq!(report.remaining, 0);
+        assert!(!report.diverged, "a dedupe is not a divergence — no prompt");
+        assert!(
+            store.intents().unwrap().is_empty(),
+            "the intent left the queue"
+        );
+        assert_eq!(
+            words,
+            vec!["pause"],
+            "the transcript reads like any confirmed replay — silent dedupe"
+        );
     }
 
     #[tokio::test]
@@ -465,6 +603,8 @@ mod tests {
                     detail: String::new(),
                     type_uri: None,
                     errors: vec![],
+                    code: None,
+                    conflict: Default::default(),
                 };
             })
             .unwrap();

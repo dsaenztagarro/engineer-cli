@@ -315,6 +315,8 @@ mod tests {
                     detail: String::new(),
                     type_uri: None,
                     errors: vec![],
+                    code: None,
+                    conflict: Default::default(),
                 };
                 doc.intents_mut()[1].state = IntentState::Parked {
                     reason: "took server · Segment overlaps".into(),
@@ -330,6 +332,77 @@ mod tests {
         assert_eq!(summary.in_play(), 2, "parked is out of play");
         assert!(summary.oldest_age_s.unwrap() >= 0);
         assert_eq!(store.pending().unwrap().len(), 1, "parked never replays");
+    }
+
+    #[test]
+    fn a_pre_coded_conflict_document_still_loads() {
+        // A queue.json written before #107: the diverged state has no `code`
+        // and no `conflict`. The additive schema must load it unchanged —
+        // an upgrade never strands a stored intent.
+        let store = tmp_store("pre-107");
+        std::fs::create_dir_all(store.path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &store.path,
+            r#"{
+                "version": 1,
+                "next_id": 3,
+                "intents": [
+                    {
+                        "id": 1,
+                        "idempotency_key": "0f2a9c1e-6b3d-4a71-9c2e-5d8f1b7a4e90",
+                        "stream": "timer",
+                        "queued_at": "2026-07-14T09:13:00Z",
+                        "kind": { "verb": "timer_pause", "at": "2026-07-14T09:13:00Z" },
+                        "state": {
+                            "state": "diverged",
+                            "status": 409,
+                            "title": "Conflict",
+                            "detail": "a timer is already running",
+                            "type_uri": null,
+                            "errors": []
+                        },
+                        "attempts": 2,
+                        "last_error": null
+                    },
+                    {
+                        "id": 2,
+                        "idempotency_key": "1a2b3c4d-5e6f-4a71-8b9c-0d1e2f3a4b5c",
+                        "stream": "timer",
+                        "queued_at": "2026-07-14T09:14:00Z",
+                        "kind": { "verb": "timer_resume", "at": "2026-07-14T09:14:00Z" },
+                        "state": { "state": "pending" },
+                        "attempts": 0,
+                        "last_error": null
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let intents = store.intents().unwrap();
+        assert_eq!(intents.len(), 2);
+        match &intents[0].state {
+            IntentState::Diverged {
+                status,
+                code,
+                conflict,
+                ..
+            } => {
+                assert_eq!(*status, 409);
+                assert!(code.is_none(), "pre-#107 documents read as code-less");
+                assert!(conflict.is_empty());
+            }
+            other => panic!("expected diverged, got {other:?}"),
+        }
+        assert!(intents[1].is_pending());
+
+        // …and a mutation over the old document persists cleanly.
+        store
+            .enqueue(IntentKind::TimerPause {
+                at: "2026-07-15T10:00:00Z".parse().unwrap(),
+            })
+            .unwrap();
+        assert_eq!(store.intents().unwrap().len(), 3);
     }
 
     #[test]

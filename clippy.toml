@@ -1,0 +1,11 @@
+# A coded RFC 7807 conflict (engineer#806, ADR 0036) carries a ~200-byte
+# extension payload — the `current` session snapshot plus `resolutions`. It is
+# already boxed on the error path (`ApiError::Problem` / `IntentState::Diverged`
+# hold `Box<ConflictInfo>`), which leaves `ApiError` itself at ~136 bytes: a
+# hair over clippy's 128-byte default for `result_large_err`. The remaining
+# fields are the problem's own `status`/`title`/`detail`/`type_uri`/`errors` +
+# `code` — each load-bearing and pattern-matched at many call sites, so tuple-
+# boxing the whole variant would churn every match for 8 bytes. Raise the bar
+# just enough that a genuinely rich problem+json error is allowed to be this
+# size, while still catching errors that balloon well past it.
+large-error-threshold = 144

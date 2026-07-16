@@ -1607,13 +1607,14 @@ impl Timer {
         frame.render_widget(Paragraph::new(lines), inner);
     }
 
-    /// §Diverged (session elsewhere / clock drift, the generic-conflict
-    /// fallback): full-row danger treatment — a red frame, the server's
-    /// objection verbatim from the stored RFC 7807 payload, the local intent's
-    /// identity (verb word, queued age), and two sides picked with the shipped
-    /// `▌` selection. #107's coded conflicts (`timer-already-running` + the
-    /// `current` snapshot) enrich these same rows; today they render
-    /// title/detail.
+    /// §Diverged (session elsewhere / clock drift): full-row danger treatment
+    /// — a red frame, the local intent's identity (verb word, queued age), and
+    /// two sides picked with the shipped `▌` selection. The coded conflicts
+    /// (engineer#806) enrich the server side: `timer-already-running` renders
+    /// the actual server session from `current` (label, elapsed, paused) so
+    /// the pick is informed, and `no-live-timer` says plainly that the session
+    /// is gone. A code-less problem renders the objection verbatim, exactly as
+    /// the generic fallback always did.
     fn render_reconcile_panel(&mut self, frame: &mut Frame, area: Rect) {
         let Some(Panel::Reconcile { intent, selected }) = self.panel.as_ref() else {
             return;
@@ -1622,17 +1623,23 @@ impl Timer {
             status,
             title,
             detail,
+            code,
+            conflict,
             ..
         } = &intent.state
         else {
             return;
         };
         let is_stop = matches!(intent.kind, IntentKind::TimerStop { .. });
+        let already_running = code.as_deref() == Some(crate::api::codes::TIMER_ALREADY_RUNNING);
+        let gone = code.as_deref() == Some(crate::api::codes::NO_LIVE_TIMER);
 
         let danger = Style::default()
             .fg(theme::DANGER)
             .add_modifier(Modifier::BOLD);
-        let heading = if is_stop {
+        let heading = if gone {
+            "The session is gone server-side"
+        } else if is_stop {
             "The server refused this save"
         } else {
             "Two sessions — which is real?"
@@ -1684,7 +1691,63 @@ impl Timer {
             ])
         };
 
+        // The server side: the coded conflict's `current` snapshot when the
+        // server has a session to show, the plain "gone" statement on
+        // `no-live-timer`, the objection verbatim otherwise (the generic
+        // fallback, unchanged).
         let objection = format!("{status} {title}");
+        let (server_text, server_caption) = if gone {
+            (
+                "server   —   no live session".to_string(),
+                if detail.is_empty() {
+                    "stopped or discarded elsewhere — the server has nothing running".to_string()
+                } else {
+                    detail.clone()
+                },
+            )
+        } else if let Some(current) = conflict.current.as_ref().filter(|_| already_running) {
+            let server_label = current.label.clone().unwrap_or_else(|| "untitled".into());
+            let since = current
+                .started_at
+                .map(|ts| {
+                    ts.to_zoned(jiff::tz::TimeZone::system())
+                        .strftime("%H:%M")
+                        .to_string()
+                })
+                .unwrap_or_else(|| "—".into());
+            if current.paused {
+                // No paused-spans arithmetic rides the snapshot, so a paused
+                // server clock shows its anchor, never a number that counts
+                // the frozen gap.
+                (
+                    format!("server   ‖ paused   {server_label}"),
+                    format!("paused on the server · started {since}"),
+                )
+            } else {
+                let server_elapsed = current
+                    .started_at
+                    .map(|ts| {
+                        widgets::fmt_elapsed(
+                            (jiff::Timestamp::now().as_second() - ts.as_second()).max(0),
+                        )
+                    })
+                    .unwrap_or_else(|| "—".into());
+                (
+                    format!("server   {server_elapsed}   {server_label}"),
+                    format!("running on the server · started {since}"),
+                )
+            }
+        } else {
+            (
+                format!("server   {objection}"),
+                if detail.is_empty() {
+                    "the server's version stands".into()
+                } else {
+                    detail.clone()
+                },
+            )
+        };
+
         let mut lines = vec![
             Line::from(Span::styled(
                 "the server moved on while this was queued — pick a side; nothing is dropped for you",
@@ -1696,19 +1759,30 @@ impl Timer {
                 format!("local    {local_clock}   {local_label}"),
                 identity,
             ),
-            side(
-                1,
-                format!("server   {objection}"),
-                if detail.is_empty() {
-                    "the server's version stands".into()
-                } else {
-                    detail.clone()
-                },
-            ),
+            side(1, server_text, server_caption),
             Line::from(""),
         ];
+        // The server's resolution hints, mapped onto the panel's gestures —
+        // `switch` is this panel's keep-local, `keep-remote` its take-server.
+        if already_running && !conflict.resolutions.is_empty() {
+            let mapped: Vec<String> = conflict
+                .resolutions
+                .iter()
+                .map(|r| match r.as_str() {
+                    "switch" => "switch = keep local".to_string(),
+                    "keep-remote" => "keep-remote = take server".to_string(),
+                    other => other.to_string(),
+                })
+                .collect();
+            lines.push(Line::from(Span::styled(
+                format!("the server offers: {}", mapped.join(" · ")),
+                theme::muted(),
+            )));
+        }
         lines.push(Line::from(Span::styled(
-            if is_stop {
+            if gone {
+                "keep local writes your minutes as a segment; take server parks your intents for review — nothing is written or dropped behind your back.".to_string()
+            } else if is_stop {
                 "keep local writes your minutes as a segment; take server parks the stop for review — nothing is written or dropped behind your back.".to_string()
             } else {
                 "keeping local stops & saves the server session and yours takes over; taking server parks your intents for review — never deletes them.".to_string()
@@ -3773,7 +3847,8 @@ mod tests {
 
     // ------------------------------------------- the reconcile panel (#106)
 
-    /// A diverged intent as the queue check would deliver it.
+    /// A diverged intent as the queue check would deliver it — the code-less
+    /// generic fallback.
     fn diverged_intent(kind: IntentKind) -> Intent {
         Intent {
             id: 7,
@@ -3787,10 +3862,27 @@ mod tests {
                 detail: "a timer is already running".into(),
                 type_uri: None,
                 errors: vec![],
+                code: None,
+                conflict: Default::default(),
             },
             attempts: 1,
             last_error: None,
         }
+    }
+
+    /// A coded divergence (engineer#806): swap the generic objection for a
+    /// `code` + extensions capture.
+    fn coded(mut intent: Intent, code: &str, conflict: serde_json::Value) -> Intent {
+        if let IntentState::Diverged {
+            code: c,
+            conflict: cf,
+            ..
+        } = &mut intent.state
+        {
+            *c = Some(code.into());
+            *cf = serde_json::from_value(conflict).unwrap();
+        }
+        intent
     }
 
     fn diverged_start() -> Intent {
@@ -4025,5 +4117,114 @@ mod tests {
         assert!(text.contains("409 Conflict"), "{text}");
         assert!(text.contains("start · queued"), "the intent's identity");
         assert!(text.contains("never deletes them"), "{text}");
+    }
+
+    // -------------------------------------- the coded conflicts (#107)
+
+    #[tokio::test]
+    async fn reconcile_panel_renders_the_server_session_from_the_coded_conflict() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "label": "Raft leader election",
+                "elapsed_seconds": 2832
+            })))),
+        )
+        .await;
+        // Started an hour ago so the server row has a live elapsed to show.
+        let started =
+            jiff::Timestamp::from_second(jiff::Timestamp::now().as_second() - 3600).unwrap();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerDivergedLoaded(Some(Box::new(coded(
+                diverged_start(),
+                "timer-already-running",
+                serde_json::json!({
+                    "current": {
+                        "id": 114, "activity_id": 258777238, "label": "Ruby OOP Study",
+                        "started_at": started.to_string(), "paused": false
+                    },
+                    "resolutions": ["switch", "keep-remote"]
+                }),
+            )))),
+        )
+        .await;
+
+        let text = rendered(&mut s);
+        assert!(text.contains("Two sessions — which is real?"), "{text}");
+        assert!(
+            text.contains("Ruby OOP Study"),
+            "the server session's label, not just problem prose: {text}"
+        );
+        assert!(
+            text.contains("1:00:0"),
+            "started_at becomes a live elapsed: {text}"
+        );
+        assert!(text.contains("running on the server"), "{text}");
+        assert!(
+            !text.contains("409 Conflict"),
+            "the informed row replaces the bare objection: {text}"
+        );
+        // The server's resolution hints, mapped onto the shipped gestures.
+        assert!(text.contains("switch = keep local"), "{text}");
+        assert!(text.contains("keep-remote = take server"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn reconcile_panel_marks_a_paused_server_session_instead_of_counting_its_gap() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerDivergedLoaded(Some(Box::new(coded(
+                diverged_start(),
+                "timer-already-running",
+                serde_json::json!({
+                    "current": {
+                        "id": 114, "activity_id": 9, "label": "Ruby OOP Study",
+                        "started_at": "2026-07-16T08:59:03Z", "paused": true
+                    },
+                    "resolutions": ["switch", "keep-remote"]
+                }),
+            )))),
+        )
+        .await;
+
+        let text = rendered(&mut s);
+        assert!(text.contains("‖ paused"), "{text}");
+        assert!(text.contains("paused on the server"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn reconcile_panel_says_the_session_is_gone_on_no_live_timer() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerDivergedLoaded(Some(Box::new(coded(
+                diverged_intent(IntentKind::TimerPause {
+                    at: jiff::Timestamp::now(),
+                }),
+                "no-live-timer",
+                serde_json::json!({}),
+            )))),
+        )
+        .await;
+
+        let text = rendered(&mut s);
+        assert!(text.contains("The session is gone server-side"), "{text}");
+        assert!(text.contains("no live session"), "{text}");
+        assert!(
+            text.contains("keep local writes your minutes as a segment"),
+            "keep-local now composes via create_segment: {text}"
+        );
+        assert!(text.contains("take server parks"), "{text}");
     }
 }

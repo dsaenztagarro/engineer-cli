@@ -261,15 +261,17 @@ impl ApiClient {
     // --- replay variants (`crate::queue::replay`) ---------------------------
     // The same endpoints, re-sent with the queued intent's stored
     // `Idempotency-Key` so a replay whose ack was lost cannot double-write
-    // (engineer#806). `discard_timer` has no variant: DELETE is naturally
-    // idempotent, so the replay pass calls it as-is.
+    // (engineer#806). They return `Keyed` so the pass can tell a stored replay
+    // (`Idempotency-Replayed: true`) from a first execution. `discard_timer`
+    // has no variant: DELETE is naturally idempotent, so the replay pass calls
+    // it as-is.
 
     pub(crate) async fn start_timer_idempotent(
         &self,
         activity_id: Option<i64>,
         switch: bool,
         key: &str,
-    ) -> Result<Timer, ApiError> {
+    ) -> Result<super::Keyed<Timer>, ApiError> {
         self.post_idempotent(
             "/api/v1/timer",
             &StartBody {
@@ -281,16 +283,25 @@ impl ApiClient {
         .await
     }
 
-    pub(crate) async fn pause_timer_idempotent(&self, key: &str) -> Result<Timer, ApiError> {
+    pub(crate) async fn pause_timer_idempotent(
+        &self,
+        key: &str,
+    ) -> Result<super::Keyed<Timer>, ApiError> {
         self.post_empty_idempotent("/api/v1/timer/pause", key).await
     }
 
-    pub(crate) async fn resume_timer_idempotent(&self, key: &str) -> Result<Timer, ApiError> {
+    pub(crate) async fn resume_timer_idempotent(
+        &self,
+        key: &str,
+    ) -> Result<super::Keyed<Timer>, ApiError> {
         self.post_empty_idempotent("/api/v1/timer/resume", key)
             .await
     }
 
-    pub(crate) async fn stop_timer_idempotent(&self, key: &str) -> Result<TimerStopped, ApiError> {
+    pub(crate) async fn stop_timer_idempotent(
+        &self,
+        key: &str,
+    ) -> Result<super::Keyed<TimerStopped>, ApiError> {
         self.post_empty_idempotent("/api/v1/timer/stop", key).await
     }
 
@@ -299,7 +310,7 @@ impl ApiClient {
         activity_id: Option<i64>,
         title: Option<String>,
         key: &str,
-    ) -> Result<Timer, ApiError> {
+    ) -> Result<super::Keyed<Timer>, ApiError> {
         self.post_idempotent("/api/v1/timer/bind", &BindBody { activity_id, title }, key)
             .await
     }
@@ -523,6 +534,46 @@ mod tests {
         assert!(timer.mode.is_none());
         assert!(timer.phase.is_none());
         assert!(timer.idle.is_none());
+    }
+
+    #[tokio::test]
+    async fn idempotent_verbs_surface_the_replayed_flag() {
+        use wiremock::matchers::header;
+        let server = MockServer::start().await;
+        // A stored replay: the body is the first execution's, byte-identical,
+        // flagged with the header (engineer#806).
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/pause"))
+            .and(header("Idempotency-Key", "key-1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Idempotency-Replayed", "true")
+                    .set_body_json(serde_json::json!({ "running": true, "paused": true })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/resume"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "running": true })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let replayed = client(&server)
+            .pause_timer_idempotent("key-1")
+            .await
+            .unwrap();
+        assert!(replayed.replayed, "the stored-replay header is read");
+        assert!(replayed.value.paused, "the body parses as the normal shape");
+
+        let first = client(&server)
+            .resume_timer_idempotent("key-2")
+            .await
+            .unwrap();
+        assert!(!first.replayed, "no header means a first execution");
     }
 
     #[tokio::test]

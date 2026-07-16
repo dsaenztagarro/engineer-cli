@@ -1118,6 +1118,7 @@ mod tests {
     ) -> crate::queue::ReplayReport {
         crate::queue::ReplayReport {
             replayed,
+            deduped: 0,
             remaining,
             diverged,
         }
