@@ -96,6 +96,10 @@ pub struct Week {
     /// row. The queue is the ledger; this is only the render of what's pending,
     /// cleared on any authoritative reload or week step.
     provisional: Vec<String>,
+    /// A reflection written offline this session — the retro band renders it
+    /// marked `◔ queued` until the note write replays and a live refetch returns
+    /// the stored note. Like `provisional`, only the render of what's pending.
+    provisional_note: Option<String>,
     /// Queue + read-cache paths for the write seam (`None` = shared XDG; tests
     /// inject a scratch dir so a spawned write never touches the real queue).
     queue_paths: QueuePaths,
@@ -159,10 +163,12 @@ impl Week {
                 self.data = Some(*week);
                 self.loading = false;
                 self.error = None;
-                // Server truth supersedes the provisional rows: a synced declare
-                // is now in the payload, and the queue still holds any that
-                // haven't replayed (the header `↑N` and `engineer queue` show it).
+                // Server truth supersedes the provisional rows and note: a synced
+                // declare/reflection is now in the payload, and the queue still
+                // holds any that haven't replayed (the header `↑N` and
+                // `engineer queue` show it).
                 self.provisional.clear();
+                self.provisional_note = None;
                 self.drop_armed = None;
                 self.start_armed = None;
                 // Keep the cursor in range as the plan changes week to week.
@@ -268,6 +274,32 @@ impl Week {
                 }
             }
             Action::WeekPlanQueued(title) => self.provisional.push(title),
+            // `i` — the retro reflection (#117). Seed the editor with the current
+            // note body and hand off to the app, which owns the terminal suspend
+            // + `$EDITOR` spawn (the git-commit pattern). No-op until loaded.
+            Action::WeekReflect => {
+                if let Some(data) = &self.data {
+                    let iso_week = data.week.id.clone();
+                    // Seed from the local pending note if one is queued, else the
+                    // stored server note — so re-editing an offline reflection
+                    // starts from what the user just wrote, not the stale server body.
+                    let seed = self
+                        .provisional_note
+                        .clone()
+                        .unwrap_or_else(|| data.note.body.clone());
+                    let _ = tx.send(Action::WeekReflectEdit { iso_week, seed });
+                }
+            }
+            // The editor saved — persist through the queue seam (empty clears).
+            Action::WeekReflectSave { iso_week, body } => {
+                spawn_reflect(api, tx, self.queue_paths.clone(), iso_week, body);
+            }
+            // The editor aborted — the note is untouched; just say so.
+            Action::WeekReflectAbort => {
+                return Some((Level::Info, "reflection unchanged".into()));
+            }
+            // An offline reflection landed in the queue — render it marked queued.
+            Action::WeekReflectQueued(body) => self.provisional_note = Some(body),
             Action::WeekStartTimer => return self.start_on_selected(api, tx),
             // The header poll forwards its snapshot to the current screen; cache
             // it (only while a clock runs) so the board can mark the running row
@@ -356,6 +388,7 @@ impl Week {
         self.drop_armed = None;
         self.start_armed = None;
         self.provisional.clear();
+        self.provisional_note = None;
     }
 
     fn selected_item(&self) -> Option<&PlanItem> {
@@ -459,7 +492,7 @@ impl Week {
             lines.push(summary_line(data));
         }
 
-        lines.extend(retro_lines(data));
+        lines.extend(retro_lines(data, self.provisional_note.as_deref()));
 
         frame.render_widget(Paragraph::new(lines).block(block), area);
     }
@@ -478,6 +511,7 @@ impl Week {
             ("a", "add"),
             ("e", "adjust"),
             ("d", "drop"),
+            ("i", "reflect"),
             ("[", "prev wk"),
             ("]", "next wk"),
             ("t", "this wk"),
@@ -621,6 +655,50 @@ fn spawn_start_on_plan(
                 let _ = tx.send(Action::TimerProvisional(Box::new(t)));
             }
             Err(e) => notify_seam_error(&tx, "timer start failed", e),
+        }
+    });
+}
+
+/// Persist the week's retro reflection through the queue seam (`i`, save-quit).
+/// The route upserts, so an offline write replays idempotently. A confirmed
+/// write refetches the week (the note is now on the server); an offline one
+/// queues and the retro band renders the local body marked `◔ queued` until it
+/// replays. An empty `body` is a deliberate clear (the server treats empty as
+/// clear) — the same call, so the confirm/queue paths are identical.
+fn spawn_reflect(
+    api: &ApiClient,
+    tx: &UnboundedSender<Action>,
+    paths: QueuePaths,
+    iso_week: String,
+    body: String,
+) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => return notify_seam_error(&tx, "reflection failed", e),
+        };
+        let cleared = body.trim().is_empty();
+        match queued.update_week_note(&iso_week, &body).await {
+            Ok(WriteOutcome::Confirmed(_)) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Success,
+                    text: if cleared {
+                        "reflection cleared".into()
+                    } else {
+                        "reflection saved".into()
+                    },
+                });
+                let _ = tx.send(Action::RefreshWeek);
+            }
+            Ok(WriteOutcome::Provisional(_)) => {
+                let _ = tx.send(Action::WeekReflectQueued(body));
+                let _ = tx.send(Action::Notify {
+                    level: Level::Info,
+                    text: "reflection · queued (offline) — will sync".into(),
+                });
+            }
+            Err(e) => notify_seam_error(&tx, "reflection failed", e),
         }
     });
 }
@@ -792,23 +870,36 @@ fn summary_line(data: &WeekData) -> Line<'static> {
     ))
 }
 
-/// The retro band — the one stored line. Reads `note.body`; an unwritten week
-/// shows the calm empty state. The `$EDITOR` reflection *write* is a later slice,
-/// so this is read-and-display only.
-fn retro_lines(data: &WeekData) -> Vec<Line<'static>> {
-    let mut lines = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            "reflection · this week's note",
-            theme::muted(),
-        )),
-    ];
-    let body = data.note.body.trim();
+/// The retro band — the one stored line (`i` writes it in `$EDITOR`). Renders a
+/// reflection written offline this session (`provisional`, marked `◔ queued`)
+/// over the stored `note.body`; an unwritten week shows the calm empty state
+/// that teaches the `i` gesture.
+fn retro_lines(data: &WeekData, provisional: Option<&str>) -> Vec<Line<'static>> {
+    // A queued reflection is what the user just wrote — show it, marked pending,
+    // until the write replays and a live refetch returns the stored note.
+    let (body, queued) = match provisional {
+        Some(p) => (p.trim(), true),
+        None => (data.note.body.trim(), false),
+    };
+
+    let mut header = vec![Span::styled(
+        "reflection · this week's note",
+        theme::muted(),
+    )];
+    if queued && !body.is_empty() {
+        header.push(Span::styled(
+            "  ◔ queued",
+            Style::default().fg(theme::ACCENT),
+        ));
+    }
+    let mut lines = vec![Line::from(""), Line::from(header)];
+
     if body.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "No reflection yet.",
-            theme::muted(),
-        )));
+        lines.push(Line::from(vec![
+            Span::styled("No reflection yet. ", theme::muted()),
+            Span::styled("i", Style::default().fg(theme::ACCENT)),
+            Span::styled(" to write why in $EDITOR.", theme::muted()),
+        ]));
     } else {
         for line in body.lines() {
             lines.push(Line::from(Span::raw(line.to_string())));
@@ -1038,25 +1129,41 @@ mod tests {
         );
     }
 
+    fn retro_text(data: &WeekData, provisional: Option<&str>) -> String {
+        retro_lines(data, provisional)
+            .iter()
+            .map(spans_text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
     fn retro_band_shows_the_note_then_the_empty_state() {
-        let written: String = retro_lines(&sample())
-            .iter()
-            .map(|l| spans_text(l))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let written = retro_text(&sample(), None);
         assert!(
             written.contains("reflection · this week's note"),
             "{written}"
         );
         assert!(written.contains("Read the paper first"), "{written}");
+        assert!(!written.contains("◔ queued"), "a stored note is not queued");
 
-        let blank: String = retro_lines(&empty())
-            .iter()
-            .map(|l| spans_text(l))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let blank = retro_text(&empty(), None);
         assert!(blank.contains("No reflection yet."), "{blank}");
+        // The empty state teaches the `i` gesture, per the design.
+        assert!(blank.contains('i') && blank.contains("$EDITOR"), "{blank}");
+    }
+
+    #[test]
+    fn retro_band_marks_a_queued_reflection() {
+        // A reflection written offline renders over the stored note, marked
+        // `◔ queued` until the write replays.
+        let text = retro_text(&sample(), Some("Next week: read the paper first."));
+        assert!(text.contains("◔ queued"), "{text}");
+        assert!(text.contains("Next week: read the paper first."), "{text}");
+        assert!(
+            !text.contains("Read the paper first, build second"),
+            "the local text supersedes the stored note: {text}"
+        );
     }
 
     #[test]
@@ -1726,5 +1833,125 @@ mod tests {
             !render_text(&mut w).contains('●'),
             "a stopped clock clears the live marker"
         );
+    }
+
+    // --- reflection (#117): the $EDITOR retro write ---
+
+    /// An api + a live receiver — the reflect hand-off tests observe what `i`
+    /// dispatches, so they can't drop the rx the way `ctx` does.
+    fn ctx_rx() -> (
+        ApiClient,
+        UnboundedSender<Action>,
+        tokio::sync::mpsc::UnboundedReceiver<Action>,
+    ) {
+        let api =
+            ApiClient::with_token(url::Url::parse("http://127.0.0.1:9/").unwrap(), "t".into());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (api, tx, rx)
+    }
+
+    #[tokio::test]
+    async fn reflect_opens_the_editor_seeded_with_the_current_note() {
+        // `i` reads the shown week's stored note and hands the seed off to the
+        // app (which owns the terminal suspend + $EDITOR spawn).
+        let (api, tx, mut rx) = ctx_rx();
+        let mut w = loaded();
+        w.handle(Action::WeekReflect, &api, &tx).await;
+        assert!(
+            wait_for(&mut rx, |a| matches!(
+                a,
+                Action::WeekReflectEdit { iso_week, seed }
+                    if iso_week == "2026-W29" && seed == "Read the paper first, build second."
+            ))
+            .await,
+            "the reflect hand-off carries the week id and the current note as the seed"
+        );
+    }
+
+    #[tokio::test]
+    async fn reflect_before_load_is_a_noop() {
+        let (api, tx, mut rx) = ctx_rx();
+        let mut w = Week::default(); // never loaded
+        w.handle(Action::WeekReflect, &api, &tx).await;
+        assert!(rx.try_recv().is_err(), "no hand-off before the week loads");
+    }
+
+    #[tokio::test]
+    async fn reflect_abort_leaves_the_note_untouched() {
+        // Quit-without-write cancels — the board only says so (capture-is-sacred).
+        let (api, tx) = ctx();
+        let mut w = loaded();
+        let (level, text) = w
+            .handle(Action::WeekReflectAbort, &api, &tx)
+            .await
+            .expect("an abort notifies");
+        assert!(matches!(level, Level::Info));
+        assert!(text.contains("unchanged"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn reflect_save_offline_enqueues_and_renders_queued() {
+        // The full wiring, offline: a save → the reflect helper → `QueuedClient`
+        // → the persisted queue, plus the `◔ queued` retro band. A dead port
+        // forces the offline arm.
+        use crate::queue::{IntentKind, QueueStore};
+
+        let (queue_path, cache_path) = scratch_paths();
+        let api =
+            ApiClient::with_token(url::Url::parse("http://127.0.0.1:1/").unwrap(), "t".into());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut w = Week {
+            data: Some(sample()),
+            queue_paths: Some((queue_path.clone(), cache_path)),
+            ..Default::default()
+        };
+
+        w.handle(
+            Action::WeekReflectSave {
+                iso_week: "2026-W29".into(),
+                body: "Next week: read the paper first.".into(),
+            },
+            &api,
+            &tx,
+        )
+        .await;
+
+        // The spawned write lands in the queue (the dead port refuses fast).
+        let store = QueueStore::at(&queue_path);
+        let mut pending = store.pending().unwrap();
+        for _ in 0..100 {
+            if !pending.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            pending = store.pending().unwrap();
+        }
+        assert_eq!(pending.len(), 1, "the reflection landed in the queue");
+        assert_eq!(pending[0].kind.word(), "reflect");
+        match &pending[0].kind {
+            IntentKind::WeekNoteWrite { iso_week, body } => {
+                assert_eq!(iso_week, "2026-W29");
+                assert_eq!(body, "Next week: read the paper first.");
+            }
+            other => panic!("expected a WeekNoteWrite intent, got {other:?}"),
+        }
+
+        // The spawn streamed the provisional note back; feed it and render it.
+        assert!(
+            wait_for(&mut rx, |a| {
+                matches!(a, Action::WeekReflectQueued(b) if b == "Next week: read the paper first.")
+            })
+            .await,
+            "the provisional-note action is streamed back"
+        );
+        w.handle(
+            Action::WeekReflectQueued("Next week: read the paper first.".into()),
+            &api,
+            &tx,
+        )
+        .await;
+        let text = render_text(&mut w);
+        assert!(text.contains("◔ queued"), "the queued marker shows: {text}");
+        assert!(text.contains("Next week: read the paper first."), "{text}");
     }
 }

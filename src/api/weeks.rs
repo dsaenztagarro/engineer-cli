@@ -1,13 +1,15 @@
-//! `GET /api/v1/weeks/:iso_week` — the week aggregate (week-planning.brief.md).
+//! `GET /api/v1/weeks/:iso_week` — the week aggregate (week-planning.brief.md) —
+//! and `PATCH /api/v1/weeks/:iso_week/note`, the one stored write.
 //!
 //! Plan, actuals, and the planned-vs-done comparison for one ISO week, derived
-//! from the same `WeekStory` the web retro band reads. Read-only: planning
-//! *writes* go through the activities API (a `planned` activity + `planned_on` =
-//! a plan item — see [`super::activities::ActivityCreate`]). The `note` write is
-//! not yet a v1 route, so the retro reflection is read-and-display only.
+//! from the same `WeekStory` the web retro band reads. The plan half is
+//! read-only here: planning *writes* go through the activities API (a `planned`
+//! activity + `planned_on` = a plan item — see [`super::activities::ActivityCreate`]).
+//! The retro reflection is the module's one stored prose, persisted through the
+//! v1 week-note route (dsaenztagarro/engineer#805, engineer PR #807).
 
 use jiff::civil::Date;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::{ApiClient, ApiError};
 
@@ -36,10 +38,32 @@ pub struct WeekFrame {
 }
 
 /// The stored retro reflection for the week. `body` is empty until written.
-#[derive(Debug, Clone, Default, Deserialize)]
+/// Embedded in the aggregate as `{ body }`; the note-write route returns the
+/// bare persisted note `{ iso_week, body, updated_at }` — `iso_week` and
+/// `updated_at` default so the embedded shape still deserializes, and `Serialize`
+/// lets `engineer week reflect --json` echo the persisted note verbatim.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct WeekNote {
+    /// Present on the write route's response; empty on the embedded aggregate note.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub iso_week: String,
     #[serde(default)]
     pub body: String,
+    /// When the note was last persisted — present on the write route's response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<jiff::Timestamp>,
+}
+
+/// The PATCH body — `{ "note": { "body": … } }`, mirroring the activities API's
+/// wrapped-resource shape.
+#[derive(Serialize)]
+struct WeekNoteBody<'a> {
+    note: WeekNoteFields<'a>,
+}
+
+#[derive(Serialize)]
+struct WeekNoteFields<'a> {
+    body: &'a str,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -126,13 +150,29 @@ impl ApiClient {
     pub async fn get_week(&self, iso_week: &str) -> Result<Week, ApiError> {
         self.get(&format!("/api/v1/weeks/{iso_week}"), &[]).await
     }
+
+    /// Persist the week's retro reflection — `PATCH /api/v1/weeks/:iso_week/note`
+    /// with `{ "note": { "body": … } }` (dsaenztagarro/engineer#805, engineer PR
+    /// #807). Upserts the single note row, so it is naturally idempotent — a
+    /// re-sent write overwrites with the same body. An empty `body` clears the
+    /// note (the `week_notes` contract treats empty as clear). Returns the bare
+    /// persisted note `{ iso_week, body, updated_at }`.
+    pub async fn update_week_note(&self, iso_week: &str, body: &str) -> Result<WeekNote, ApiError> {
+        self.patch(
+            &format!("/api/v1/weeks/{iso_week}/note"),
+            &WeekNoteBody {
+                note: WeekNoteFields { body },
+            },
+        )
+        .await
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use url::Url;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -224,5 +264,55 @@ mod tests {
         .unwrap();
         assert_eq!(week.week.monday, None);
         assert!(week.note.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn update_week_note_patches_the_wrapped_body_and_reads_back_the_note() {
+        let server = MockServer::start().await;
+        // The exact write the `i` reflect gesture and `engineer week reflect`
+        // send: the reflection wrapped under `note` — and the bare persisted note
+        // read back.
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/weeks/2026-W29/note"))
+            .and(body_json(serde_json::json!({
+                "note": { "body": "Read the paper first, build second." }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "iso_week": "2026-W29",
+                "body": "Read the paper first, build second.",
+                "updated_at": "2026-07-17T09:30:00Z"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "t".into());
+        let note = api
+            .update_week_note("2026-W29", "Read the paper first, build second.")
+            .await
+            .unwrap();
+        assert_eq!(note.iso_week, "2026-W29");
+        assert_eq!(note.body, "Read the paper first, build second.");
+        assert!(note.updated_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn update_week_note_sends_an_empty_body_to_clear() {
+        let server = MockServer::start().await;
+        // An empty body is a deliberate clear — the server treats empty as clear
+        // (the `week_notes` contract); the write still sends `{ note: { body: "" } }`.
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/weeks/2026-W29/note"))
+            .and(body_json(serde_json::json!({ "note": { "body": "" } })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "iso_week": "2026-W29", "body": ""
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "t".into());
+        let note = api.update_week_note("2026-W29", "").await.unwrap();
+        assert!(note.body.is_empty());
     }
 }

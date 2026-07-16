@@ -5,6 +5,7 @@ mod api;
 mod app;
 mod auth;
 mod config;
+mod editor;
 mod inbox_cli;
 mod log_cli;
 mod progress_cli;

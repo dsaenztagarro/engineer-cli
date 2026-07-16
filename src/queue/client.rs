@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 
 use crate::api::{
-    Activity, ActivityCreate, ActivityUpdate, ApiClient, ApiError, Timer, TimerStopped,
+    Activity, ActivityCreate, ActivityUpdate, ApiClient, ApiError, Timer, TimerStopped, WeekNote,
 };
 use crate::timer_cache;
 use crate::timer_clock;
@@ -405,6 +405,41 @@ impl QueuedClient {
                     ..Default::default()
                 },
             ),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Persist the week's retro reflection (the board's `i`, `engineer week
+    /// reflect`) — `PATCH /api/v1/weeks/:iso_week/note`. Drain-before-live, then
+    /// the live PATCH; offline it enqueues an [`IntentKind::WeekNoteWrite`] and
+    /// echoes the written body back as the provisional note. Like a plan create,
+    /// an offline note write needs no cached snapshot — the reflection names its
+    /// own body, so there is always something to synthesize. An empty `body` is a
+    /// deliberate clear (the server's `week_notes` contract).
+    pub async fn update_week_note(
+        &self,
+        iso_week: &str,
+        body: &str,
+    ) -> Result<WriteOutcome<WeekNote>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.update_week_note(iso_week, body).await {
+            Ok(note) => Ok(WriteOutcome::Confirmed(note)),
+            Err(ApiError::Transport(_)) => {
+                self.store
+                    .enqueue(IntentKind::WeekNoteWrite {
+                        iso_week: iso_week.to_string(),
+                        body: body.to_string(),
+                    })
+                    .map_err(|e| {
+                        ApiError::Transport(format!("offline, and queueing the write failed: {e}"))
+                    })?;
+                // Synthesis is trivial — the written body echoed straight back.
+                Ok(WriteOutcome::Provisional(WeekNote {
+                    iso_week: iso_week.to_string(),
+                    body: body.to_string(),
+                    updated_at: None,
+                }))
+            }
             Err(e) => Err(e),
         }
     }
@@ -864,5 +899,62 @@ mod tests {
         let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
         assert_eq!(intents[0].kind.word(), "drop");
         assert_eq!(intents[0].stream, "activity:42");
+    }
+
+    // --- reflection (#117): the week note through the seam ---
+
+    #[tokio::test]
+    async fn live_week_note_write_is_confirmed_and_queues_nothing() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/weeks/2026-W29/note"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "iso_week": "2026-W29", "body": "build second"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let dir = tmp_dir("live-week-note");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let out = queued
+            .update_week_note("2026-W29", "build second")
+            .await
+            .unwrap();
+        assert!(!out.is_provisional());
+        assert_eq!(out.value().body, "build second");
+        assert_eq!(queued.queue_summary().depth, 0);
+    }
+
+    #[tokio::test]
+    async fn offline_week_note_write_enqueues_and_echoes_the_body() {
+        // Like a plan create, a note write needs no cached snapshot — the
+        // reflection names its own body, always legitimate to synthesize.
+        let api = dead_api();
+        let dir = tmp_dir("offline-week-note");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"), // never written
+        );
+
+        let out = queued
+            .update_week_note("2026-W29", "Read the paper first, build second.")
+            .await
+            .unwrap();
+        assert!(out.is_provisional());
+        assert_eq!(out.value().body, "Read the paper first, build second.");
+        assert_eq!(out.value().iso_week, "2026-W29");
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].kind.word(), "reflect");
+        assert_eq!(intents[0].stream, "week:2026-W29");
     }
 }
