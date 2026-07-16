@@ -1,6 +1,6 @@
 use crate::api::{
     Activity, AuditAcknowledged, AuditRead, Book, BookChapter, Dashboard, DayMinutes, Domain, Note,
-    Progress, RateResult, Timer, TimerCandidate, TimerSettings, TimerStopped, Today, Topic,
+    Progress, RateResult, Timer, TimerCandidate, TimerSettings, TimerStopped, Today, Topic, Week,
 };
 use crate::app::screens::review::Rating;
 use crate::app::screens::ScreenKind;
@@ -184,6 +184,16 @@ pub enum Action {
     // Timer settings — the view-only knobs screen (`:settings`).
     SettingsLoaded(Box<TimerSettings>),
     SettingsReload,
+
+    // Week board (`src/app/screens/week.rs`, `:week`, `g w`) — the planned-vs-
+    // done readout for one ISO week. Read-only: stepping refetches, the cursor
+    // moves over the plan rows (the seam the plan-write gestures ride in later).
+    WeekLoaded(Box<Week>),
+    WeekLoadFailed(String),
+    WeekStep(i32),
+    WeekReset,
+    RefreshWeek,
+    WeekSelectMove(i32),
 
     // Segment audit (`Progress ▸ audit`, `:audit`).
     AuditLoaded(Box<AuditRead>),

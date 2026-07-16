@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The week board — the planned-vs-done readout as a TUI screen (`:week`, `g w`).** The TUI twin of the shipped `engineer week` readout: one ISO week read from `GET /api/v1/weeks/:iso_week`, rendered as the Progress week-header dialect (`2026-W29 · wed · day 3 of 7`), one row per plan item with a derived state pill and a logged-vs-planned meter, the `planned 3 · done 1 · 5.1h logged` summary, and a retro band that reads the stored week note. Each row's pill is a fold recomputed on every read — never a second ledger: ` done ` (logged meets the plan), ` live ` (a segment running now), ` hold ` (some logged, short of plan — the honest middle), ` untouched ` (zero segments). Step weeks with `[` / `]` and snap back with `t`, the same clock the Progress screen keeps (the ISO-week stepping is now shared, not re-derived); a full-row `▌` cursor moves over the plan rows with `j` / `k`. A week you never planned shows the calm invitation instead of a blank — pointing at `engineer plan add` from the shell. Reachable from the `g w` goto chord and the `:week` palette verb (completion and `:help` follow from the grammar table). Read-only: declaring/adjusting plan items, starting the timer on a planned item, and the `$EDITOR` reflection *write* are the follow-on slices of the epic. (`week-planning.dc.html` §Week · board + §Week · nothing planned; EPIC #113, #114)
+
 ## [0.8.0] - 2026-07-16
 
 ### Added

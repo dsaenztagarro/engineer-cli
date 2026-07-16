@@ -6,6 +6,7 @@
 //! a plan item — see [`super::activities::ActivityCreate`]). The `note` write is
 //! not yet a v1 route, so the retro reflection is read-and-display only.
 
+use jiff::civil::Date;
 use serde::Deserialize;
 
 use super::{ApiClient, ApiError};
@@ -16,14 +17,29 @@ pub struct Week {
     #[serde(default)]
     pub days: Vec<WeekDay>,
     pub planned_vs_done: PlannedVsDone,
+    /// The one stored line — the retro reflection. Read-and-display only until
+    /// the server exposes a v1 week-note write; an unwritten week reads empty.
+    #[serde(default)]
+    pub note: WeekNote,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct WeekFrame {
     pub id: String,
+    /// The week's Monday (`YYYY-MM-DD`) — the anchor the board derives its
+    /// `weekday · day N of 7` header from. Absent on older payloads.
+    #[serde(default)]
+    pub monday: Option<Date>,
     /// True for any week fully in the past — the retro's render rule.
     #[serde(default)]
     pub closed: bool,
+}
+
+/// The stored retro reflection for the week. `body` is empty until written.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct WeekNote {
+    #[serde(default)]
+    pub body: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -49,6 +65,41 @@ pub struct PlanItem {
     pub size_minutes: Option<u32>,
     #[serde(default)]
     pub logged_minutes: Option<u32>,
+}
+
+/// The retro judgment for one plan item — a fold of the item's canvas status and
+/// its logged-vs-planned actuals, recomputed on every read (week-planning.dc.html
+/// §2 "the readout"). The board keeps no second ledger; this is derived, never
+/// stored. Richer than the headless `engineer week` words: it splits the
+/// zero-segment `Untouched` from the started-but-short `Hold`, which the
+/// coarser state-word readout collapses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanState {
+    /// Logged meets the plan (the server's planned→done judgment).
+    Done,
+    /// Live now — a segment is running against it.
+    Live,
+    /// Some logged, short of the plan — the honest middle.
+    Hold,
+    /// Zero segments — "never happened".
+    Untouched,
+}
+
+impl PlanItem {
+    /// Fold the canvas status + logged-vs-planned into the retro judgment shown
+    /// as the row's pill. `done` (server-computed) wins; otherwise a live segment
+    /// reads `Live`, any logged time reads `Hold`, and zero segments `Untouched`.
+    pub fn retro_state(&self) -> PlanState {
+        if self.done {
+            PlanState::Done
+        } else if self.state == "live" {
+            PlanState::Live
+        } else if self.logged_minutes.unwrap_or(0) == 0 {
+            PlanState::Untouched
+        } else {
+            PlanState::Hold
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -113,6 +164,7 @@ mod tests {
         let week = api.get_week("2026-W29").await.unwrap();
         assert_eq!(week.week.id, "2026-W29");
         assert!(!week.week.closed);
+        assert_eq!(week.week.monday, Some(jiff::civil::date(2026, 7, 13)));
         let items: Vec<&PlanItem> = week.items().collect();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].title, "SICP ch.3");
@@ -120,5 +172,57 @@ mod tests {
         assert_eq!(items[1].state, "left");
         assert_eq!(week.planned_vs_done.planned, 2);
         assert_eq!(week.planned_vs_done.done, 1);
+    }
+
+    #[test]
+    fn retro_state_folds_status_and_actuals() {
+        let item = |json: serde_json::Value| -> PlanItem { serde_json::from_value(json).unwrap() };
+        // done wins outright.
+        assert_eq!(
+            item(
+                serde_json::json!({ "id": 1, "title": "a", "state": "done", "done": true,
+                "logged_minutes": 190 })
+            )
+            .retro_state(),
+            PlanState::Done
+        );
+        // A live segment reads Live.
+        assert_eq!(
+            item(
+                serde_json::json!({ "id": 2, "title": "b", "state": "live", "done": false,
+                "logged_minutes": 30 })
+            )
+            .retro_state(),
+            PlanState::Live
+        );
+        // Some logged, short of plan, not live → the honest middle.
+        assert_eq!(
+            item(
+                serde_json::json!({ "id": 3, "title": "c", "state": "planned", "done": false,
+                "size_minutes": 180, "logged_minutes": 115 })
+            )
+            .retro_state(),
+            PlanState::Hold
+        );
+        // Zero segments → never happened.
+        assert_eq!(
+            item(
+                serde_json::json!({ "id": 4, "title": "d", "state": "left", "done": false,
+                "logged_minutes": 0 })
+            )
+            .retro_state(),
+            PlanState::Untouched
+        );
+    }
+
+    #[test]
+    fn note_and_monday_default_when_absent() {
+        let week: Week = serde_json::from_value(serde_json::json!({
+            "week": { "id": "2026-W30" },
+            "planned_vs_done": {}
+        }))
+        .unwrap();
+        assert_eq!(week.week.monday, None);
+        assert!(week.note.body.is_empty());
     }
 }

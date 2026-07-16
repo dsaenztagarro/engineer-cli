@@ -115,6 +115,7 @@ fn goto(app: &App, key: crossterm::event::KeyEvent) -> Option<Action> {
     match key.code {
         KeyCode::Char('t') => Some(Action::Goto(Timer)),
         KeyCode::Char('p') => Some(Action::Goto(Progress)),
+        KeyCode::Char('w') => Some(Action::Goto(Week)),
         KeyCode::Char('r') => Some(Action::Goto(Review)),
         KeyCode::Char('h') => Some(Action::Goto(Home)),
         KeyCode::Char('b') => Some(Action::Goto(Books)),
@@ -166,6 +167,7 @@ fn screen_key(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action> 
         ActivityNew => activity_normal_key(key),
         Activities => activities_key(key),
         Progress => progress_key(key),
+        Week => week_key(key),
         Timer => timer_key(key),
         Notes => notes_key(key),
         Review => review_key(app, key),
@@ -314,6 +316,21 @@ fn progress_key(key: crossterm::event::KeyEvent) -> Option<Action> {
     }
 }
 
+/// Week-board keys (§Week · board). `j`/`k` move the full-row cursor over the
+/// plan rows (the seam the #115/#116 gestures ride in later); `[`/`]`/`t` step
+/// the week in the same dialect as Progress; `h`/Esc steps home.
+fn week_key(key: crossterm::event::KeyEvent) -> Option<Action> {
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('j'), _) | (KeyCode::Down, _) => Some(Action::WeekSelectMove(1)),
+        (KeyCode::Char('k'), _) | (KeyCode::Up, _) => Some(Action::WeekSelectMove(-1)),
+        (KeyCode::Char('['), _) => Some(Action::WeekStep(-1)),
+        (KeyCode::Char(']'), _) => Some(Action::WeekStep(1)),
+        (KeyCode::Char('t'), _) => Some(Action::WeekReset),
+        (KeyCode::Char('h'), _) | (KeyCode::Esc, _) => Some(Action::Goto(ScreenKind::Home)),
+        _ => None,
+    }
+}
+
 fn login_key(key: crossterm::event::KeyEvent) -> Option<Action> {
     match key.code {
         KeyCode::Enter | KeyCode::Char('l') => Some(Action::Login),
@@ -394,6 +411,7 @@ fn command_mode(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action
 fn refresh_for(kind: ScreenKind) -> Action {
     match kind {
         ScreenKind::Progress => Action::RefreshProgress,
+        ScreenKind::Week => Action::RefreshWeek,
         ScreenKind::Timer => Action::TimerReload,
         ScreenKind::Notes => Action::RefreshNotes,
         ScreenKind::Activities => Action::RefreshActivities,

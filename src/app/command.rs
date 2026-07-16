@@ -2,7 +2,7 @@
 //!
 //! One static table (`ENTRIES`) pins the verb inventory from the daily-loop
 //! brief (§5, command-palette.html): navigation (`:home` `:books`
-//! `:activities` `:notes` `:review` `:progress` `:timer`), actions
+//! `:activities` `:notes` `:review` `:progress` `:week` `:timer`), actions
 //! (`:timer start|pause|resume|stop`, `:note <text>`) and housekeeping (`:q`
 //! `:logs` `:w` `:logout`, plus `:help`). The dispatcher, Tab completion, the
 //! inline line-state hints, and `:help` all read this one table, so the grammar
@@ -119,6 +119,14 @@ pub const ENTRIES: &[Entry] = &[
         target: Target::Nav(ScreenKind::Progress),
     },
     Entry {
+        verb: "week",
+        aliases: &[],
+        kind: Kind::Nav,
+        arg: Arg::None,
+        help: "the week board — planned vs done",
+        target: Target::Nav(ScreenKind::Week),
+    },
+    Entry {
         verb: "settings",
         aliases: &[],
         kind: Kind::Nav,
@@ -201,6 +209,7 @@ const NAV_VERBS: &[&str] = &[
     "notes",
     "review",
     "progress",
+    "week",
     "timer",
 ];
 
@@ -537,7 +546,17 @@ mod tests {
         assert_eq!(cmd("notes"), Command::Nav(ScreenKind::Notes));
         assert_eq!(cmd("review"), Command::Nav(ScreenKind::Review));
         assert_eq!(cmd("progress"), Command::Nav(ScreenKind::Progress));
+        assert_eq!(cmd("week"), Command::Nav(ScreenKind::Week));
         assert_eq!(cmd("timer"), Command::Nav(ScreenKind::Timer));
+    }
+
+    #[test]
+    fn week_resolves_by_prefix_and_leaves_the_write_alias_alone() {
+        // `:we` is an unambiguous prefix of the sole `week`-stemmed verb...
+        assert_eq!(cmd("we"), Command::Nav(ScreenKind::Week));
+        assert_eq!(cmd("wee"), Command::Nav(ScreenKind::Week));
+        // ...while the exact `:w` alias still submits the form (exact wins).
+        assert_eq!(cmd("w"), Command::Write);
     }
 
     #[test]
