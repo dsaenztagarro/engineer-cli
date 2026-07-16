@@ -120,6 +120,10 @@ pub enum Action {
     /// `queue::fold_timer`). Header-only — unlike `TimerLoaded` it is not
     /// forwarded to the Timer screen, which keeps its own last live snapshot.
     TimerStale(Box<Timer>),
+    /// An offline write landed in the queue: the synthesized local clock a verb
+    /// returns provisionally (`◔`). Both the app snapshot and the Timer screen
+    /// take it — the screen flips its provisional marker on, unlike `TimerStale`.
+    TimerProvisional(Box<Timer>),
     TimerCleared,
     TimerReload,
     /// The `s` key — stage-dependent primary: starts the clock when absent,

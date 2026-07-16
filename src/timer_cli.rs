@@ -115,7 +115,7 @@ impl Outcome {
 
 async fn dispatch(
     api: &ApiClient,
-    queued: &QueuedClient<'_>,
+    queued: &QueuedClient,
     cmd: Option<TimerCmd>,
     json: bool,
     colored: bool,
@@ -254,7 +254,7 @@ async fn settings(api: &ApiClient, json: bool) -> Result<Outcome, ApiError> {
 /// are ever written back to the cache — the fold is not.
 async fn fetch_timer(
     api: &ApiClient,
-    queued: &QueuedClient<'_>,
+    queued: &QueuedClient,
 ) -> Result<(Timer, Option<i64>), ApiError> {
     match api.timer().await {
         Ok(t) => {
@@ -276,7 +276,7 @@ async fn fetch_timer(
 
 async fn read(
     api: &ApiClient,
-    queued: &QueuedClient<'_>,
+    queued: &QueuedClient,
     json: bool,
     colored: bool,
 ) -> Result<Outcome, ApiError> {
@@ -313,7 +313,7 @@ async fn read(
 
 async fn status(
     api: &ApiClient,
-    queued: &QueuedClient<'_>,
+    queued: &QueuedClient,
     short: bool,
     colored: bool,
 ) -> Result<Outcome, ApiError> {
@@ -425,7 +425,7 @@ async fn start(
 
 async fn toggle(
     api: &ApiClient,
-    queued: &QueuedClient<'_>,
+    queued: &QueuedClient,
     colored: bool,
 ) -> Result<Outcome, ApiError> {
     let timer = api.timer().await?;
@@ -445,7 +445,7 @@ fn queued_suffix(colored: bool) -> String {
     paint("  · queued (offline)", COLOR_MUTED, colored)
 }
 
-async fn pause(queued: &QueuedClient<'_>, colored: bool) -> Result<Outcome, ApiError> {
+async fn pause(queued: &QueuedClient, colored: bool) -> Result<Outcome, ApiError> {
     match queued.pause_timer().await {
         Ok(out) => {
             let t = out.value();
@@ -466,7 +466,7 @@ async fn pause(queued: &QueuedClient<'_>, colored: bool) -> Result<Outcome, ApiE
     }
 }
 
-async fn resume(queued: &QueuedClient<'_>, colored: bool) -> Result<Outcome, ApiError> {
+async fn resume(queued: &QueuedClient, colored: bool) -> Result<Outcome, ApiError> {
     match queued.resume_timer().await {
         Ok(out) => {
             let t = out.value();
@@ -740,7 +740,7 @@ mod tests {
         dir
     }
 
-    fn queued_at<'a>(api: &'a ApiClient, dir: &std::path::Path) -> QueuedClient<'a> {
+    fn queued_at(api: &ApiClient, dir: &std::path::Path) -> QueuedClient {
         QueuedClient::with_paths(
             api,
             crate::queue::QueueStore::at(dir.join("queue.json")),

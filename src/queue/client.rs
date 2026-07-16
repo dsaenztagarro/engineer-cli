@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use crate::api::{ApiClient, ApiError, Timer};
+use crate::api::{ApiClient, ApiError, Timer, TimerStopped};
 use crate::timer_cache;
 use crate::timer_clock;
 
@@ -19,6 +19,11 @@ use super::fold::{self, Provenance};
 use super::intent::IntentKind;
 use super::replay::{self, ReplayError, ReplayReport};
 use super::store::{QueueStore, QueueSummary};
+
+/// A stand-in `segment_id` for a stop that landed in the queue: the real id is
+/// server-minted on replay, so the provisional confirmation carries a negative
+/// sentinel and the caller renders "queued" instead of `segment #N`.
+pub const PROVISIONAL_SEGMENT_ID: i64 = -1;
 
 /// How a write landed: on the server, or into the queue with a locally
 /// synthesized stand-in the caller renders as provisional.
@@ -35,32 +40,45 @@ impl<T> WriteOutcome<T> {
         }
     }
 
+    /// Consume the outcome for the wrapped value, dropping the confirmed/queued
+    /// distinction — callers that carried it in a side channel (a negative
+    /// segment id, the screen's provisional flag) reach for this.
+    pub fn into_value(self) -> T {
+        match self {
+            Self::Confirmed(v) | Self::Provisional(v) => v,
+        }
+    }
+
     pub fn is_provisional(&self) -> bool {
         matches!(self, Self::Provisional(_))
     }
 }
 
-pub struct QueuedClient<'a> {
-    api: &'a ApiClient,
+/// Owns a cloned `ApiClient` (it derives `Clone`) rather than borrowing one, so
+/// a `QueuedClient` is `'static` and can be built fresh inside each spawned TUI
+/// task from that task's own api clone — no lifetime to thread through the event
+/// loop. `ApiClient` is a thin `reqwest::Client` handle, so the clone is cheap.
+pub struct QueuedClient {
+    api: ApiClient,
     store: QueueStore,
     /// Read-cache override for tests; `None` reads the shared XDG location.
     cache_path: Option<PathBuf>,
 }
 
-impl<'a> QueuedClient<'a> {
+impl QueuedClient {
     /// The shared queue + read cache in the XDG state dir.
-    pub fn new(api: &'a ApiClient) -> Result<Self, super::QueueError> {
+    pub fn new(api: &ApiClient) -> Result<Self, super::QueueError> {
         Ok(Self {
-            api,
+            api: api.clone(),
             store: QueueStore::open_default()?,
             cache_path: None,
         })
     }
 
     /// Explicit store + cache paths (tests).
-    pub fn with_paths(api: &'a ApiClient, store: QueueStore, cache_path: PathBuf) -> Self {
+    pub fn with_paths(api: &ApiClient, store: QueueStore, cache_path: PathBuf) -> Self {
         Self {
-            api,
+            api: api.clone(),
             store,
             cache_path: Some(cache_path),
         }
@@ -98,7 +116,7 @@ impl<'a> QueuedClient<'a> {
 
     /// Run a full replay pass now; the caller renders the report.
     pub async fn drain(&self) -> Result<ReplayReport, ReplayError> {
-        replay::drain(self.api, &self.store).await
+        replay::drain(&self.api, &self.store).await
     }
 
     /// The cheap drain the automatic triggers fire — before a live write and
@@ -143,6 +161,118 @@ impl<'a> QueuedClient<'a> {
                 self.defer(IntentKind::TimerResume { at }, msg, |snap| {
                     timer_clock::apply_resume(snap, at)
                 })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Start a clock. Unlike every other verb, an offline start with *no* cached
+    /// timer is legitimate — nothing is running, so there is nothing missing to
+    /// act on. Rather than propagating the transport error like `defer` does, it
+    /// synthesizes a fresh anchored clock (`apply_start`) and enqueues the intent
+    /// (decision on #103). `switch` rides the intent so the replay stops & saves
+    /// whatever the server has running first, exactly as a live start would.
+    pub async fn start_timer(
+        &self,
+        activity_id: Option<i64>,
+        switch: bool,
+    ) -> Result<WriteOutcome<Timer>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.start_timer(activity_id, switch).await {
+            Ok(t) => Ok(WriteOutcome::Confirmed(t)),
+            Err(ApiError::Transport(msg)) => {
+                let at = jiff::Timestamp::now();
+                self.store
+                    .enqueue(IntentKind::TimerStart {
+                        activity_id,
+                        switch,
+                        at,
+                    })
+                    .map_err(|e| {
+                        ApiError::Transport(format!("offline, and queueing the write failed: {e}"))
+                    })?;
+                let _ = msg;
+                Ok(WriteOutcome::Provisional(timer_clock::apply_start(
+                    activity_id,
+                    None,
+                    at,
+                )))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Stop & save. Returns the same `TimerStopped` shape a live stop does; the
+    /// offline stand-in freezes the local clock (`apply_stop` → `LocalStop`),
+    /// enqueues the intent carrying the local elapsed the reconcile compares
+    /// against, and reports a [`PROVISIONAL_SEGMENT_ID`] the caller renders as
+    /// "queued". No snapshot → propagate, like every non-start verb.
+    pub async fn stop_timer(&self) -> Result<WriteOutcome<TimerStopped>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.stop_timer().await {
+            Ok(stopped) => Ok(WriteOutcome::Confirmed(stopped)),
+            Err(ApiError::Transport(msg)) => {
+                let Some(snapshot) = self.load_snapshot() else {
+                    return Err(ApiError::Transport(msg));
+                };
+                let at = jiff::Timestamp::now();
+                let (_, local) = timer_clock::apply_stop(snapshot, at);
+                self.store
+                    .enqueue(IntentKind::TimerStop {
+                        at,
+                        local_elapsed_s: local.elapsed_seconds,
+                    })
+                    .map_err(|e| {
+                        ApiError::Transport(format!("offline, and queueing the write failed: {e}"))
+                    })?;
+                Ok(WriteOutcome::Provisional(TimerStopped {
+                    stopped: true,
+                    activity_id: local.activity_id.unwrap_or(0),
+                    segment_id: PROVISIONAL_SEGMENT_ID,
+                    minutes: local.minutes,
+                }))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Name the running timer. Offline, field-flips the snapshot bound (the same
+    /// transition the fold applies), so the provisional face reads as bound.
+    pub async fn bind_timer(
+        &self,
+        activity_id: Option<i64>,
+        title: Option<String>,
+    ) -> Result<WriteOutcome<Timer>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.bind_timer(activity_id, title.clone()).await {
+            Ok(t) => Ok(WriteOutcome::Confirmed(t)),
+            Err(ApiError::Transport(msg)) => {
+                let flip_title = title.clone();
+                self.defer(
+                    IntentKind::TimerBind { activity_id, title },
+                    msg,
+                    move |mut t| {
+                        t.bound = true;
+                        t.activity_id = activity_id;
+                        if flip_title.is_some() {
+                            t.label = flip_title;
+                        }
+                        t
+                    },
+                )
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Throw the timer away, writing nothing. Offline, the stand-in is the blank
+    /// "nothing running" clock — what a discard leaves behind.
+    pub async fn discard_timer(&self) -> Result<WriteOutcome<Timer>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.discard_timer().await {
+            Ok(()) => Ok(WriteOutcome::Confirmed(Timer::default())),
+            Err(ApiError::Transport(msg)) => {
+                self.defer(IntentKind::TimerDiscard, msg, |_| Timer::default())
             }
             Err(e) => Err(e),
         }
@@ -364,5 +494,113 @@ mod tests {
             Err(ApiError::Unauthorized)
         ));
         assert_eq!(queued.queue_summary().depth, 0);
+    }
+
+    #[tokio::test]
+    async fn offline_start_with_no_snapshot_still_enqueues() {
+        // The start exception: nothing cached is legitimate — nothing was
+        // running — so an offline start synthesizes a fresh clock and queues,
+        // rather than propagating the transport error the other verbs would.
+        let api = dead_api();
+        let dir = tmp_dir("offline-start");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"), // never written
+        );
+
+        let out = queued.start_timer(Some(9), false).await.unwrap();
+        assert!(out.is_provisional());
+        assert!(out.value().running, "synthesized clock is running");
+        assert_eq!(out.value().activity_id, Some(9));
+        assert!(out.value().bound, "a bound start is bound");
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].kind.word(), "start");
+    }
+
+    #[tokio::test]
+    async fn offline_stop_synthesizes_the_segment_confirmation() {
+        let api = dead_api();
+        let dir = tmp_dir("offline-stop");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            seeded_cache(&dir),
+        );
+
+        let out = queued.stop_timer().await.unwrap();
+        assert!(out.is_provisional());
+        let stopped = out.value();
+        assert!(stopped.stopped);
+        assert_eq!(stopped.activity_id, 9, "from the cached bound timer");
+        assert!(
+            stopped.segment_id < 0,
+            "a queued stop has no server segment id yet"
+        );
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].kind.word(), "stop");
+    }
+
+    #[tokio::test]
+    async fn offline_stop_with_no_snapshot_propagates_transport() {
+        let api = dead_api();
+        let dir = tmp_dir("stop-no-snapshot");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+        assert!(matches!(
+            queued.stop_timer().await,
+            Err(ApiError::Transport(_))
+        ));
+        assert_eq!(queued.queue_summary().depth, 0, "nothing enqueued blind");
+    }
+
+    #[tokio::test]
+    async fn offline_bind_flips_the_snapshot_bound() {
+        let api = dead_api();
+        let dir = tmp_dir("offline-bind");
+        // A running *unbound* cache so the flip is observable.
+        let cache = dir.join("timer-cache.json");
+        let unbound: Timer = serde_json::from_value(serde_json::json!({
+            "running": true, "bound": false, "elapsed_seconds": 300
+        }))
+        .unwrap();
+        timer_cache::store_at(&cache, &unbound);
+        let queued = QueuedClient::with_paths(&api, QueueStore::at(dir.join("queue.json")), cache);
+
+        let out = queued
+            .bind_timer(None, Some("Implement Raft".into()))
+            .await
+            .unwrap();
+        assert!(out.is_provisional());
+        assert!(out.value().bound);
+        assert_eq!(out.value().label.as_deref(), Some("Implement Raft"));
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents[0].kind.word(), "bind");
+    }
+
+    #[tokio::test]
+    async fn offline_discard_leaves_nothing_running() {
+        let api = dead_api();
+        let dir = tmp_dir("offline-discard");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            seeded_cache(&dir),
+        );
+
+        let out = queued.discard_timer().await.unwrap();
+        assert!(out.is_provisional());
+        assert!(!out.value().running, "a discard leaves nothing running");
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents[0].kind.word(), "discard");
     }
 }
