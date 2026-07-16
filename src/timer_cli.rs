@@ -281,7 +281,11 @@ async fn read(
     colored: bool,
 ) -> Result<Outcome, ApiError> {
     let (timer, stale) = fetch_timer(api, queued).await?;
-    let depth = queued.queue_summary().depth;
+    let summary = queued.queue_summary();
+    // Parked intents are kept for review, not waiting to sync — they never
+    // count as queued writes.
+    let depth = summary.in_play();
+    let diverged = summary.diverged > 0;
     let code = exit_code(&timer);
     let line = if json {
         let mut v = json_read(&timer);
@@ -290,9 +294,12 @@ async fn read(
             v["stale_age_s"] = age.into();
         }
         // Unsynced local writes are a different honesty state than a stale
-        // read — both machine fields ship on every read (#100).
+        // read — both machine fields ship on every read (#100). `diverged`
+        // flags the one loud state: a replay the server refused is waiting on
+        // a choice (`engineer queue resolve`).
         v["queued"] = (depth > 0).into();
         v["queue_depth"] = depth.into();
+        v["diverged"] = diverged.into();
         v.to_string()
     } else {
         let mut l = human_line(&timer, colored);
@@ -301,6 +308,13 @@ async fn read(
         }
         if depth > 0 {
             l.push_str(&paint(&format!("  · {depth} queued"), COLOR_MUTED, colored));
+        }
+        if diverged {
+            l.push_str(&paint(
+                "  · diverged — resolve in engineer queue",
+                COLOR_DIVERGED,
+                colored,
+            ));
         }
         l
     };
@@ -318,7 +332,9 @@ async fn status(
     colored: bool,
 ) -> Result<Outcome, ApiError> {
     let (timer, stale) = fetch_timer(api, queued).await?;
-    let depth = queued.queue_summary().depth;
+    let summary = queued.queue_summary();
+    let depth = summary.in_play();
+    let diverged = summary.diverged > 0;
     let code = exit_code(&timer);
     let line = if short {
         let mut l = short_status(&timer, colored);
@@ -341,6 +357,11 @@ async fn status(
         }
         if depth > 0 {
             l.push_str(&format!(" queued={depth}"));
+        }
+        // The one loud state, as a machine extra: a divergence waits on a
+        // choice, so the status can't claim the queue will drain on its own.
+        if diverged {
+            l.push_str(" diverged=1");
         }
         l
     };
@@ -789,6 +810,7 @@ fn json_read(t: &Timer) -> serde_json::Value {
 const COLOR_RUNNING: u8 = 108; // success green
 const COLOR_FOCUS: u8 = 105; // accent indigo
 const COLOR_ATTENTION: u8 = 179; // warn amber
+const COLOR_DIVERGED: u8 = 167; // danger red — the one loud state
 const COLOR_MUTED: u8 = 244;
 
 fn glyph_for(word: &str) -> (&'static str, u8) {
@@ -1346,6 +1368,10 @@ mod tests {
         let dir = scratch();
         let queued = queued_at(&api, &dir);
         queued_seed(&dir, 3);
+        // Hold the replay lock so the read's automatic drain skips — this
+        // test is about the marker, not the replay.
+        let store = QueueStore::at(dir.join("queue.json"));
+        let _guard = store.try_replay_lock().unwrap().expect("free lock");
 
         let short = dispatch(
             &api,
@@ -1683,5 +1709,151 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    // -------------------------------------------- divergence surfacing (#106)
+
+    /// Seed the queue with a diverged pause and a pending resume behind it.
+    fn diverged_seed(dir: &std::path::Path) {
+        let store = QueueStore::at(dir.join("queue.json"));
+        store
+            .enqueue(IntentKind::TimerPause {
+                at: jiff::Timestamp::now(),
+            })
+            .unwrap();
+        store
+            .enqueue(IntentKind::TimerResume {
+                at: jiff::Timestamp::now(),
+            })
+            .unwrap();
+        store
+            .mutate(|doc| {
+                doc.intents_mut()[0].state = crate::queue::IntentState::Diverged {
+                    status: 409,
+                    title: "Conflict".into(),
+                    detail: "a timer is already running".into(),
+                    type_uri: None,
+                    errors: vec![],
+                };
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn json_read_flags_a_waiting_divergence() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "elapsed_seconds": 3134
+            })))
+            .mount(&server)
+            .await;
+
+        let api = client(&server);
+        let dir = scratch();
+        let queued = queued_at(&api, &dir);
+        diverged_seed(&dir);
+
+        let outcome = dispatch(&api, &queued, None, true, false).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&outcome.out[0]).unwrap();
+        assert_eq!(v["diverged"], true);
+        assert_eq!(v["queued"], true);
+        assert_eq!(v["queue_depth"], 2, "diverged + pending are both in play");
+
+        let plain = dispatch(&api, &queued, None, false, false).await.unwrap();
+        assert!(
+            plain.out[0].contains("diverged — resolve in engineer queue"),
+            "{}",
+            plain.out[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_status_carries_the_diverged_extra() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "elapsed_seconds": 3134
+            })))
+            .mount(&server)
+            .await;
+
+        let api = client(&server);
+        let dir = scratch();
+        let queued = queued_at(&api, &dir);
+        diverged_seed(&dir);
+
+        let outcome = dispatch(
+            &api,
+            &queued,
+            Some(TimerCmd::Status { short: false }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(
+            outcome.out[0].ends_with(" queued=2 diverged=1"),
+            "{}",
+            outcome.out[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_calm_queue_reads_undiverged() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "elapsed_seconds": 3134
+            })))
+            .mount(&server)
+            .await;
+
+        let api = client(&server);
+        let dir = scratch();
+        let queued = queued_at(&api, &dir);
+
+        let outcome = dispatch(&api, &queued, None, true, false).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&outcome.out[0]).unwrap();
+        assert_eq!(v["diverged"], false);
+        assert_eq!(v["queued"], false);
+    }
+
+    #[tokio::test]
+    async fn parked_intents_never_count_as_queued() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "elapsed_seconds": 3134
+            })))
+            .mount(&server)
+            .await;
+
+        let api = client(&server);
+        let dir = scratch();
+        let queued = queued_at(&api, &dir);
+        let store = QueueStore::at(dir.join("queue.json"));
+        store
+            .enqueue(IntentKind::TimerPause {
+                at: jiff::Timestamp::now(),
+            })
+            .unwrap();
+        store
+            .mutate(|doc| {
+                doc.intents_mut()[0].state = crate::queue::IntentState::Parked {
+                    reason: "took server · Conflict".into(),
+                };
+            })
+            .unwrap();
+
+        let outcome = dispatch(&api, &queued, None, true, false).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&outcome.out[0]).unwrap();
+        assert_eq!(v["queued"], false, "parked is kept for review, not queued");
+        assert_eq!(v["queue_depth"], 0);
+        assert_eq!(v["diverged"], false);
     }
 }

@@ -80,9 +80,14 @@ pub struct App {
     /// `None` when the state dir is unavailable (the count reads 0). Read-only
     /// here — writes go through `QueuedClient`.
     pub queue: Option<QueueStore>,
-    /// Pending queued writes (the queue depth), refreshed each tick — the header
-    /// cell's ` ↑N` complication (quiet accent, the shipped stale marker's family).
+    /// Queued writes still in play (pending + diverged; parked intents are kept
+    /// for review and excluded), refreshed each tick — the header cell's ` ↑N`
+    /// complication (quiet accent, the shipped stale marker's family).
     pub queued_writes: usize,
+    /// True while the queue holds a diverged intent — the header wears the one
+    /// loud state in the vocabulary (a full ` diverged ` danger chip) until the
+    /// reconcile panel or `engineer queue resolve` settles it.
+    pub queue_diverged: bool,
     /// The per-user timer knobs, fetched once after sign-in — the header cell
     /// reads them to spot a finished focus phase (the offer pill).
     pub settings: Option<crate::api::TimerSettings>,
@@ -146,6 +151,7 @@ async fn run_loop(
         timer_last_poll: Instant::now(),
         queue: QueueStore::open_default().ok(),
         queued_writes: 0,
+        queue_diverged: false,
         settings: None,
         overrun_pinged: None,
         heartbeat_last: Instant::now(),
@@ -763,21 +769,45 @@ impl App {
         }
     }
 
-    /// Refresh the unsynced-writes count from the shared queue for the header's
-    /// ` ↑N`. Read on the tick (≤4×/s of a tiny, lock-free file), so it also
-    /// reflects a drain, a divergence, or another process enqueuing — the queue
-    /// file is the single source of truth, exactly as `engineer timer` reads it.
+    /// Refresh the unsynced-writes count and the diverged flag from the shared
+    /// queue for the header's ` ↑N` and ` diverged ` chip. Read on the tick
+    /// (≤4×/s of a tiny, lock-free file), so it also reflects a drain, a
+    /// divergence, or another process enqueuing or resolving — the queue file
+    /// is the single source of truth, exactly as `engineer timer` reads it.
     fn refresh_queued_writes(&mut self) {
-        self.queued_writes = self
-            .queue
-            .as_ref()
-            .and_then(|q| q.summary().ok())
-            .map_or(0, |s| s.depth);
+        let summary = self.queue.as_ref().and_then(|q| q.summary().ok());
+        self.queued_writes = summary.map_or(0, |s| s.in_play());
+        self.queue_diverged = summary.is_some_and(|s| s.diverged > 0);
     }
 
     /// The header timer cell spans, with the displayed elapsed ticked locally
-    /// from the last snapshot. `None` when no timer is running.
+    /// from the last snapshot, plus the ` diverged ` chip — the one loud state,
+    /// worn even when no clock is running. `None` when there is nothing to show.
     fn timer_cell_spans(&self, narrow: bool) -> Option<Vec<ratatui::text::Span<'static>>> {
+        let mut spans = self.timer_clock_spans(narrow).unwrap_or_default();
+        if self.queue_diverged {
+            if !spans.is_empty() {
+                spans.push(ratatui::text::Span::raw(" "));
+            }
+            // Full-row danger treatment, the notify Error tile's idiom: the
+            // queue holds a choice nothing will make for you.
+            spans.push(ratatui::text::Span::styled(
+                " diverged ",
+                ratatui::style::Style::default()
+                    .fg(ratatui::style::Color::Black)
+                    .bg(crate::ui::theme::DANGER)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+        }
+        if spans.is_empty() {
+            None
+        } else {
+            Some(spans)
+        }
+    }
+
+    /// The clock half of the header cell. `None` when no timer is running.
+    fn timer_clock_spans(&self, narrow: bool) -> Option<Vec<ratatui::text::Span<'static>>> {
         let t = self.timer.as_ref()?;
         let elapsed = screens::timer::live_elapsed(t, self.timer_base);
         // A finished focus phase shows as the offer pill on every screen.
@@ -834,6 +864,7 @@ mod tests {
             // Tests never touch the shared queue — the header count stays 0.
             queue: None,
             queued_writes: 0,
+            queue_diverged: false,
             settings: None,
             overrun_pinged: None,
             heartbeat_last: Instant::now(),
@@ -1046,6 +1077,27 @@ mod tests {
         // It clears once the queue drains.
         app.queued_writes = 0;
         assert!(!rendered_text(&mut app).contains('↑'));
+    }
+
+    #[tokio::test]
+    async fn header_wears_the_diverged_chip_even_without_a_clock() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        // No timer at all: the loud chip still shows — the choice outranks
+        // every other header state.
+        app.queue_diverged = true;
+        let text = rendered_text(&mut app);
+        assert!(text.contains("diverged"), "{text}");
+
+        // With a clock, the chip rides next to the cell.
+        app.timer = Some(running_timer(272));
+        app.timer_base = Some(Instant::now());
+        let text = rendered_text(&mut app);
+        assert!(text.contains("● 04:32"), "{text}");
+        assert!(text.contains("diverged"), "{text}");
+
+        // Resolved: the chip clears with the flag.
+        app.queue_diverged = false;
+        assert!(!rendered_text(&mut app).contains("diverged"));
     }
 
     #[tokio::test]

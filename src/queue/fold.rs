@@ -319,6 +319,26 @@ mod tests {
     }
 
     #[test]
+    fn a_parked_intent_never_folds() {
+        let mut parked = intent(
+            1,
+            IntentKind::TimerPause {
+                at: ts("2026-07-15T09:50:00Z"),
+            },
+        );
+        parked.state = IntentState::Parked {
+            reason: "took server · Conflict".into(),
+        };
+        let (t, prov) = fold_timer(Some(&running_cache()), &[parked], now()).unwrap();
+        assert!(
+            !t.paused,
+            "an abandoned session's gesture stays out of the picture"
+        );
+        assert_eq!(t.elapsed_seconds, Some(3600), "the plain advanced snapshot");
+        assert_eq!(prov.queue_depth, 0);
+    }
+
+    #[test]
     fn verbs_without_any_base_refuse() {
         let pause = intent(
             1,

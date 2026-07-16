@@ -18,6 +18,7 @@ use crate::timer_clock;
 use super::fold::{self, Provenance};
 use super::intent::{Intent, IntentKind};
 use super::replay::{self, ReplayError, ReplayReport};
+use super::resolve::{self, Resolution, ResolveError, Resolved};
 use super::store::{QueueStore, QueueSummary};
 
 /// A stand-in `segment_id` for a stop that landed in the queue: the real id is
@@ -92,9 +93,42 @@ impl QueuedClient {
             QueueSummary {
                 depth: 0,
                 oldest_age_s: None,
+                pending: 0,
                 diverged: 0,
+                parked: 0,
             }
         })
+    }
+
+    /// The first intent waiting on a divergence choice, payload and all — what
+    /// the Timer screen's reconcile panel renders. Best-effort like the other
+    /// reads: an unreadable queue reads as no divergence here.
+    pub fn first_diverged(&self) -> Option<Intent> {
+        self.store
+            .intents()
+            .ok()?
+            .into_iter()
+            .find(Intent::is_diverged)
+    }
+
+    /// Apply a divergence resolution (`queue::resolve`), seeding the local
+    /// session's identity from this client's read cache. Callers continue the
+    /// drain after a successful keep-local/keep-both.
+    pub async fn resolve_divergence(
+        &self,
+        intent_id: u64,
+        resolution: Resolution,
+    ) -> Result<Resolved, ResolveError> {
+        let cached = self.cached_timer().map(|s| s.timer);
+        resolve::resolve(
+            &self.api,
+            &self.store,
+            cached.as_ref(),
+            intent_id,
+            resolution,
+            jiff::Timestamp::now(),
+        )
+        .await
     }
 
     /// The effective local timer: the cached server snapshot with the pending
@@ -120,13 +154,13 @@ impl QueuedClient {
     }
 
     /// The cheap drain the automatic triggers fire — before a live write and
-    /// after a successful one-shot read. Skips instantly when the queue is
-    /// empty (a summary depth check before taking any lock) and swallows
-    /// failures with a log line: the caller's own call carries the
-    /// user-facing error, and a divergence keeps surfacing through the
-    /// `queued`/`diverged` read fields until `engineer queue` resolves it.
+    /// after a successful one-shot read. Skips instantly when nothing is in
+    /// play (a summary check before taking any lock — parked intents never
+    /// re-trigger it) and swallows failures with a log line: the caller's own
+    /// call carries the user-facing error, and a divergence keeps surfacing
+    /// through the `queued`/`diverged` read fields until it is resolved.
     pub async fn drain_best_effort(&self) {
-        if self.queue_summary().depth == 0 {
+        if self.queue_summary().in_play() == 0 {
             return;
         }
         if let Err(e) = self.drain().await {
@@ -137,14 +171,14 @@ impl QueuedClient {
     /// The reconnect drain the TUI header poll fires: like [`drain_best_effort`],
     /// but streaming each acknowledged intent to `on_replay` so the caller can
     /// paint the reconnect transcript (`back online · replaying the queue…`).
-    /// Same best-effort contract — skips instantly on an empty queue (no lock
-    /// taken, so no false transcript), swallows a failed pass with a log line —
+    /// Same best-effort contract — skips instantly when nothing is in play (no
+    /// lock taken, so no false transcript), swallows a failed pass with a log line —
     /// and returns the [`ReplayReport`] the `✓ synced` tile reads. `None` when
     /// there was nothing to drain, so the caller shows nothing.
     ///
     /// [`drain_best_effort`]: Self::drain_best_effort
     pub async fn drain_reporting(&self, on_replay: impl FnMut(&Intent)) -> Option<ReplayReport> {
-        if self.queue_summary().depth == 0 {
+        if self.queue_summary().in_play() == 0 {
             return None;
         }
         match replay::drain_reporting(&self.api, &self.store, on_replay).await {

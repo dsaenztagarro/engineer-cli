@@ -61,9 +61,25 @@ impl Default for QueueDoc {
 /// What a glance needs to know about the queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueSummary {
+    /// Every stored intent, parked included.
     pub depth: usize,
     pub oldest_age_s: Option<i64>,
+    /// Intents waiting to replay.
+    pub pending: usize,
+    /// Intents waiting on a divergence choice.
     pub diverged: usize,
+    /// Intents kept for review by a take-server resolution — never replayed,
+    /// never counted as queued writes.
+    pub parked: usize,
+}
+
+impl QueueSummary {
+    /// Intents still in play — pending + diverged. Parked intents are kept for
+    /// review only, so every "queued" surface (`↑N`, `queued=N`, drain skips)
+    /// counts this, not `depth`.
+    pub fn in_play(&self) -> usize {
+        self.pending + self.diverged
+    }
 }
 
 /// Held by the single replaying process; the advisory lock releases on drop.
@@ -121,7 +137,7 @@ impl QueueStore {
             .collect())
     }
 
-    /// Depth, oldest age, and how many intents wait on a divergence choice.
+    /// Depth, oldest age, and the per-state counts the status surfaces read.
     pub fn summary(&self) -> Result<QueueSummary, QueueError> {
         let intents = self.intents()?;
         let now = jiff::Timestamp::now().as_second();
@@ -130,7 +146,9 @@ impl QueueStore {
             oldest_age_s: intents
                 .first()
                 .map(|i| (now - i.queued_at.as_second()).max(0)),
+            pending: intents.iter().filter(|i| i.is_pending()).count(),
             diverged: intents.iter().filter(|i| i.is_diverged()).count(),
+            parked: intents.iter().filter(|i| i.is_parked()).count(),
         })
     }
 
@@ -284,8 +302,9 @@ mod tests {
     }
 
     #[test]
-    fn summary_counts_depth_age_and_diverged() {
+    fn summary_counts_depth_age_and_every_state() {
         let store = tmp_store("summary");
+        store.enqueue(pause_kind()).unwrap();
         store.enqueue(pause_kind()).unwrap();
         store.enqueue(pause_kind()).unwrap();
         store
@@ -297,14 +316,20 @@ mod tests {
                     type_uri: None,
                     errors: vec![],
                 };
+                doc.intents_mut()[1].state = IntentState::Parked {
+                    reason: "took server · Segment overlaps".into(),
+                };
             })
             .unwrap();
 
         let summary = store.summary().unwrap();
-        assert_eq!(summary.depth, 2);
+        assert_eq!(summary.depth, 3, "depth counts parked too");
+        assert_eq!(summary.pending, 1);
         assert_eq!(summary.diverged, 1);
+        assert_eq!(summary.parked, 1);
+        assert_eq!(summary.in_play(), 2, "parked is out of play");
         assert!(summary.oldest_age_s.unwrap() >= 0);
-        assert_eq!(store.pending().unwrap().len(), 1);
+        assert_eq!(store.pending().unwrap().len(), 1, "parked never replays");
     }
 
     #[test]

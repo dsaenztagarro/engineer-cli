@@ -1,23 +1,29 @@
 //! Headless `engineer queue` — the offline write queue, observable
 //! (offline-write.brief.md §8 Foundation; the §Queue inspector / headless-twin
 //! boards). The bare read prints one row per unsynced intent; `sync` runs a
-//! replay pass now. A look and a nudge — not a sync manager.
+//! replay pass now; `resolve` picks a side on a waiting divergence — the
+//! headless twin of the Timer screen's reconcile panel. A look and a nudge —
+//! not a sync manager.
 //!
-//! Exit codes answer "does the queue need me?": 0 drained or empty · 3 writes
-//! queued, offline (deliberately not a failure — a cron job must not page on a
-//! tunnel) · 4 a divergence is waiting on a choice · 5 the replay itself
-//! failed (non-transport, non-problem — e.g. queue io). Output is plain when
-//! piped: ANSI colour is applied only on a TTY and never when NO_COLOR is set.
+//! Exit codes answer "does the queue need me?": 0 drained, empty, or only
+//! parked-for-review · 3 writes queued, offline (deliberately not a failure —
+//! a cron job must not page on a tunnel) · 4 a divergence is waiting on a
+//! choice · 5 the replay itself failed (non-transport, non-problem — e.g.
+//! queue io). `resolve` exits 0 on success and 1 when the resolution can't
+//! apply (unknown id, not a divergence, a composition the stored payload
+//! can't support, or offline — resolving needs the wire). Output is plain
+//! when piped: ANSI colour is applied only on a TTY and never when NO_COLOR
+//! is set.
 
 use std::io::IsTerminal;
 
 use clap::{Args, Subcommand};
 use color_eyre::eyre::Result;
 
-use crate::api::{ApiClient, ApiError};
+use crate::api::{ApiClient, ApiError, Timer};
 use crate::auth::TokenProvider;
 use crate::config::Config;
-use crate::queue::{self, Intent, IntentState, QueueStore};
+use crate::queue::{self, Intent, IntentState, QueueStore, Resolution, Resolved};
 
 #[derive(Args)]
 pub struct QueueArgs {
@@ -33,6 +39,17 @@ pub struct QueueArgs {
 enum QueueCmd {
     /// Replay the queue now — pending intents re-send in order.
     Sync,
+    /// Resolve a waiting divergence — pick a side; nothing is ever dropped
+    /// silently.
+    Resolve {
+        /// The intent id from the bare read's `#` column.
+        id: u64,
+        /// local: re-assert your session/segment on the server · server: park
+        /// the local intents for review (never deleted) · both: write the
+        /// local session as a segment and let the server session stand.
+        #[arg(long, value_parser = Resolution::NAMES.to_vec())]
+        keep: String,
+    },
 }
 
 pub async fn run(cfg: &Config, args: QueueArgs) -> Result<i32> {
@@ -41,8 +58,11 @@ pub async fn run(cfg: &Config, args: QueueArgs) -> Result<i32> {
     let api = ApiClient::with_token(cfg.api_url.clone(), token);
     let store = QueueStore::open_default().map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
     let colored = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    // The last-known server snapshot — the local session's identity when a
+    // diverged verb doesn't carry one (resolve's keep-local/keep-both).
+    let cached = crate::timer_cache::load().map(|s| s.timer);
 
-    let outcome = dispatch(&api, &store, args.cmd, args.json, colored).await?;
+    let outcome = dispatch(&api, &store, cached, args.cmd, args.json, colored).await?;
     for line in &outcome.out {
         println!("{line}");
     }
@@ -52,6 +72,9 @@ pub async fn run(cfg: &Config, args: QueueArgs) -> Result<i32> {
     Ok(outcome.code)
 }
 
+/// A resolve that can't apply — unknown id, not a divergence, an unsupported
+/// composition, or offline. The refusal contract `engineer timer` also uses.
+const EXIT_REFUSED: i32 = 1;
 /// Queued-offline: writes are waiting, which is a state, not a failure.
 const EXIT_QUEUED: i32 = 3;
 /// A divergence waits on a human choice.
@@ -74,6 +97,14 @@ impl Outcome {
         }
     }
 
+    fn refuse(reason: impl Into<String>) -> Self {
+        Self {
+            out: vec![],
+            err: vec![reason.into()],
+            code: EXIT_REFUSED,
+        }
+    }
+
     fn fail(reason: impl Into<String>) -> Self {
         Self {
             out: vec![],
@@ -86,6 +117,7 @@ impl Outcome {
 async fn dispatch(
     api: &ApiClient,
     store: &QueueStore,
+    cached: Option<Timer>,
     cmd: Option<QueueCmd>,
     json: bool,
     colored: bool,
@@ -93,6 +125,9 @@ async fn dispatch(
     Ok(match cmd {
         None => read(store, json, colored),
         Some(QueueCmd::Sync) => sync(api, store, json, colored).await,
+        Some(QueueCmd::Resolve { id, keep }) => {
+            resolve_cmd(api, store, cached.as_ref(), id, &keep, json, colored).await
+        }
     })
 }
 
@@ -131,6 +166,7 @@ fn read(store: &QueueStore, json: bool, colored: bool) -> Outcome {
         let state = match &i.state {
             IntentState::Pending => paint("pending", COLOR_QUEUED, colored),
             IntentState::Diverged { .. } => paint("diverged", COLOR_DIVERGED, colored),
+            IntentState::Parked { .. } => paint("parked", COLOR_MUTED, colored),
         };
         out.push(format!(
             "{:<5} {:<8} {:<12} {:<6} {state}",
@@ -140,6 +176,40 @@ fn read(store: &QueueStore, json: bool, colored: bool) -> Outcome {
             fmt_age(age_s(i, now)),
         ));
     }
+    // The divergence is the loud state: below the table, each waiting choice
+    // names the server's objection verbatim and spells the way out.
+    for i in intents.iter().filter(|i| i.is_diverged()) {
+        if let IntentState::Diverged {
+            status,
+            title,
+            detail,
+            ..
+        } = &i.state
+        {
+            let objection = if detail.is_empty() {
+                title.clone()
+            } else {
+                format!("{title} — {detail}")
+            };
+            out.push(paint(
+                &format!(
+                    "✗ #{} {} diverged ({status}) — {objection}",
+                    i.id,
+                    i.kind.word()
+                ),
+                COLOR_DIVERGED,
+                colored,
+            ));
+            out.push(paint(
+                &format!(
+                    "  resolve: engineer queue resolve {} --keep=local|server|both",
+                    i.id
+                ),
+                COLOR_MUTED,
+                colored,
+            ));
+        }
+    }
     Outcome {
         out,
         err: vec![],
@@ -147,15 +217,16 @@ fn read(store: &QueueStore, json: bool, colored: bool) -> Outcome {
     }
 }
 
-/// The bare read's verdict mirrors `sync`'s: an empty queue is 0, a waiting
-/// divergence outranks plain depth.
+/// The bare read's verdict mirrors `sync`'s: a waiting divergence outranks
+/// plain depth; an empty or parked-only queue is calm (parked intents are
+/// kept for review, not waiting to sync).
 fn exit_for(intents: &[Intent]) -> i32 {
-    if intents.is_empty() {
-        0
-    } else if intents.iter().any(Intent::is_diverged) {
+    if intents.iter().any(Intent::is_diverged) {
         EXIT_DIVERGED
-    } else {
+    } else if intents.iter().any(Intent::is_pending) {
         EXIT_QUEUED
+    } else {
+        0
     }
 }
 
@@ -164,14 +235,31 @@ fn json_read(intents: &[Intent], now: i64) -> serde_json::Value {
         "depth": intents.len(),
         "oldest_age_s": intents.first().map(|i| age_s(i, now)),
         "diverged": intents.iter().filter(|i| i.is_diverged()).count(),
-        "intents": intents.iter().map(|i| serde_json::json!({
-            "id": i.id,
-            "verb": i.kind.word(),
-            "stream": i.stream,
-            "age_s": age_s(i, now),
-            "state": state_word(i),
-            "attempts": i.attempts,
-        })).collect::<Vec<_>>(),
+        "parked": intents.iter().filter(|i| i.is_parked()).count(),
+        "intents": intents.iter().map(|i| {
+            let mut v = serde_json::json!({
+                "id": i.id,
+                "verb": i.kind.word(),
+                "stream": i.stream,
+                "age_s": age_s(i, now),
+                "state": state_word(i),
+                "attempts": i.attempts,
+            });
+            // The stored objection rides along so a script (and #107's coded
+            // conflicts tomorrow) can read the divergence without the TUI.
+            match &i.state {
+                IntentState::Diverged { status, title, detail, .. } => {
+                    v["problem"] = serde_json::json!({
+                        "status": status, "title": title, "detail": detail,
+                    });
+                }
+                IntentState::Parked { reason } => {
+                    v["reason"] = serde_json::json!(reason);
+                }
+                IntentState::Pending => {}
+            }
+            v
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -179,6 +267,7 @@ fn state_word(i: &Intent) -> &'static str {
     match i.state {
         IntentState::Pending => "pending",
         IntentState::Diverged { .. } => "diverged",
+        IntentState::Parked { .. } => "parked",
     }
 }
 
@@ -245,13 +334,112 @@ async fn sync(api: &ApiClient, store: &QueueStore, json: bool, colored: bool) ->
             report.replayed
         )
     } else {
-        "queue empty".into()
+        // Parked intents are out of play but still stored — an "empty" line
+        // over them would hide the kept-for-review work.
+        match store.summary().map(|s| s.parked).unwrap_or(0) {
+            0 => "queue empty".into(),
+            n => format!("nothing to replay · {n} parked for review"),
+        }
     };
     Outcome {
         out: vec![line],
         err: vec![],
         code,
     }
+}
+
+// ---------------------------------------------------------------- resolve
+
+/// `resolve <id> --keep=local|server|both` — the headless twin of the Timer
+/// screen's reconcile panel, through the same `queue::resolve` engine. A
+/// keep-local/keep-both continues the drain behind the choice, exactly as the
+/// TUI does.
+async fn resolve_cmd(
+    api: &ApiClient,
+    store: &QueueStore,
+    cached: Option<&Timer>,
+    id: u64,
+    keep: &str,
+    json: bool,
+    colored: bool,
+) -> Outcome {
+    let Some(resolution) = Resolution::from_name(keep) else {
+        // clap's value_parser already constrains this; belt and braces.
+        return Outcome::refuse(format!("unknown --keep \"{keep}\" — local | server | both"));
+    };
+    let resolved = match queue::resolve(api, store, cached, id, resolution, jiff::Timestamp::now())
+        .await
+    {
+        Ok(resolved) => resolved,
+        Err(queue::ResolveError::Api(ApiError::Transport(_))) => {
+            return Outcome::refuse("offline — resolving needs the wire; retry online");
+        }
+        Err(e @ (queue::ResolveError::NotDiverged(_) | queue::ResolveError::CannotCompose(_))) => {
+            return Outcome::refuse(e.to_string());
+        }
+        Err(queue::ResolveError::Api(e)) => {
+            return Outcome::refuse(format!("the server refused the resolution: {e}"));
+        }
+        Err(e @ queue::ResolveError::Queue(_)) => return Outcome::fail(e.to_string()),
+    };
+
+    // Keep-local/keep-both unblocked the queue — continue the drain behind the
+    // choice. Take-server parked the whole session; there is nothing behind it.
+    let replayed = match resolved {
+        Resolved::SwitchedToLocal | Resolved::SegmentWritten { .. } => {
+            queue::drain(api, store).await.ok().map(|r| r.replayed)
+        }
+        Resolved::Parked { .. } => None,
+    };
+
+    if json {
+        let mut v = serde_json::json!({ "resolved": id, "keep": resolution.as_str() });
+        match resolved {
+            Resolved::SwitchedToLocal => v["outcome"] = "switched".into(),
+            Resolved::SegmentWritten {
+                activity_id,
+                segment_id,
+                minutes,
+            } => {
+                v["outcome"] = "segment".into();
+                v["activity_id"] = activity_id.into();
+                v["segment_id"] = segment_id.into();
+                v["minutes"] = minutes.into();
+            }
+            Resolved::Parked { count } => {
+                v["outcome"] = "parked".into();
+                v["parked"] = count.into();
+            }
+        }
+        if let Some(n) = replayed {
+            v["replayed"] = n.into();
+        }
+        return Outcome::ok(v.to_string());
+    }
+
+    let mut line = match resolved {
+        Resolved::SwitchedToLocal => format!(
+            "{} kept local — the server stopped & saved its session; yours took over",
+            paint("✓", COLOR_SYNCED, colored)
+        ),
+        Resolved::SegmentWritten {
+            segment_id,
+            minutes,
+            ..
+        } => format!(
+            "{} kept — {minutes}m written (segment {segment_id}); nothing lost",
+            paint("✓", COLOR_SYNCED, colored)
+        ),
+        Resolved::Parked { count } => format!(
+            "{} took server — {count} intent{} parked for review, nothing deleted",
+            paint("✓", COLOR_SYNCED, colored),
+            if count == 1 { "" } else { "s" }
+        ),
+    };
+    if let Some(n) = replayed.filter(|n| *n > 0) {
+        line.push_str(&format!(" · {n} replayed behind it"));
+    }
+    Outcome::ok(line)
 }
 
 // Terminal-palette 256 colours (docs/designs/README.md palette mapping).
@@ -326,7 +514,7 @@ mod tests {
     async fn empty_queue_reads_calm_and_exits_zero() {
         let dir = scratch();
         let store = seeded(&dir, 0);
-        let outcome = dispatch(&dead_api(), &store, None, false, false)
+        let outcome = dispatch(&dead_api(), &store, None, None, false, false)
             .await
             .unwrap();
         assert_eq!(outcome.code, 0);
@@ -337,7 +525,7 @@ mod tests {
     async fn pending_intents_read_as_a_table_and_exit_queued() {
         let dir = scratch();
         let store = seeded(&dir, 2);
-        let outcome = dispatch(&dead_api(), &store, None, false, false)
+        let outcome = dispatch(&dead_api(), &store, None, None, false, false)
             .await
             .unwrap();
         assert_eq!(outcome.code, EXIT_QUEUED);
@@ -354,7 +542,7 @@ mod tests {
         let dir = scratch();
         let store = seeded(&dir, 2);
         diverge_first(&store);
-        let outcome = dispatch(&dead_api(), &store, None, false, false)
+        let outcome = dispatch(&dead_api(), &store, None, None, false, false)
             .await
             .unwrap();
         assert_eq!(outcome.code, EXIT_DIVERGED);
@@ -366,7 +554,7 @@ mod tests {
         let dir = scratch();
         let store = seeded(&dir, 2);
         diverge_first(&store);
-        let outcome = dispatch(&dead_api(), &store, None, true, false)
+        let outcome = dispatch(&dead_api(), &store, None, None, true, false)
             .await
             .unwrap();
         assert_eq!(outcome.code, EXIT_DIVERGED);
@@ -386,7 +574,7 @@ mod tests {
     async fn json_read_of_an_empty_queue_has_null_age() {
         let dir = scratch();
         let store = seeded(&dir, 0);
-        let outcome = dispatch(&dead_api(), &store, None, true, false)
+        let outcome = dispatch(&dead_api(), &store, None, None, true, false)
             .await
             .unwrap();
         assert_eq!(outcome.code, 0);
@@ -400,7 +588,7 @@ mod tests {
         let dir = scratch();
         let store = seeded(&dir, 1);
         std::fs::write(dir.join("queue.json"), "{not json").unwrap();
-        let outcome = dispatch(&dead_api(), &store, None, false, false)
+        let outcome = dispatch(&dead_api(), &store, None, None, false, false)
             .await
             .unwrap();
         assert_eq!(outcome.code, EXIT_FAILED);
@@ -421,9 +609,16 @@ mod tests {
 
         let dir = scratch();
         let store = seeded(&dir, 2);
-        let outcome = dispatch(&client(&server), &store, Some(QueueCmd::Sync), false, false)
-            .await
-            .unwrap();
+        let outcome = dispatch(
+            &client(&server),
+            &store,
+            None,
+            Some(QueueCmd::Sync),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome.code, 0);
         assert_eq!(outcome.out, vec!["✓ synced — 2 replayed"]);
         assert!(store.intents().unwrap().is_empty());
@@ -433,9 +628,16 @@ mod tests {
     async fn sync_on_an_empty_queue_is_calm() {
         let dir = scratch();
         let store = seeded(&dir, 0);
-        let outcome = dispatch(&dead_api(), &store, Some(QueueCmd::Sync), false, false)
-            .await
-            .unwrap();
+        let outcome = dispatch(
+            &dead_api(),
+            &store,
+            None,
+            Some(QueueCmd::Sync),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome.code, 0);
         assert_eq!(outcome.out, vec!["queue empty"]);
     }
@@ -444,9 +646,16 @@ mod tests {
     async fn sync_against_a_dead_address_is_queued_offline_not_a_failure() {
         let dir = scratch();
         let store = seeded(&dir, 3);
-        let outcome = dispatch(&dead_api(), &store, Some(QueueCmd::Sync), false, false)
-            .await
-            .unwrap();
+        let outcome = dispatch(
+            &dead_api(),
+            &store,
+            None,
+            Some(QueueCmd::Sync),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome.code, EXIT_QUEUED);
         assert_eq!(outcome.out, vec!["3 still queued, offline"]);
         assert!(outcome.err.is_empty(), "cron must not page on a tunnel");
@@ -466,9 +675,16 @@ mod tests {
 
         let dir = scratch();
         let store = seeded(&dir, 2);
-        let outcome = dispatch(&client(&server), &store, Some(QueueCmd::Sync), false, false)
-            .await
-            .unwrap();
+        let outcome = dispatch(
+            &client(&server),
+            &store,
+            None,
+            Some(QueueCmd::Sync),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome.code, EXIT_DIVERGED);
         assert!(outcome.out[0].contains("diverged"));
         assert!(outcome.out[0].contains("2 still queued"));
@@ -488,9 +704,16 @@ mod tests {
 
         let dir = scratch();
         let store = seeded(&dir, 1);
-        let outcome = dispatch(&client(&server), &store, Some(QueueCmd::Sync), true, false)
-            .await
-            .unwrap();
+        let outcome = dispatch(
+            &client(&server),
+            &store,
+            None,
+            Some(QueueCmd::Sync),
+            true,
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome.code, 0);
         let v: serde_json::Value = serde_json::from_str(&outcome.out[0]).unwrap();
         assert_eq!(v["replayed"], 1);
@@ -504,5 +727,352 @@ mod tests {
         assert_eq!(fmt_age(420), "7m");
         assert_eq!(fmt_age(7200), "2h");
         assert_eq!(fmt_age(200_000), "2d");
+    }
+
+    // -------------------------------------------------- resolve (#106)
+
+    fn cached_running() -> Timer {
+        serde_json::from_value(serde_json::json!({
+            "running": true, "bound": true, "activity_id": 9, "label": "systems",
+            "started_at": "2026-07-15T09:00:00Z", "elapsed_seconds": 0
+        }))
+        .unwrap()
+    }
+
+    /// A diverged start at the queue head with a pending pause behind it.
+    fn seeded_diverged_start(dir: &std::path::Path) -> (QueueStore, u64) {
+        let store = QueueStore::at(dir.join("queue.json"));
+        let start = store
+            .enqueue(IntentKind::TimerStart {
+                activity_id: Some(9),
+                switch: false,
+                at: jiff::Timestamp::now(),
+            })
+            .unwrap();
+        store
+            .enqueue(IntentKind::TimerPause {
+                at: jiff::Timestamp::now(),
+            })
+            .unwrap();
+        diverge_first(&store);
+        (store, start.id)
+    }
+
+    #[tokio::test]
+    async fn bare_read_names_the_objection_and_the_way_out() {
+        let dir = scratch();
+        let store = seeded(&dir, 1);
+        store
+            .mutate(|doc| {
+                doc.intents_mut()[0].state = IntentState::Diverged {
+                    status: 409,
+                    title: "Conflict".into(),
+                    detail: "a timer is already running".into(),
+                    type_uri: None,
+                    errors: vec![],
+                };
+            })
+            .unwrap();
+        let outcome = dispatch(&dead_api(), &store, None, None, false, false)
+            .await
+            .unwrap();
+        assert_eq!(outcome.code, EXIT_DIVERGED);
+        let text = outcome.out.join("\n");
+        assert!(
+            text.contains("Conflict — a timer is already running"),
+            "the server's objection verbatim: {text}"
+        );
+        assert!(
+            text.contains("engineer queue resolve 1 --keep=local|server|both"),
+            "the way out is spelled: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_keep_local_switches_and_drains_the_rest() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "running": true, "bound": true, "activity_id": 9
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // The continued drain replays the pending pause behind the choice.
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/pause"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "running": true })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = scratch();
+        let (store, id) = seeded_diverged_start(&dir);
+        let outcome = dispatch(
+            &client(&server),
+            &store,
+            None,
+            Some(QueueCmd::Resolve {
+                id,
+                keep: "local".into(),
+            }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, 0);
+        assert!(outcome.out[0].contains("kept local"), "{}", outcome.out[0]);
+        assert!(
+            outcome.out[0].contains("1 replayed behind it"),
+            "{}",
+            outcome.out[0]
+        );
+        assert!(store.intents().unwrap().is_empty(), "the queue drained");
+    }
+
+    #[tokio::test]
+    async fn resolve_take_server_parks_and_exits_calm_after() {
+        let dir = scratch();
+        let (store, id) = seeded_diverged_start(&dir);
+        // Take-server needs no wire at all — parking is a local keep.
+        let outcome = dispatch(
+            &dead_api(),
+            &store,
+            None,
+            Some(QueueCmd::Resolve {
+                id,
+                keep: "server".into(),
+            }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, 0);
+        assert!(
+            outcome.out[0].contains("2 intents parked for review"),
+            "{}",
+            outcome.out[0]
+        );
+        assert!(
+            outcome.out[0].contains("nothing deleted"),
+            "{}",
+            outcome.out[0]
+        );
+
+        let intents = store.intents().unwrap();
+        assert_eq!(intents.len(), 2, "kept, not deleted");
+        assert!(intents.iter().all(Intent::is_parked));
+
+        // The bare read now shows parked rows and reads calm (exit 0).
+        let read = dispatch(&dead_api(), &store, None, None, false, false)
+            .await
+            .unwrap();
+        assert_eq!(read.code, 0, "parked-only is a calm queue");
+        assert!(read.out[1].contains("parked"), "{}", read.out[1]);
+    }
+
+    #[tokio::test]
+    async fn resolve_keep_both_writes_the_segment_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/activities/9/segments"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 88, "activity_id": 9, "minutes": 47
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = scratch();
+        let store = QueueStore::at(dir.join("queue.json"));
+        let start = store
+            .enqueue(IntentKind::TimerStart {
+                activity_id: Some(9),
+                switch: false,
+                at: jiff::Timestamp::now(),
+            })
+            .unwrap();
+        store
+            .enqueue(IntentKind::TimerStop {
+                at: jiff::Timestamp::now(),
+                local_elapsed_s: 2832,
+            })
+            .unwrap();
+        diverge_first(&store);
+
+        let outcome = dispatch(
+            &client(&server),
+            &store,
+            None,
+            Some(QueueCmd::Resolve {
+                id: start.id,
+                keep: "both".into(),
+            }),
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, 0);
+        let v: serde_json::Value = serde_json::from_str(&outcome.out[0]).unwrap();
+        assert_eq!(v["resolved"], start.id);
+        assert_eq!(v["keep"], "both");
+        assert_eq!(v["outcome"], "segment");
+        assert_eq!(v["segment_id"], 88);
+        assert_eq!(v["minutes"], 47);
+        assert!(store.intents().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolve_keep_local_on_a_stop_uses_the_cached_activity() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/activities/9/segments"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 90, "activity_id": 9, "minutes": 47
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = scratch();
+        let store = QueueStore::at(dir.join("queue.json"));
+        let stop = store
+            .enqueue(IntentKind::TimerStop {
+                at: jiff::Timestamp::now(),
+                local_elapsed_s: 2832,
+            })
+            .unwrap();
+        diverge_first(&store);
+
+        let outcome = dispatch(
+            &client(&server),
+            &store,
+            Some(cached_running()),
+            Some(QueueCmd::Resolve {
+                id: stop.id,
+                keep: "local".into(),
+            }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, 0);
+        assert!(
+            outcome.out[0].contains("47m written (segment 90)"),
+            "{}",
+            outcome.out[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_refusals_exit_one_and_change_nothing() {
+        // Unknown id.
+        let dir = scratch();
+        let store = seeded(&dir, 1);
+        let outcome = dispatch(
+            &dead_api(),
+            &store,
+            None,
+            Some(QueueCmd::Resolve {
+                id: 99,
+                keep: "server".into(),
+            }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.err[0].contains("not waiting on a divergence"));
+
+        // Offline keep-local: resolving needs the wire; the intent stays.
+        let dir = scratch();
+        let (store, id) = seeded_diverged_start(&dir);
+        let outcome = dispatch(
+            &dead_api(),
+            &store,
+            None,
+            Some(QueueCmd::Resolve {
+                id,
+                keep: "local".into(),
+            }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.err[0].contains("offline"), "{}", outcome.err[0]);
+        assert!(
+            store.intents().unwrap()[0].is_diverged(),
+            "kept, not dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn json_read_carries_the_problem_and_parked_fields() {
+        let dir = scratch();
+        let store = seeded(&dir, 3);
+        store
+            .mutate(|doc| {
+                doc.intents_mut()[0].state = IntentState::Diverged {
+                    status: 409,
+                    title: "Conflict".into(),
+                    detail: "a timer is already running".into(),
+                    type_uri: None,
+                    errors: vec![],
+                };
+                doc.intents_mut()[1].state = IntentState::Parked {
+                    reason: "took server · Conflict".into(),
+                };
+            })
+            .unwrap();
+
+        let outcome = dispatch(&dead_api(), &store, None, None, true, false)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&outcome.out[0]).unwrap();
+        assert_eq!(v["diverged"], 1);
+        assert_eq!(v["parked"], 1);
+        assert_eq!(v["intents"][0]["problem"]["status"], 409);
+        assert_eq!(v["intents"][0]["problem"]["title"], "Conflict");
+        assert_eq!(v["intents"][1]["state"], "parked");
+        assert_eq!(v["intents"][1]["reason"], "took server · Conflict");
+        assert!(
+            v["intents"][2]["problem"].is_null(),
+            "pending rows carry no objection"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_over_a_parked_only_queue_says_so() {
+        let dir = scratch();
+        let store = seeded(&dir, 1);
+        store
+            .mutate(|doc| {
+                doc.intents_mut()[0].state = IntentState::Parked {
+                    reason: "took server · Conflict".into(),
+                };
+            })
+            .unwrap();
+        let outcome = dispatch(
+            &dead_api(),
+            &store,
+            None,
+            Some(QueueCmd::Sync),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, 0, "parked is not queued-offline");
+        assert_eq!(outcome.out, vec!["nothing to replay · 1 parked for review"]);
     }
 }

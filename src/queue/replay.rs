@@ -18,7 +18,8 @@ use super::store::{QueueError, QueueStore};
 pub struct ReplayReport {
     /// Intents the server acknowledged; they have left the queue.
     pub replayed: usize,
-    /// Intents still in the queue after the pass (pending + diverged).
+    /// Intents still in play after the pass (pending + diverged). Parked
+    /// intents are kept for review, not waiting to sync, so they never count.
     pub remaining: usize,
     /// A divergence is waiting on a human choice.
     pub diverged: bool,
@@ -151,7 +152,7 @@ fn report(store: &QueueStore, replayed: usize) -> Result<ReplayReport, ReplayErr
     let summary = store.summary()?;
     Ok(ReplayReport {
         replayed,
-        remaining: summary.depth,
+        remaining: summary.in_play(),
         diverged: summary.diverged > 0,
     })
 }
@@ -408,7 +409,7 @@ mod tests {
                 assert!(type_uri.as_deref().unwrap().contains("overlap"));
                 assert_eq!(errors.len(), 1, "the full RFC 7807 payload is kept");
             }
-            IntentState::Pending => panic!("expected the rejected intent to be diverged"),
+            other => panic!("expected the rejected intent to be diverged, got {other:?}"),
         }
         assert!(intents[1].is_pending(), "the rest stays pending, untouched");
     }
@@ -472,5 +473,47 @@ mod tests {
         assert_eq!(report.replayed, 0, "nothing replays past an open choice");
         assert_eq!(report.remaining, 2);
         assert!(report.diverged);
+    }
+
+    #[tokio::test]
+    async fn a_parked_intent_never_replays_and_never_gates() {
+        let server = MockServer::start().await;
+        // Exactly one wire call: the pending resume. The parked pause must
+        // neither replay nor gate the pass.
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/resume"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "running": true })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/pause"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("parked");
+        let parked = store.enqueue(IntentKind::TimerPause { at: at() }).unwrap();
+        store.enqueue(IntentKind::TimerResume { at: at() }).unwrap();
+        store
+            .mutate(|doc| {
+                doc.intents_mut()[0].state = IntentState::Parked {
+                    reason: "took server · Conflict".into(),
+                };
+            })
+            .unwrap();
+
+        let report = drain(&client(&server), &store).await.unwrap();
+        assert_eq!(report.replayed, 1, "only the pending intent replayed");
+        assert_eq!(report.remaining, 0, "parked is kept, not remaining-to-sync");
+        assert!(!report.diverged);
+
+        let intents = store.intents().unwrap();
+        assert_eq!(intents.len(), 1, "the parked intent is still stored");
+        assert_eq!(intents[0].id, parked.id);
+        assert!(intents[0].is_parked(), "kept for review — never deleted");
     }
 }
