@@ -15,6 +15,7 @@ use crate::api::{ApiClient, ApiError, Timer};
 use crate::timer_cache;
 use crate::timer_clock;
 
+use super::fold::{self, Provenance};
 use super::intent::IntentKind;
 use super::replay::{self, ReplayError, ReplayReport};
 use super::store::{QueueStore, QueueSummary};
@@ -76,6 +77,23 @@ impl<'a> QueuedClient<'a> {
                 diverged: 0,
             }
         })
+    }
+
+    /// The effective local timer: the cached server snapshot with the pending
+    /// queue folded over it (`fold_timer`), composed fresh on every call — the
+    /// queue and the cache are both re-read, so a drained or dropped intent
+    /// disappears from the picture on the very next read. `None` when there is
+    /// nothing to compose (no snapshot, nothing queued that starts one).
+    /// Read-only: the fold is never written back into the cache.
+    pub fn effective_timer(&self, now: jiff::Timestamp) -> Option<(Timer, Provenance)> {
+        let cached = self.cached_timer();
+        // Best-effort like `queue_summary`: an unreadable queue folds as empty
+        // (enqueue stays loud).
+        let intents = self.store.intents().unwrap_or_else(|e| {
+            tracing::warn!(target: "engineer_cli::queue", error = %e, "queue unreadable for the fold");
+            Vec::new()
+        });
+        fold::fold_timer(cached.as_ref(), &intents, now)
     }
 
     /// Run a full replay pass now; the caller renders the report.
@@ -150,11 +168,15 @@ impl<'a> QueuedClient<'a> {
     }
 
     fn load_snapshot(&self) -> Option<Timer> {
-        let stale = match &self.cache_path {
+        Some(self.cached_timer()?.timer)
+    }
+
+    /// The last-known server snapshot and its age, from the read cache.
+    fn cached_timer(&self) -> Option<timer_cache::StaleTimer> {
+        match &self.cache_path {
             None => timer_cache::load(),
             Some(path) => timer_cache::load_at(path),
-        }?;
-        Some(stale.timer)
+        }
     }
 }
 

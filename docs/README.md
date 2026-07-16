@@ -1,20 +1,13 @@
 # engineer-cli architecture
 
-`engineer-cli` is a terminal client for Engineer, built on [ratatui] + [crossterm]
-for rendering, [tokio] for async, and [reqwest] for HTTP. It follows **The Elm
-Architecture (TEA)**: a single owned state, a message enum, a reducer that
-mutates state (and spawns async work), and a pure render pass over the current
-state.
+`engineer-cli` is a terminal client for Engineer, built on [ratatui] + [crossterm] for rendering, [tokio] for async, and [reqwest] for HTTP.
+It follows **The Elm Architecture (TEA)**: a single owned state, a message enum, a reducer that mutates state (and spawns async work), and a pure render pass over the current state.
 
 ## Guides
 
-- [UI rendering & data-layer sync](./ui-rendering.md) — how the ratatui view
-  stays in step with the backend data layer (the event loop, actions, and
-  pull-based rendering).
-- [API layer](./api-layer.md) — how the backend HTTP client is designed and
-  how it aligns with Rust-ecosystem conventions for TUI/CLI apps.
-- [Authentication](./authentication.md) — how OAuth2 + PKCE and the OS keyring
-  are integrated into the TUI and CLI.
+- [UI rendering & data-layer sync](./ui-rendering.md) — how the ratatui view stays in step with the backend data layer (the event loop, actions, and pull-based rendering).
+- [API layer](./api-layer.md) — how the backend HTTP client is designed and how it aligns with Rust-ecosystem conventions for TUI/CLI apps.
+- [Authentication](./authentication.md) — how OAuth2 + PKCE and the OS keyring are integrated into the TUI and CLI.
 
 ## Module map
 
@@ -34,9 +27,8 @@ src/
 
 ## Top-level dataflow
 
-Everything is unidirectional. Input events and async results both become
-`Action`s on one channel; the reducer is the only place state changes; the next
-frame renders whatever the state now says.
+Everything is unidirectional.
+Input events and async results both become `Action`s on one channel; the reducer is the only place state changes; the next frame renders whatever the state now says.
 
 ```mermaid
 flowchart LR

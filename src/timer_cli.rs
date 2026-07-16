@@ -243,8 +243,15 @@ async fn settings(api: &ApiClient, json: bool) -> Result<Outcome, ApiError> {
 // ---------------------------------------------------------------- reads
 
 /// Read the live timer, caching it on success; on a *transport* failure fall
-/// back to the last-known cached value (the offline status-bar case). Auth and
-/// other errors propagate. Returns the age in seconds when the value is stale.
+/// back to the *effective* local timer — the cached snapshot with the pending
+/// queue folded over it (`queue::fold_timer`), its elapsed computed with the
+/// server's own `started_at`/`paused_seconds` arithmetic. So offline, the
+/// rendered clock keeps advancing, a queued pause freezes it, and a queued
+/// resume advances it again; a dropped or synced intent is reflected on the
+/// very next read (the fold re-reads the queue every time). Auth and other
+/// errors propagate. The returned age keeps its shipped meaning: seconds since
+/// the last *server* snapshot, `None` on a live read. Only live server reads
+/// are ever written back to the cache — the fold is not.
 async fn fetch_timer(
     api: &ApiClient,
     queued: &QueuedClient<'_>,
@@ -259,8 +266,8 @@ async fn fetch_timer(
             queued.drain_best_effort().await;
             Ok((t, None))
         }
-        Err(ApiError::Transport(msg)) => match crate::timer_cache::load() {
-            Some(stale) => Ok((stale.timer, Some(stale.age_secs))),
+        Err(ApiError::Transport(msg)) => match queued.effective_timer(jiff::Timestamp::now()) {
+            Some((t, prov)) => Ok((t, Some(prov.stale_age_s))),
             None => Err(ApiError::Transport(msg)),
         },
         Err(e) => Err(e),
@@ -1123,6 +1130,71 @@ mod tests {
         assert!(outcome.out[0].contains("paused"));
         assert!(outcome.out[0].contains("queued (offline)"));
         assert_eq!(queued.queue_summary().depth, 1);
+    }
+
+    #[tokio::test]
+    async fn offline_read_renders_the_folded_local_clock() {
+        let api = dead_api();
+        let dir = scratch();
+        let now = jiff::Timestamp::now();
+        let started = jiff::Timestamp::from_second(now.as_second() - 1000).unwrap();
+        crate::timer_cache::store_at(
+            &dir.join("timer-cache.json"),
+            &timer(serde_json::json!({
+                "running": true, "bound": true, "activity_id": 9, "label": "systems",
+                "started_at": started.to_string(), "elapsed_seconds": 0
+            })),
+        );
+        // A pause queued 40s ago freezes the folded clock at 960s.
+        crate::queue::QueueStore::at(dir.join("queue.json"))
+            .enqueue(crate::queue::IntentKind::TimerPause {
+                at: jiff::Timestamp::from_second(now.as_second() - 40).unwrap(),
+            })
+            .unwrap();
+        let queued = queued_at(&api, &dir);
+
+        let outcome = dispatch(&api, &queued, None, true, false).await.unwrap();
+        assert_eq!(outcome.code, 4, "the effective timer is paused");
+        let v: serde_json::Value = serde_json::from_str(&outcome.out[0]).unwrap();
+        assert_eq!(v["state"], "paused");
+        assert_eq!(v["elapsed_s"], 960, "frozen at the queued pause moment");
+        assert_eq!(v["stale"], true);
+        assert_eq!(v["queued"], true);
+        assert_eq!(v["queue_depth"], 1);
+
+        // The cache stays server-truth-only: the fold is never written back.
+        let cached = crate::timer_cache::load_at(&dir.join("timer-cache.json")).unwrap();
+        assert!(!cached.timer.paused, "no provisional state in the cache");
+        assert_eq!(cached.timer.elapsed_seconds, Some(0));
+    }
+
+    #[tokio::test]
+    async fn offline_short_status_keeps_counting_with_the_stale_marker() {
+        let api = dead_api();
+        let dir = scratch();
+        let started =
+            jiff::Timestamp::from_second(jiff::Timestamp::now().as_second() - 3134).unwrap();
+        crate::timer_cache::store_at(
+            &dir.join("timer-cache.json"),
+            &timer(serde_json::json!({
+                "running": true, "started_at": started.to_string(), "elapsed_seconds": 100
+            })),
+        );
+        let queued = queued_at(&api, &dir);
+
+        let outcome = dispatch(
+            &api,
+            &queued,
+            Some(TimerCmd::Status { short: true }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        // The clock advanced past the stale snapshot figure (100s) via the
+        // started_at arithmetic — offline is not frozen — and wears the `~`.
+        assert!(outcome.out[0].starts_with("● 52:1"), "{}", outcome.out[0]);
+        assert!(outcome.out[0].ends_with(" ~"), "{}", outcome.out[0]);
     }
 
     #[tokio::test]

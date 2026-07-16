@@ -115,6 +115,11 @@ pub enum Action {
     // segment confirmation survives). The rest are Timer-screen intents.
     RefreshTimer,
     TimerLoaded(Box<Timer>),
+    /// The header poll hit a transport failure and fell back offline: the
+    /// *effective* local timer (cached snapshot ⊕ pending queue, via
+    /// `queue::fold_timer`). Header-only — unlike `TimerLoaded` it is not
+    /// forwarded to the Timer screen, which keeps its own last live snapshot.
+    TimerStale(Box<Timer>),
     TimerCleared,
     TimerReload,
     /// The `s` key — stage-dependent primary: starts the clock when absent,

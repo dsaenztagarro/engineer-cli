@@ -116,16 +116,17 @@ pub(crate) fn palette_dispatch(
     }
 }
 
-/// Displayed elapsed for a snapshot: the last server `elapsed_seconds` plus the
-/// monotonic time since it was fetched — but only while actually advancing (a
-/// paused clock is frozen). Shared with the header cell so both tick in step.
+/// Displayed elapsed for a snapshot — the controlling local clock. With a
+/// `started_at` anchor this is `timer_clock::elapsed` at now: the server's own
+/// arithmetic, so the tick between polls, the offline fold, and the reconciled
+/// server value are all the same number (still frozen while paused, still
+/// advancing once a second while live). Snapshots without the anchor keep the
+/// display-smoothing fallback: the last `elapsed_seconds` plus the monotonic
+/// time since the snapshot was fetched, only while actually advancing. Shared
+/// with the header cell so both tick in step.
 pub(crate) fn live_elapsed(snap: &TimerSnapshot, base: Option<Instant>) -> i64 {
-    let base_secs = snap.elapsed_seconds.unwrap_or(0);
-    if snap.running && !snap.paused {
-        base_secs + base.map(|b| b.elapsed().as_secs() as i64).unwrap_or(0)
-    } else {
-        base_secs
-    }
+    let age = base.map(|b| b.elapsed().as_secs() as i64).unwrap_or(0);
+    crate::timer_clock::elapsed_with_snapshot_age(snap, jiff::Timestamp::now(), age)
 }
 
 /// Which offer the focus rhythm is holding open, if any (§Focus offers).
@@ -3090,5 +3091,19 @@ mod tests {
         let long_ago = Instant::now() - std::time::Duration::from_secs(30);
         // Paused clock stays frozen despite an old base.
         assert_eq!(live_elapsed(&paused, Some(long_ago)), 100);
+    }
+
+    #[test]
+    fn live_elapsed_prefers_the_started_at_arithmetic() {
+        let started =
+            jiff::Timestamp::from_second(jiff::Timestamp::now().as_second() - 500).unwrap();
+        let anchored = snapshot(serde_json::json!({
+            "running": true, "paused": false,
+            "started_at": started.to_string(), "elapsed_seconds": 100
+        }));
+        // The server arithmetic wins over the stale snapshot figure, with or
+        // without a monotonic base — the clock never depends on poll age.
+        let elapsed = live_elapsed(&anchored, None);
+        assert!((500..=502).contains(&elapsed), "got {elapsed}");
     }
 }

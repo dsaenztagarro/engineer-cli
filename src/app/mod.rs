@@ -68,6 +68,10 @@ pub struct App {
     /// Monotonic instant the current `timer` snapshot was received — the base
     /// for ticking the displayed elapsed between polls.
     pub timer_base: Option<Instant>,
+    /// True while `timer` is the folded local clock (a transport-failed poll
+    /// fell back to cache ⊕ queue) — the header cell wears the ` ~` staleness
+    /// marker until a live poll lands again.
+    pub timer_stale: bool,
     /// When the last header poll was dispatched, to honour `TIMER_POLL_INTERVAL`.
     pub timer_last_poll: Instant,
     /// The per-user timer knobs, fetched once after sign-in — the header cell
@@ -124,6 +128,7 @@ async fn run_loop(
         tx: tx.clone(),
         timer: None,
         timer_base: None,
+        timer_stale: false,
         timer_last_poll: Instant::now(),
         settings: None,
         overrun_pinged: None,
@@ -336,6 +341,20 @@ impl App {
                         Ok(t) => {
                             let _ = tx.send(Action::TimerLoaded(Box::new(t)));
                         }
+                        // Offline (the same seam the headless read falls back
+                        // on): render the effective local timer — cached
+                        // snapshot ⊕ pending queue — instead of letting the
+                        // header quietly extrapolate a clock the queue may
+                        // have paused or stopped.
+                        Err(crate::api::ApiError::Transport(e)) => {
+                            tracing::warn!(target: "engineer_cli::api", error = %e, "timer poll failed; folding cache + queue");
+                            if let Ok(queued) = crate::queue::QueuedClient::new(&api) {
+                                if let Some((t, _)) = queued.effective_timer(jiff::Timestamp::now())
+                                {
+                                    let _ = tx.send(Action::TimerStale(Box::new(t)));
+                                }
+                            }
+                        }
                         Err(e) => {
                             tracing::warn!(target: "engineer_cli::api", error = %e, "timer poll failed");
                         }
@@ -358,12 +377,22 @@ impl App {
                 }
                 self.timer = Some((*t).clone());
                 self.timer_base = Some(Instant::now());
+                self.timer_stale = false;
                 // Forward to the Timer screen so its detailed view mirrors the
                 // same snapshot; other screens ignore it.
                 let _ = self
                     .current
                     .handle(Action::TimerLoaded(t), &self.api, &self.tx)
                     .await;
+            }
+            // The offline twin of `TimerLoaded`: the folded local timer, worn
+            // with the stale marker. Header-only by design — the screens keep
+            // their last live snapshot (their own clocks already advance via
+            // `live_elapsed`'s arithmetic).
+            Action::TimerStale(t) => {
+                self.timer = Some(*t);
+                self.timer_base = Some(Instant::now());
+                self.timer_stale = true;
             }
             // Store-and-forward like TimerLoaded: the app keeps the knobs for
             // the header cell, the current screen gets its own copy.
@@ -379,6 +408,7 @@ impl App {
             Action::TimerCleared => {
                 self.timer = None;
                 self.timer_base = None;
+                self.timer_stale = false;
             }
             Action::Login => {
                 if let Screen::Login(s) = &mut self.current {
@@ -613,7 +643,13 @@ impl App {
             .as_ref()
             .and_then(|s| screens::timer::offer_for(t, s, jiff::Timestamp::now()))
             .is_some();
-        crate::ui::widgets::timer_cell(t, elapsed, narrow, offer)
+        let mut spans = crate::ui::widgets::timer_cell(t, elapsed, narrow, offer)?;
+        // The shipped staleness idiom (the `--short` string's ` ~`): the cell
+        // is showing the folded local clock, not a live server read.
+        if self.timer_stale {
+            spans.push(ratatui::text::Span::styled(" ~", crate::ui::theme::muted()));
+        }
+        Some(spans)
     }
 }
 
@@ -642,6 +678,7 @@ mod tests {
             tx,
             timer: None,
             timer_base: None,
+            timer_stale: false,
             timer_last_poll: Instant::now(),
             settings: None,
             overrun_pinged: None,
@@ -820,6 +857,26 @@ mod tests {
         app.timer_base = Some(Instant::now());
         app.handle(Action::TimerCleared).await;
         assert!(app.timer.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_stale_fold_wears_the_marker_until_a_live_poll_lands() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+
+        // The folded local clock renders, wearing the shipped ` ~` idiom.
+        app.handle(Action::TimerStale(Box::new(running_timer(272))))
+            .await;
+        assert!(app.timer_stale);
+        let text = rendered_text(&mut app);
+        assert!(text.contains("● 04:32 consensus ~"), "{text}");
+
+        // A live poll clears it — the header speaks server truth again.
+        app.handle(Action::TimerLoaded(Box::new(running_timer(272))))
+            .await;
+        assert!(!app.timer_stale);
+        let text = rendered_text(&mut app);
+        assert!(text.contains("● 04:32"), "{text}");
+        assert!(!text.contains("04:32 consensus ~"), "{text}");
     }
 
     #[tokio::test]
