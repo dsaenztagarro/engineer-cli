@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-16
+
 ### Added
 
 - **Timer divergence is a surfaced choice — the reconcile panel, three resolutions, `engineer queue resolve`.** The honesty deliverable of the offline-write epic: when replay finds the server has moved on (a session started on the web, a stop the server refused), the diverged intent is no longer just a halted queue row — it becomes a decision put in front of you, and **no path loses a segment silently**. In the TUI, the Timer screen surfaces a full-row danger reconcile panel (`Two sessions — which is real?` / `The server refused this save`): the server's objection verbatim from the stored RFC 7807 payload, the local intent's identity (verb word, queued age, the local clock), two sides picked with `j/k` + `⏎`, `b` for keep-both, Esc to defer (it reopens on the next poll while the divergence stands) — and the header wears a ` diverged ` danger chip on every screen, the one loud state in the vocabulary. The resolutions are compositions of existing typed calls, one spelling for both surfaces (`queue::resolve`): **keep local** re-asserts your gesture (`start_timer(switch: true)` stops & saves the server session and yours takes over; a diverged *stop*'s minutes are written explicitly via `create_segment`), then the drain continues behind the choice; **take server** moves the local session's intents to a new `IntentState::Parked { reason }` — kept in `queue.json` for review, visible as `parked` in `engineer queue`, excluded from replay and from every queued count, **never deleted**; **keep both** composes the local session from what is actually stored (a queued start's anchor, a queued stop's `local_elapsed_s`, else the folded clock at now) and writes it via `create_segment` while the server session stands. Headlessly, `engineer queue resolve <id> --keep=local|server|both` is the exact twin (plain + `--json`, refusals exit 1 and change nothing); the bare `engineer queue` read now names each waiting objection under the table with the resolve command spelled out (exit 4 as shipped); and every status surface tells the truth — `diverged: bool` in `engineer timer --json`, ` diverged=1` in the plain status extras, `· diverged — resolve in engineer queue` on the human read. Where the generic-conflict payload can't compose a resolution (no server segment id until the coded conflicts land, an unbound local session), the arm refuses with the reason and the intent stays diverged — loud, kept, honest. (`offline-write.brief.md` job 4, §Diverged · session elsewhere + §Diverged · clock drift; EPIC #98, #106)
@@ -143,7 +145,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Explicit environment selection** via the `--env` flag and `ENGINEER_ENV` variable (`production` default, or `development` for localhost), with built-in URL presets so a fresh run needs no config file. Layered configuration: environment preset < `~/.config/engineer-cli/config.toml` (XDG-honored on all platforms, including macOS) < `ENGINEER_*` env vars.
 - **GitHub Actions CI** running `cargo test` on pushes to `master` and on pull requests.
 
-[Unreleased]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.4.0...v0.5.0
