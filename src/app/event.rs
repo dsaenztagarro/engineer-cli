@@ -319,13 +319,15 @@ fn progress_key(key: crossterm::event::KeyEvent) -> Option<Action> {
 /// Week-board keys (§Week · board / §Week · add an intent). `j`/`k` move the
 /// full-row cursor over the plan rows; `a` declares a new intent, `e` adjusts
 /// the selected one, `d` drops it (confirmed on a second press) — the plan-write
-/// gestures (#115). The one-line input, while open, owns keys via the screen's
+/// gestures (#115); `s` starts the timer bound to the selected item's activity
+/// (the seam, #116). The one-line input, while open, owns keys via the screen's
 /// `intercept_key`, so those never reach here. `[`/`]`/`t` step the week in the
 /// same dialect as Progress; `h`/Esc steps home.
 fn week_key(key: crossterm::event::KeyEvent) -> Option<Action> {
     match (key.code, key.modifiers) {
         (KeyCode::Char('j'), _) | (KeyCode::Down, _) => Some(Action::WeekSelectMove(1)),
         (KeyCode::Char('k'), _) | (KeyCode::Up, _) => Some(Action::WeekSelectMove(-1)),
+        (KeyCode::Char('s'), _) => Some(Action::WeekStartTimer),
         (KeyCode::Char('a'), _) => Some(Action::WeekAddBegin),
         (KeyCode::Char('e'), _) => Some(Action::WeekAdjustBegin),
         (KeyCode::Char('d'), _) => Some(Action::WeekDrop),

@@ -11,9 +11,17 @@
 //! (a plan item *is* a planned activity — no second ledger); `e` adjusts the
 //! selected item's title; `d` drops it (archived, confirmed on a second press).
 //! Every write routes through `QueuedClient`, so an offline gesture queues and
-//! the board renders it provisionally (`◔ … queued`) until it replays. The
-//! `$EDITOR` reflection write and starting the timer on a planned item are the
-//! remaining follow-on slices of the epic.
+//! the board renders it provisionally (`◔ … queued`) until it replays.
+//!
+//! `s` is the Plan↔timer seam (#116): it starts — or stops & switches — the
+//! timer bound to the selected item's activity through the same
+//! `QueuedClient::start_timer` plumbing the Timer screen uses (the verb, not a
+//! copy of the screen). Nothing running starts it outright; a timer already
+//! elsewhere warns first (naming the running session) and switches on the
+//! second `s`; a still-queued row refuses (the server hasn't minted the
+//! activity yet). The board marks the running item with a green `● live` pill,
+//! read straight off the header timer snapshot. The `$EDITOR` reflection write
+//! is the remaining follow-on slice of the epic.
 
 use jiff::civil::Date;
 use jiff::{ToSpan, Zoned};
@@ -26,7 +34,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::api::{ActivityCreate, ApiClient, PlanItem, PlanState, Week as WeekData};
+use crate::api::{ActivityCreate, ApiClient, PlanItem, PlanState, Timer, Week as WeekData};
 use crate::app::action::Action;
 use crate::queue::WriteOutcome;
 use crate::ui::notify::Level;
@@ -74,6 +82,15 @@ pub struct Week {
     input: Option<Input>,
     /// The plan item armed for drop; a second `d` on the same row confirms.
     drop_armed: Option<i64>,
+    /// The activity id armed for a stop-&-switch start; a second `s` on the same
+    /// row (while a timer runs elsewhere) confirms the switch. Cleared by any
+    /// cursor move or reload — the switch-confirm idiom, the Timer screen's verb.
+    start_armed: Option<i64>,
+    /// The header timer snapshot, cached from the app's forwarded `TimerLoaded` /
+    /// `TimerProvisional` polls. The board reads it two ways: to mark the running
+    /// item ` live ` (when its `activity_id` is on the shown week) and to name a
+    /// session the seam would switch away from. `None` = nothing running.
+    running: Option<Timer>,
     /// Titles declared offline this session — rendered as provisional `◔ …
     /// queued` rows until the create replays and a live refetch returns the real
     /// row. The queue is the ledger; this is only the render of what's pending,
@@ -88,6 +105,11 @@ impl Week {
     pub fn on_enter(&mut self, api: &ApiClient, tx: &UnboundedSender<Action>) {
         self.loading = true;
         self.fetch(api, tx);
+        // Pull a fresh header timer snapshot so the seam knows — right away, not
+        // one poll interval later — whether a timer is running (the running row
+        // marker, and the switch-confirm's naming of the running session). The
+        // app's poll forwards `TimerLoaded`/`TimerProvisional` to this screen.
+        let _ = tx.send(Action::RefreshTimer);
     }
 
     /// While the one-line intent input is open it owns every key, so a typed
@@ -142,6 +164,7 @@ impl Week {
                 // haven't replayed (the header `↑N` and `engineer queue` show it).
                 self.provisional.clear();
                 self.drop_armed = None;
+                self.start_armed = None;
                 // Keep the cursor in range as the plan changes week to week.
                 let n = self.item_count();
                 self.selected = self.selected.min(n.saturating_sub(1));
@@ -169,11 +192,15 @@ impl Week {
                 self.fetch(api, tx);
             }
             Action::WeekSelectMove(delta) => {
-                let n = self.item_count() as i32;
+                // The cursor spans the real rows *and* the provisional queued
+                // rows below them — `s` on a queued row is where the seam's
+                // "still queued" refusal lives.
+                let n = self.total_rows() as i32;
                 if n > 0 {
                     self.selected = (self.selected as i32 + delta).clamp(0, n - 1) as usize;
                 }
                 self.drop_armed = None;
+                self.start_armed = None;
             }
             // --- plan writes (#115) ---
             Action::WeekAddBegin => {
@@ -241,9 +268,85 @@ impl Week {
                 }
             }
             Action::WeekPlanQueued(title) => self.provisional.push(title),
+            Action::WeekStartTimer => return self.start_on_selected(api, tx),
+            // The header poll forwards its snapshot to the current screen; cache
+            // it (only while a clock runs) so the board can mark the running row
+            // and the seam can name a session it would switch away from.
+            Action::TimerLoaded(t) | Action::TimerProvisional(t) => {
+                self.running = if t.running { Some(*t) } else { None };
+            }
             _ => {}
         }
         None
+    }
+
+    /// The `s` gesture (the Plan↔timer seam): start — or stop & switch — the
+    /// timer bound to the selected plan item's activity. Nothing running starts
+    /// it outright (`switch: false`); a timer already elsewhere warns first,
+    /// naming the running session, and switches on the second press
+    /// (`switch: true`) — the Timer screen's confirm idiom, reused as the verb.
+    /// A still-queued row (an offline declare the server hasn't minted) refuses:
+    /// there is no activity id to bind to yet.
+    fn start_on_selected(
+        &mut self,
+        api: &ApiClient,
+        tx: &UnboundedSender<Action>,
+    ) -> Option<(Level, String)> {
+        // Past the real rows sits a provisional (queued-declare) row — no server
+        // activity yet, so the start can't bind. Refuse honestly.
+        if self.selected >= self.item_count() {
+            self.start_armed = None;
+            return Some((
+                Level::Warning,
+                "still queued — sync first, then start the timer".into(),
+            ));
+        }
+        let (id, title) = {
+            let item = self.selected_item()?;
+            (item.id, item.title.clone())
+        };
+        // Defensive twin of the check above: a negative sentinel id is a
+        // not-yet-minted create, same refusal.
+        if id < 0 {
+            self.start_armed = None;
+            return Some((
+                Level::Warning,
+                "still queued — sync first, then start the timer".into(),
+            ));
+        }
+
+        match self.running.as_ref().filter(|t| t.running) {
+            // Already timing this very item — a fresh start would only stop &
+            // restart the same work; say so rather than churn a segment.
+            Some(t) if t.activity_id == Some(id) => {
+                self.start_armed = None;
+                Some((Level::Info, format!("already timing {title}")))
+            }
+            // A timer runs on something else: the switch-confirm. First press
+            // names the running session and asks again; the second switches.
+            Some(t) => {
+                if self.start_armed == Some(id) {
+                    self.start_armed = None;
+                    spawn_start_on_plan(api, tx, self.queue_paths.clone(), id, true, title);
+                    None
+                } else {
+                    self.start_armed = Some(id);
+                    let running = t.label.clone().unwrap_or_else(|| "untitled".into());
+                    Some((
+                        Level::Warning,
+                        format!(
+                            "already timing {running} — press s again to stop & save it, then start {title}"
+                        ),
+                    ))
+                }
+            }
+            // Nothing running: start bound outright, no switch.
+            None => {
+                self.start_armed = None;
+                spawn_start_on_plan(api, tx, self.queue_paths.clone(), id, false, title);
+                None
+            }
+        }
     }
 
     /// Clear the per-week transient UI (open input, armed drop, provisional
@@ -251,11 +354,26 @@ impl Week {
     fn reset_transient(&mut self) {
         self.input = None;
         self.drop_armed = None;
+        self.start_armed = None;
         self.provisional.clear();
     }
 
     fn selected_item(&self) -> Option<&PlanItem> {
         self.data.as_ref()?.items().nth(self.selected)
+    }
+
+    /// Every selectable board row: the server's plan items plus the provisional
+    /// queued-declare rows the cursor also moves over.
+    fn total_rows(&self) -> usize {
+        self.item_count() + self.provisional.len()
+    }
+
+    /// Whether a running timer is bound to this activity — the board's ` live `
+    /// mark, read off the cached header snapshot (only present while running).
+    fn is_live(&self, id: i64) -> bool {
+        self.running
+            .as_ref()
+            .is_some_and(|t| t.running && t.activity_id == Some(id))
     }
 
     /// The day a board declare lands on: today when the shown week is the current
@@ -314,11 +432,21 @@ impl Week {
                 .unwrap_or(16)
                 .clamp(16, 32);
             for (i, item) in items.iter().enumerate() {
-                lines.push(plan_row(item, title_w, i == self.selected));
+                lines.push(plan_row(
+                    item,
+                    title_w,
+                    i == self.selected,
+                    self.is_live(item.id),
+                ));
             }
-            // Declared-offline rows, still waiting on the queue.
-            for title in &self.provisional {
-                lines.push(provisional_row(title, title_w));
+            // Declared-offline rows, still waiting on the queue — selectable so
+            // `s` on one can refuse honestly (no server activity to bind yet).
+            for (j, title) in self.provisional.iter().enumerate() {
+                lines.push(provisional_row(
+                    title,
+                    title_w,
+                    self.selected == items.len() + j,
+                ));
             }
             // The drop confirm prompt, under the rows when a row is armed.
             if self.drop_armed.is_some() {
@@ -346,6 +474,7 @@ impl Week {
         }
         widgets::footer_hints(&[
             ("j/k", "select"),
+            ("s", "start"),
             ("a", "add"),
             ("e", "adjust"),
             ("d", "drop"),
@@ -456,6 +585,46 @@ fn spawn_drop(api: &ApiClient, tx: &UnboundedSender<Action>, paths: QueuePaths, 
     });
 }
 
+/// Start (or stop & switch) the timer bound to a plan item's activity through
+/// the queue seam (`s`). `switch` rides the intent, so an offline switch replays
+/// as stop & save then start — the same server verb the Timer screen defers. A
+/// confirmed start forwards the fresh snapshot (`TimerLoaded`), which lands the
+/// header cell *and*, forwarded back to this screen, marks the running row; an
+/// offline start streams the provisional clock (`TimerProvisional`) the same way.
+fn spawn_start_on_plan(
+    api: &ApiClient,
+    tx: &UnboundedSender<Action>,
+    paths: QueuePaths,
+    activity_id: i64,
+    switch: bool,
+    title: String,
+) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => return notify_seam_error(&tx, "timer start failed", e),
+        };
+        match queued.start_timer(Some(activity_id), switch).await {
+            Ok(WriteOutcome::Confirmed(t)) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Success,
+                    text: format!("timer started · {title}"),
+                });
+                let _ = tx.send(Action::TimerLoaded(Box::new(t)));
+            }
+            Ok(WriteOutcome::Provisional(t)) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Info,
+                    text: format!("timer started · {title} · queued (offline) — will sync"),
+                });
+                let _ = tx.send(Action::TimerProvisional(Box::new(t)));
+            }
+            Err(e) => notify_seam_error(&tx, "timer start failed", e),
+        }
+    });
+}
+
 /// The one-line intent input (§Week · add an intent): an INSERT badge, the
 /// context label (`Add intent · <week>` or `Adjust intent`), and the buffer with
 /// a block cursor.
@@ -476,10 +645,13 @@ fn input_line(input: &Input, data: &WeekData) -> Line<'static> {
 }
 
 /// A plan item declared offline — a `◔ … queued` stand-in the board shows until
-/// the create replays and a live refetch returns the real row.
-fn provisional_row(title: &str, title_w: usize) -> Line<'static> {
+/// the create replays and a live refetch returns the real row. Selectable (`▌`)
+/// so `s` can land on it and refuse the start — the server hasn't minted it yet.
+fn provisional_row(title: &str, title_w: usize, selected: bool) -> Line<'static> {
+    let marker = if selected { "▌ " } else { "  " };
     Line::from(vec![
-        Span::styled("  ◔ ", Style::default().fg(theme::ACCENT)),
+        Span::styled(marker, Style::default().fg(theme::ACCENT)),
+        Span::styled("◔ ", Style::default().fg(theme::ACCENT)),
         Span::raw(format!("{}  ", super::pad_or_truncate(title, title_w))),
         Span::styled("queued", theme::muted()),
     ])
@@ -523,10 +695,17 @@ fn elapsed_index(monday: Date, today: Date) -> u32 {
 
 /// One plan row: `▌ read  SICP — chapters 2 & 3  ██████████  done   3h10 / 3h`.
 /// The kind column, the title, a logged-vs-planned meter tinted by the derived
-/// state, the state pill, and the time. `▌` (accent) flags the selected row.
-fn plan_row(item: &PlanItem, title_w: usize, selected: bool) -> Line<'static> {
+/// state, the state pill, and the time. `▌` (accent) flags the selected row; a
+/// row a timer is running on wins the marker with a green `●` and a green
+/// ` live ` pill (§board · live now), overriding the selection mark and derived
+/// pill — the running clock is louder than the cursor.
+fn plan_row(item: &PlanItem, title_w: usize, selected: bool, live: bool) -> Line<'static> {
     let state = item.retro_state();
-    let color = state_color(state);
+    let color = if live {
+        theme::SUCCESS
+    } else {
+        state_color(state)
+    };
     let logged = item.logged_minutes.unwrap_or(0);
     let planned = item.size_minutes.unwrap_or(0);
     let fraction = if planned > 0 {
@@ -537,27 +716,44 @@ fn plan_row(item: &PlanItem, title_w: usize, selected: bool) -> Line<'static> {
         0.0
     };
 
-    let marker = if selected { "▌ " } else { "  " };
+    let (marker, marker_color) = if live {
+        ("● ", theme::SUCCESS)
+    } else if selected {
+        ("▌ ", theme::ACCENT)
+    } else {
+        ("  ", theme::ACCENT)
+    };
     let kind = item.kind.as_deref().unwrap_or("");
     let mut spans: Vec<Span<'static>> = vec![
-        Span::styled(marker.to_string(), Style::default().fg(theme::ACCENT)),
+        Span::styled(marker.to_string(), Style::default().fg(marker_color)),
         Span::styled(super::pad_or_truncate(kind, 8), theme::muted()),
         Span::raw(format!(
             " {}  ",
             super::pad_or_truncate(&item.title, title_w)
         )),
     ];
-    // A tick-free pace bar coloured by the derived state; empty cells read as the
-    // dim `··········` the design shows for an untouched intent.
+    // A tick-free pace bar coloured by the derived state (green while live);
+    // empty cells read as the dim `··········` the design shows for an untouched
+    // intent.
     spans.extend(widgets::pace_bar(fraction, 0.0, BAR_WIDTH, color, false));
     spans.push(Span::raw("  "));
-    spans.push(plan_pill(state));
+    spans.push(if live { live_pill() } else { plan_pill(state) });
     spans.push(Span::raw(format!(
         "  {} / {}",
         fmt_hm(logged),
         fmt_hm(planned)
     )));
     Line::from(spans)
+}
+
+/// The running-now pill: the board's ` live ` treatment for the item a timer is
+/// bound to (green, §board panel). Distinct from the derived `PlanState::Live` —
+/// this reads the client's live clock, not the server's canvas state.
+fn live_pill() -> Span<'static> {
+    Span::styled(
+        " live ",
+        Style::default().fg(Color::Black).bg(theme::SUCCESS),
+    )
 }
 
 /// The derived state as a black-ink pill, the shipped `status_pill` idiom keyed
@@ -704,6 +900,19 @@ mod tests {
         }
     }
 
+    /// A running header snapshot bound to `activity_id` — what the app forwards
+    /// from a poll, and what the seam reads to mark the row and name a switch.
+    fn running_on(activity_id: i64, label: &str) -> Timer {
+        Timer {
+            running: true,
+            bound: true,
+            activity_id: Some(activity_id),
+            label: Some(label.into()),
+            elapsed_seconds: Some(600),
+            ..Default::default()
+        }
+    }
+
     /// A per-test scratch (queue.json, cache) so a spawned write lands in a
     /// throwaway dir, never the shared XDG queue.
     fn scratch_paths() -> (std::path::PathBuf, std::path::PathBuf) {
@@ -779,17 +988,17 @@ mod tests {
         let data = sample();
         let items: Vec<&PlanItem> = data.items().collect();
 
-        let done = spans_text(&plan_row(items[0], 24, false));
+        let done = spans_text(&plan_row(items[0], 24, false, false));
         assert!(done.contains("SICP"), "{done}");
         assert!(done.contains("done"), "{done}");
         // 190 logged / 180 planned → 3h10 / 3h.
         assert!(done.contains("3h10 / 3h"), "{done}");
 
-        let hold = spans_text(&plan_row(items[1], 24, false));
+        let hold = spans_text(&plan_row(items[1], 24, false, false));
         assert!(hold.contains("hold"), "{hold}");
         assert!(hold.contains("1h55 / 3h"), "{hold}");
 
-        let untouched = spans_text(&plan_row(items[2], 24, false));
+        let untouched = spans_text(&plan_row(items[2], 24, false, false));
         assert!(untouched.contains("untouched"), "{untouched}");
         assert!(untouched.contains("0 / 1h"), "{untouched}");
     }
@@ -798,8 +1007,26 @@ mod tests {
     fn plan_row_marks_the_selected_row() {
         let data = sample();
         let item = data.items().next().unwrap();
-        assert!(spans_text(&plan_row(item, 24, true)).starts_with('▌'));
-        assert!(!spans_text(&plan_row(item, 24, false)).starts_with('▌'));
+        assert!(spans_text(&plan_row(item, 24, true, false)).starts_with('▌'));
+        assert!(!spans_text(&plan_row(item, 24, false, false)).starts_with('▌'));
+    }
+
+    #[test]
+    fn plan_row_marks_the_running_row_live() {
+        let data = sample();
+        let item = data.items().next().unwrap();
+        // A live row wins the marker with a green `●` and shows the ` live ` pill,
+        // overriding both the selection `▌` and the derived ` done ` pill.
+        let text = spans_text(&plan_row(item, 24, true, true));
+        assert!(
+            text.starts_with('●'),
+            "the live marker wins the column: {text}"
+        );
+        assert!(text.contains("live"), "{text}");
+        assert!(
+            !text.contains("done"),
+            "the live pill replaces the derived one: {text}"
+        );
     }
 
     #[test]
@@ -1291,5 +1518,213 @@ mod tests {
             "provisional rows cleared"
         );
         assert!(text.contains("SICP"), "the server rows render");
+    }
+
+    // --- the timer seam (#116): start-on-plan, switch-confirm, offline, refusal ---
+
+    #[tokio::test]
+    async fn s_starts_the_timer_bound_to_the_selected_row() {
+        use wiremock::matchers::{body_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // Nothing running → a plain bound start: the activity id, no switch flag.
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer"))
+            .and(body_json(serde_json::json!({ "activity_id": 1 })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "running": true, "bound": true, "activity_id": 1
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = ApiClient::with_token(url::Url::parse(&server.uri()).unwrap(), "t".into());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut w = Week {
+            data: Some(sample()),
+            queue_paths: Some(scratch_paths()),
+            ..Default::default()
+        };
+        // Selected row 0 → activity id 1; nothing running → an immediate start.
+        let out = w.handle(Action::WeekStartTimer, &api, &tx).await;
+        assert!(
+            out.is_none(),
+            "a first start with nothing running doesn't warn"
+        );
+        // The confirmed start forwards the fresh snapshot; the mock's expect(1)
+        // asserts the body carried activity_id 1 with no switch.
+        assert!(
+            wait_for(&mut rx, |a| matches!(a, Action::TimerLoaded(_))).await,
+            "a confirmed start forwards the header snapshot"
+        );
+    }
+
+    #[tokio::test]
+    async fn s_switch_confirm_stops_and_switches_on_the_second_press() {
+        use wiremock::matchers::{body_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // The switch start carries switch:true — the server stops & saves first.
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer"))
+            .and(body_json(
+                serde_json::json!({ "activity_id": 1, "switch": true }),
+            ))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "running": true, "bound": true, "activity_id": 1
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = ApiClient::with_token(url::Url::parse(&server.uri()).unwrap(), "t".into());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut w = Week {
+            data: Some(sample()),
+            queue_paths: Some(scratch_paths()),
+            // A timer already runs on a *different* activity (99).
+            running: Some(running_on(99, "Read DDIA ch.7")),
+            ..Default::default()
+        };
+
+        // First press warns, naming the running session — nothing spawns yet.
+        let (level, text) = w
+            .handle(Action::WeekStartTimer, &api, &tx)
+            .await
+            .expect("the first press warns");
+        assert!(matches!(level, Level::Warning));
+        assert!(
+            text.contains("Read DDIA ch.7"),
+            "names the running session: {text}"
+        );
+        assert!(text.contains("again"), "asks for a second press: {text}");
+
+        // Second press switches → the switch:true start spawns (mock asserts it).
+        let second = w.handle(Action::WeekStartTimer, &api, &tx).await;
+        assert!(second.is_none(), "the confirm doesn't re-warn");
+        assert!(
+            wait_for(&mut rx, |a| matches!(a, Action::TimerLoaded(_))).await,
+            "a confirmed switch forwards the snapshot"
+        );
+    }
+
+    #[tokio::test]
+    async fn s_on_the_running_row_says_already_timing() {
+        // Starting the row a timer already runs on would only stop & restart the
+        // same work — inform instead of churning a segment.
+        let (api, tx) = ctx();
+        let mut w = Week {
+            data: Some(sample()),
+            running: Some(running_on(1, "SICP — chapters 2 & 3")),
+            ..Default::default()
+        };
+        let (level, text) = w
+            .handle(Action::WeekStartTimer, &api, &tx)
+            .await
+            .expect("starting the already-running row informs");
+        assert!(matches!(level, Level::Info));
+        assert!(text.contains("already timing"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn offline_start_enqueues_the_timer_start_intent() {
+        // Offline: `s` → the seam helper → `QueuedClient` → the persisted queue.
+        // The shipped `TimerStart` intent carries the plan item's activity id.
+        use crate::queue::{IntentKind, QueueStore};
+
+        let (queue_path, cache_path) = scratch_paths();
+        let api =
+            ApiClient::with_token(url::Url::parse("http://127.0.0.1:1/").unwrap(), "t".into());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut w = Week {
+            data: Some(sample()),
+            queue_paths: Some((queue_path.clone(), cache_path)),
+            ..Default::default()
+        };
+        // Row 0 → activity id 1; the dead port forces the offline arm.
+        w.handle(Action::WeekStartTimer, &api, &tx).await;
+
+        let store = QueueStore::at(&queue_path);
+        let mut pending = store.pending().unwrap();
+        for _ in 0..100 {
+            if !pending.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            pending = store.pending().unwrap();
+        }
+        assert_eq!(pending.len(), 1, "the start landed in the queue");
+        assert_eq!(pending[0].kind.word(), "start");
+        match &pending[0].kind {
+            IntentKind::TimerStart {
+                activity_id,
+                switch,
+                ..
+            } => {
+                assert_eq!(
+                    *activity_id,
+                    Some(1),
+                    "the intent carries the plan item's activity id"
+                );
+                assert!(!*switch, "nothing running → no switch");
+            }
+            other => panic!("expected a TimerStart intent, got {other:?}"),
+        }
+        // The provisional clock streams back to mark the row live.
+        assert!(
+            wait_for(&mut rx, |a| matches!(a, Action::TimerProvisional(_))).await,
+            "the provisional snapshot is streamed back"
+        );
+    }
+
+    #[tokio::test]
+    async fn s_on_a_queued_row_refuses_still_queued() {
+        // A provisional (offline-declared) row has no server activity yet — the
+        // start refuses honestly rather than binding to a phantom id.
+        let (api, tx) = ctx();
+        let mut w = Week {
+            data: Some(empty()),
+            ..Default::default()
+        };
+        // One offline-declared row, cursor on it (no real rows above it).
+        w.handle(
+            Action::WeekPlanQueued("one systems paper".into()),
+            &api,
+            &tx,
+        )
+        .await;
+        assert_eq!(w.selected, 0);
+        let (level, text) = w
+            .handle(Action::WeekStartTimer, &api, &tx)
+            .await
+            .expect("a queued row refuses the start");
+        assert!(matches!(level, Level::Warning));
+        assert!(text.contains("still queued"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_forwarded_timer_snapshot_marks_the_running_row_live() {
+        // The app forwards the header poll's snapshot to the current screen; the
+        // board caches it (while running) and marks the bound row ` live `.
+        let (api, tx) = ctx();
+        let mut w = loaded();
+        w.handle(
+            Action::TimerLoaded(Box::new(running_on(2, "systems"))),
+            &api,
+            &tx,
+        )
+        .await;
+        let text = render_text(&mut w);
+        assert!(text.contains('●'), "the live marker renders: {text}");
+        assert!(text.contains("live"), "{text}");
+        // A stopped snapshot clears the mark.
+        w.handle(Action::TimerLoaded(Box::default()), &api, &tx)
+            .await;
+        assert!(
+            !render_text(&mut w).contains('●'),
+            "a stopped clock clears the live marker"
+        );
     }
 }
