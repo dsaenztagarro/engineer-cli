@@ -14,6 +14,7 @@ mod activities;
 mod audit;
 mod automations;
 mod books;
+mod capture;
 mod domains;
 mod envelope;
 mod error;
@@ -30,6 +31,7 @@ pub use activities::{Activity, ActivityCreate, ActivityFilters, ActivityUpdate};
 pub use audit::{AuditAcknowledged, AuditRead, AuditSegment};
 pub use automations::Task;
 pub use books::{Book, BookChapter, BookStatus, BookUpdate};
+pub use capture::CaptureSource;
 pub use domains::Domain;
 pub use envelope::List;
 pub use error::{codes, ApiError, ConflictInfo, FieldError};
@@ -163,6 +165,13 @@ impl ApiClient {
     }
 
     async fn delete(&self, path: &str) -> Result<(), ApiError> {
+        let req = self.request(Method::DELETE, path).await?;
+        send(req).await
+    }
+
+    // DELETE for member actions that return the updated resource rather than an
+    // empty body — the capture disconnect returns the fresh (flag-off) source.
+    async fn delete_json<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
         let req = self.request(Method::DELETE, path).await?;
         send(req).await
     }

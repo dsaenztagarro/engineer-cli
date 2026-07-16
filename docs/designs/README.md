@@ -71,6 +71,7 @@ seeded by the web designs.
 | Review (dashboard / browse / sitting) | `review.html` | built (`screens/review.rs`) |
 | Progress (pace meters) | `progress.html` | built (`screens/progress.rs`) |
 | Week planning + retro | `week-planning.dc.html` | built (`screens/week.rs`) |
+| Inbox (draft triage) + Connect (sources) | `assisted-capture.dc.html` | built (`screens/inbox.rs`, `screens/connect.rs`) |
 | Command palette (`:`) | `Command Palette v2.html` | built — `:` grammar (`src/app/command.rs`) |
 | Roadmaps + book progress | `Roadmaps and Book Progress v2.html` | next |
 | Shard / environment indicator | `Tenancy, Shard & Environment Indicators v3.html` | next — belongs in the header chrome |
@@ -124,5 +125,6 @@ Layout is three stacked rows (`../../src/ui/layout.rs::render_chrome`):
 | `design-system.dc.html` | Palette & component legend — the canvas kit's style anchor |
 | `timer.dc.html` | Timer screens — hero, status-line, start picker, idle reclaim, focus, audit, headless |
 | `week-planning.dc.html` | Week board — plan ⇄ retro, the planned-vs-done readout, the `$EDITOR` reflection, headless twins |
+| `assisted-capture.dc.html` | Draft-triage inbox (pending / draft / reject / zero) + the ambient count + the git-source connect flow (sources list, trust gate, requirement pointer) + headless twins |
 | `support.js` | Claude Design canvas runtime the `.dc.html` docs load |
 | `briefs/` | Problem-first design briefs and gap analyses (`proposed/` → `shipped/` lifecycle) |
