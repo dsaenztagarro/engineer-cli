@@ -5,12 +5,7 @@ Mockups are Claude Design **canvas docs** (`*.dc.html`, rendered by the bundled 
 `design-system.dc.html` is the shared palette and component legend they all follow;
 `briefs/shipped/timer-gaps.brief.md` is the timer gap analysis (mockups vs the timer engineer has shipped) that drove `timer.dc.html`'s design passes.
 
-This directory is also the **reference kit** to seed a *new* Claude Design project for the
-terminal app. The terminal is a sibling surface to the web app — it shares the brand and the
-domain, but **not** the visual medium. A TUI is a character grid: one monospace font, no
-shadows/radii/web-fonts, an ANSI/256-colour palette, keyboard-driven, dark-first. So we design
-it in its own project, fed the *transferable* slice of the web design system (information
-architecture, colour semantics, brand) rather than its pixel/CSS chrome.
+This directory is also the **reference kit** to seed a *new* Claude Design project for the terminal app. The terminal is a sibling surface to the web app — it shares the brand and the domain, but **not** the visual medium. A TUI is a character grid: one monospace font, no shadows/radii/web-fonts, an ANSI/256-colour palette, keyboard-driven, dark-first. So we design it in its own project, fed the *transferable* slice of the web design system (information architecture, colour semantics, brand) rather than its pixel/CSS chrome.
 
 ## How to use this kit in Claude Design
 
@@ -18,15 +13,11 @@ The **`engineer-cli`** Claude Design project is live (seeded from this kit's ori
 its outputs land here as `*.dc.html` canvas docs — `design-system.dc.html` (the style anchor) and one doc per app area (`timer.dc.html`, …).
 To iterate on an area: give the project the area's current `.dc.html`, `design-system.dc.html`, this `README.md`, and the relevant brief or gap analysis from `briefs/`, and ask for the gaps to be closed within the palette mapping, chrome conventions, and translate/don't-translate rules below.
 
-> Why a new project, not the web one: the web project carries ~50 files of web-CSS iteration.
-> For a TUI, most of that is the wrong medium and biases output toward shadows/rounded/pixel
-> idioms a grid can't render. Seed only what transfers; design in a clean, terminal-shaped frame.
+> Why a new project, not the web one: the web project carries ~50 files of web-CSS iteration. For a TUI, most of that is the wrong medium and biases output toward shadows/rounded/pixel idioms a grid can't render. Seed only what transfers; design in a clean, terminal-shaped frame.
 
 ## Palette mapping
 
-Web tokens (`engineer/docs/designs/tokens.css`) mapped to terminal values, cross-checked against
-the shipped Rust palette (`../../src/ui/theme.rs`). The terminal **inverts** the web's
-light-on-white to light-on-dark, and **lightens** the accent for legibility.
+Web tokens (`engineer/docs/designs/tokens.css`) mapped to terminal values, cross-checked against the shipped Rust palette (`../../src/ui/theme.rs`). The terminal **inverts** the web's light-on-white to light-on-dark, and **lightens** the accent for legibility.
 
 | Role | Web token | Shipped `theme.rs` (256 / hex) | Recommended terminal (256 / hex) | Note |
 |---|---|---|---|---|
@@ -40,23 +31,13 @@ light-on-white to light-on-dark, and **lightens** the accent for legibility.
 | warning | `#F59E0B` | `179 / #D7AF5F` | `179 / #D7AF5F` | matches — keep |
 | danger | `#EF4444` | `167 / #D75F5F` | `167 / #D75F5F` | matches — keep |
 
-**The accent decision (the one real divergence).** The web brand is indigo (`#3B40CC`, a
-blue-violet). `#3B40CC` is too dark to read on a dark terminal, so it must be lightened — but
-the shipped `theme.rs` lightens it all the way to a *sky blue* (`256 #75 = #5FAFFF`), which is a
-different **hue** (~210°/cyan vs indigo's ~237°/violet). It reads as a different brand colour
-than the web. The recommendation is to lighten *along the indigo hue* instead — `256 #105 =
-#8787FF` (periwinkle) keeps the brand identity while staying bright on dark. The mockups use the
-recommended value. Adopting it is a one-line change in `theme.rs` (`ACCENT`/`ACCENT_DIM`),
-deliberately **not** applied here — it's a design decision to ratify, not a silent code edit.
+**The accent decision (the one real divergence).** The web brand is indigo (`#3B40CC`, a blue-violet). `#3B40CC` is too dark to read on a dark terminal, so it must be lightened — but the shipped `theme.rs` lightens it all the way to a *sky blue* (`256 #75 = #5FAFFF`), which is a different **hue** (~210°/cyan vs indigo's ~237°/violet). It reads as a different brand colour than the web. The recommendation is to lighten *along the indigo hue* instead — `256 #105 = #8787FF` (periwinkle) keeps the brand identity while staying bright on dark. The mockups use the recommended value. Adopting it is a one-line change in `theme.rs` (`ACCENT`/`ACCENT_DIM`), deliberately **not** applied here — it's a design decision to ratify, not a silent code edit.
 
-The semantic colours (success/warn/danger), border, and muted already track the web hues well —
-no change.
+The semantic colours (success/warn/danger), border, and muted already track the web hues well — no change.
 
 ## Web → terminal screen inventory
 
-What transfers from the web app is the **information architecture** (which screens, what data,
-what hierarchy), not the layout. Built screens are faithful today; "next" are the obvious growth
-seeded by the web designs.
+What transfers from the web app is the **information architecture** (which screens, what data, what hierarchy), not the layout. Built screens are faithful today; "next" are the obvious growth seeded by the web designs.
 
 | Terminal screen | Seeds from (web) | Status |
 |---|---|---|
@@ -80,8 +61,7 @@ seeded by the web designs.
 
 **Governing principle — sterling, not a replica.** A full terminal replica of the `engineer` web UI is a non-goal. The terminal is an *Apple Watch for the study loop*: it owns the high-frequency, high-value core, distilled into **glances (complications) and gestures (one-keystroke verbs)** — quiet, honest, and composable (every read pipes, every action is a headless verb). Depth — rich filtering, bulk edit, dashboards, planning canvases, settings forms — stays on the web. The shipped **timer** is the exemplar of the bar; the full **glance-or-gesture test**, and where each module sits against it, is the governing section of [`briefs/proposed/cross-cutting.brief.md`](briefs/proposed/cross-cutting.brief.md). Every brief is measured against it before it is designed.
 
-- **Drop entirely** (no terminal equivalent): shadows, border-radius, Inter/web-fonts,
-  gradients, pixel spacing, hover states, responsive breakpoints.
+- **Drop entirely** (no terminal equivalent): shadows, border-radius, Inter/web-fonts, gradients, pixel spacing, hover states, responsive breakpoints.
 - **Replace with a terminal idiom:**
   - elevation / cards -> box-drawing panels (`bordered()`) + dim-vs-bright contrast
   - badges / pills -> inverse mono labels, black ink on a semantic fill (` reading `, ` done `)
@@ -90,9 +70,7 @@ seeded by the web designs.
   - icons / SVG -> sparse unicode glyphs or ASCII; status dots `●`/`○`
   - progress -> the block-bar in `widgets::progress_bar` (`███▍·····  42%`)
 - **Keep:** colour *semantics*, information density, the domain vocabulary.
-- **Interaction:** keyboard-only, neovim-flavoured — `j`/`k`, `gg`/`G`, `/`, `n`/`N`, `:cmd`,
-  `<Space>` leader, `i`/`Esc` for insert/normal in forms. No mouse. The footer always shows the
-  active screen's keys.
+- **Interaction:** keyboard-only, neovim-flavoured — `j`/`k`, `gg`/`G`, `/`, `n`/`N`, `:cmd`, `<Space>` leader, `i`/`Esc` for insert/normal in forms. No mouse. The footer always shows the active screen's keys.
 
 ## Chrome conventions (already shipped — match these)
 
@@ -106,15 +84,10 @@ Layout is three stacked rows (`../../src/ui/layout.rs::render_chrome`):
   [ j/k ] move  ·  [ ↵ ] open  ·  ...                            <- footer: hints OR a notification tile
 ```
 
-- **Header:** `engineer` (accent, bold) + ` › ` (muted) + screen title + user `@` identity host
-  (muted).
-- **Body panels:** `bordered(title)` — full box-drawing border in the border colour, title in
-  ` accent bold ` at the top-left.
-- **Footer:** either keybinding hints (`footer_hints` — each key a black-on-accent cap) or a
-  level-styled notification tile (`notify.rs` — info/success as coloured text, warning/error
-  filling the row). Tiles auto-expire.
-- **Status pills** (`widgets::status_pill`), black ink on a semantic fill:
-  ` reading ` (accent) · ` done ` (success) · ` unread ` (muted) · ` hold ` (warn) · ` stop ` (danger).
+- **Header:** `engineer` (accent, bold) + ` › ` (muted) + screen title + user `@` identity host (muted).
+- **Body panels:** `bordered(title)` — full box-drawing border in the border colour, title in ` accent bold ` at the top-left.
+- **Footer:** either keybinding hints (`footer_hints` — each key a black-on-accent cap) or a level-styled notification tile (`notify.rs` — info/success as coloured text, warning/error filling the row). Tiles auto-expire.
+- **Status pills** (`widgets::status_pill`), black ink on a semantic fill: ` reading ` (accent) · ` done ` (success) · ` unread ` (muted) · ` hold ` (warn) · ` stop ` (danger).
 - **Selection:** whole row highlighted (`bg` accent-dim, black ink, bold) with a `▌ ` marker.
 
 ## Files
