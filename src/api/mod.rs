@@ -47,7 +47,7 @@ pub use notes::{Anchor, AnchorData, Note, NoteFilters, NoteInput};
 pub(crate) use notes::derive_title_content;
 pub use progress::{DayMinutes, PaceState, Progress, ProgressReading, TargetRef};
 pub use review::{Dashboard, RateResult, Topic, TopicFilters};
-pub use segments::SegmentUpdate;
+pub use segments::{Segment, SegmentUpdate};
 pub use targets::{TargetCreate, TargetScope, TargetState};
 pub use timer::{ReclaimVerb, Reclaimed, Timer, TimerCandidate, TimerSettings, TimerStopped};
 pub use today::Today;

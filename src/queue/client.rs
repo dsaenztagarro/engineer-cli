@@ -12,14 +12,14 @@
 use std::path::PathBuf;
 
 use crate::api::{
-    Activity, ActivityCreate, ActivityUpdate, ApiClient, ApiError, Note, NoteInput, TargetCreate,
-    TargetRef, Timer, TimerStopped, WeekNote,
+    Activity, ActivityCreate, ActivityUpdate, ApiClient, ApiError, Note, NoteInput, Segment,
+    TargetCreate, TargetRef, Timer, TimerStopped, WeekNote,
 };
 use crate::timer_cache;
 use crate::timer_clock;
 
 use super::fold::{self, Provenance};
-use super::intent::{Intent, IntentKind};
+use super::intent::{provisional_id, Intent, IntentKind};
 use super::replay::{self, ReplayError, ReplayReport};
 use super::resolve::{self, Resolution, ResolveError, Resolved};
 use super::store::{QueueStore, QueueSummary};
@@ -366,10 +366,22 @@ impl QueuedClient {
         self.drain_best_effort().await;
         match self.api.create_activity(body).await {
             Ok(a) => Ok(WriteOutcome::Confirmed(a)),
-            Err(ApiError::Transport(_)) => self.defer_activity(
-                IntentKind::ActivityCreate { body: body.clone() },
-                provisional_activity(body),
-            ),
+            Err(ApiError::Transport(_)) => {
+                // Enqueue first (the gesture must never be lost), then seed the
+                // provisional row's id from the enqueued intent — `-(intent.id)`,
+                // the negative the replay id-map rewrites once this create lands
+                // and a queued segment referencing it must find the real parent
+                // (#108). A blank create body still names its own row.
+                let intent = self
+                    .store
+                    .enqueue(IntentKind::ActivityCreate { body: body.clone() })
+                    .map_err(|e| {
+                        ApiError::Transport(format!("offline, and queueing the write failed: {e}"))
+                    })?;
+                let mut provisional = provisional_activity(body);
+                provisional.id = provisional_id(intent.id);
+                Ok(WriteOutcome::Provisional(provisional))
+            }
             Err(e) => Err(e),
         }
     }
@@ -417,6 +429,54 @@ impl QueuedClient {
                     ..Default::default()
                 },
             ),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Append a manual segment to an existing activity — the `engineer log
+    /// --activity` write (after-the-fact time on work already recorded).
+    /// Drain-before-live, then the live POST; offline it enqueues an
+    /// [`IntentKind::SegmentCreate`] and returns a provisional `◔ queued`
+    /// segment.
+    ///
+    /// `activity_id` is normally the real id the *live* fuzzy resolve returned —
+    /// the append shape refuses offline before ever reaching here when it can't
+    /// resolve one, exactly like a query'd `timer start` (`engineer log`), so
+    /// what queues is a race where the resolve landed but the write's wire then
+    /// dropped. When the id is a still-queued create's provisional negative id,
+    /// the replay stitches the real one on before the segment posts (#108).
+    pub async fn create_segment(
+        &self,
+        activity_id: i64,
+        started_at: jiff::Timestamp,
+        minutes: u32,
+    ) -> Result<WriteOutcome<Segment>, ApiError> {
+        self.drain_best_effort().await;
+        match self
+            .api
+            .create_segment(activity_id, started_at, minutes)
+            .await
+        {
+            Ok(seg) => Ok(WriteOutcome::Confirmed(seg)),
+            Err(ApiError::Transport(_)) => {
+                let intent = self
+                    .store
+                    .enqueue(IntentKind::SegmentCreate {
+                        activity_id,
+                        started_at,
+                        minutes,
+                    })
+                    .map_err(|e| {
+                        ApiError::Transport(format!("offline, and queueing the write failed: {e}"))
+                    })?;
+                Ok(WriteOutcome::Provisional(Segment {
+                    id: provisional_id(intent.id),
+                    activity_id: Some(activity_id),
+                    minutes: Some(minutes),
+                    started_at: Some(started_at),
+                    ended_at: None,
+                }))
+            }
             Err(e) => Err(e),
         }
     }
@@ -641,6 +701,9 @@ fn provisional_activity(body: &ActivityCreate) -> Activity {
         id: PROVISIONAL_ACTIVITY_ID,
         title: body.title.clone(),
         kind: body.kind.clone(),
+        // Echoed so a completed-activity log's `--json` carries the duration it
+        // was given; a plan declare (no duration) leaves it `None`, as before.
+        duration_minutes: body.duration_minutes,
         status: Some("planned".into()),
         ..Default::default()
     }
@@ -992,12 +1055,16 @@ mod tests {
         let out = queued.create_activity(&body).await.unwrap();
         assert!(out.is_provisional());
         assert_eq!(out.value().title, "one systems paper");
-        assert!(out.value().id < 0, "a queued declare has no server id yet");
 
         let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
         assert_eq!(intents.len(), 1);
         assert_eq!(intents[0].kind.word(), "plan");
         assert_eq!(intents[0].stream, "activity");
+        assert_eq!(
+            out.value().id,
+            -(intents[0].id as i64),
+            "the provisional id is -(intent.id) — the replay id-map's key (#108)"
+        );
     }
 
     #[tokio::test]
@@ -1040,6 +1107,71 @@ mod tests {
         let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
         assert_eq!(intents[0].kind.word(), "drop");
         assert_eq!(intents[0].stream, "activity:42");
+    }
+
+    // --- segment append (#108): create_segment through the seam ---
+
+    #[tokio::test]
+    async fn live_segment_append_is_confirmed_and_queues_nothing() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/activities/9/segments"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 71, "activity_id": 9, "minutes": 30
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let dir = tmp_dir("live-segment");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let started = jiff::Timestamp::now();
+        let out = queued.create_segment(9, started, 30).await.unwrap();
+        assert!(!out.is_provisional());
+        assert_eq!(out.value().id, 71);
+        assert_eq!(queued.queue_summary().depth, 0);
+    }
+
+    #[tokio::test]
+    async fn offline_segment_append_enqueues_and_returns_a_provisional_segment() {
+        // The append shape reaches the offline arm only on a race — the live
+        // fuzzy resolve landed a real activity id, then the write's wire dropped.
+        let api = dead_api();
+        let dir = tmp_dir("offline-segment");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let started: jiff::Timestamp = "2026-07-15T13:00:00Z".parse().unwrap();
+        let out = queued.create_segment(9, started, 20).await.unwrap();
+        assert!(out.is_provisional());
+        assert_eq!(out.value().activity_id, Some(9), "the resolved real parent");
+        assert_eq!(out.value().minutes, Some(20));
+        assert!(out.value().id < 0, "a queued segment has no server id yet");
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].kind.word(), "log");
+        assert_eq!(intents[0].stream, "activity:9");
+        match &intents[0].kind {
+            IntentKind::SegmentCreate {
+                activity_id,
+                minutes,
+                ..
+            } => {
+                assert_eq!(*activity_id, 9);
+                assert_eq!(*minutes, 20);
+            }
+            other => panic!("expected a SegmentCreate intent, got {other:?}"),
+        }
     }
 
     // --- reflection (#117): the week note through the seam ---
