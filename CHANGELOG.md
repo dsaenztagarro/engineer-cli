@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-17
+
 ### Added
 
 - **The Queue inspector — the intent-log's own face, plus `engineer queue drop`.** EPIC #98's last surface: the offline write queue gets a TUI board (`:queue`, `g q`) and its headless verb set closes. The screen renders the **same `queue::pending()` read the CLI table prints** — the `#  INTENT  TARGET  AGE  STATE` columns are shaped once in a new `queue::view` module both faces call, so the board and `engineer queue` can never drift. Over that read, the design's §Queue inspector gestures: `j`/`k` move the full-row `▌` cursor; `r` **retry now** runs a reconnect drain through the shipped `drain_reporting` (the ambient replay transcript streams as intents land — the same tail the Timer reconcile runs); `x` **drop** the selected *diverged* write, armed then confirmed by a second `x`, routing the #109 `queue::drop_intent` (which refuses to orphan queued dependents); `⏎` on a diverged intent **opens the reconcile flow** — routed to the *shipped* reconcile panel on the Timer screen (#106/#109), never a second reconcile UI. Parked intents render dim with their reason (kept for review, out of the replay line); an empty queue reads calm (`queue empty · everything synced`); `q`/Esc close back to Home (the design's `q close` — the one screen where `q` isn't the global quit, since the inspector is a reached sub-surface). The headless twin gains **`engineer queue drop <id> [--force]`** — the standalone spelling of the board's `x`, a thinner shape over the *same* `drop_cmd`/`queue::drop_intent` as `resolve <id> --drop` (no logic duplicated, one confirmation contract). **Reachability decision:** the header's `↑N` / diverged chip stays a static status read — the TUI header isn't interactive, so there's no deep-link; the `g q` goto chord and the `:queue` palette verb (a full word with no `q`-alias, so `:q` still quits — exact beats prefix) are the way in. (`offline-write.dc.html` §Queue inspector; EPIC #98, #112 — the epic's final surface)
@@ -184,7 +186,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Explicit environment selection** via the `--env` flag and `ENGINEER_ENV` variable (`production` default, or `development` for localhost), with built-in URL presets so a fresh run needs no config file. Layered configuration: environment preset < `~/.config/engineer-cli/config.toml` (XDG-honored on all platforms, including macOS) < `ENGINEER_*` env vars.
 - **GitHub Actions CI** running `cargo test` on pushes to `master` and on pull requests.
 
-[Unreleased]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.6.0...v0.7.0
