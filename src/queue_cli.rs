@@ -11,9 +11,13 @@
 //! choice · 5 the replay itself failed (non-transport, non-problem — e.g.
 //! queue io). `resolve` exits 0 on success and 1 when the resolution can't
 //! apply (unknown id, not a divergence, a composition the stored payload
-//! can't support, or offline — resolving needs the wire). Output is plain
-//! when piped: ANSI colour is applied only on a TTY and never when NO_COLOR
-//! is set.
+//! can't support, an editor buffer that doesn't parse, or offline where the
+//! wire is needed). The rejected-write gestures (#109, §Diverged · rejected
+//! segment) ride the same verb: `--edit` opens the payload in `$EDITOR` and
+//! retries (exit 4 when the server still refuses), `--drop --force` is the
+//! explicit discard, `--skip` parks it for later. Output is plain when
+//! piped: ANSI colour is applied only on a TTY and never when NO_COLOR is
+//! set.
 
 use std::io::IsTerminal;
 
@@ -39,16 +43,32 @@ pub struct QueueArgs {
 enum QueueCmd {
     /// Replay the queue now — pending intents re-send in order.
     Sync,
-    /// Resolve a waiting divergence — pick a side; nothing is ever dropped
-    /// silently.
+    /// Resolve a waiting divergence — pick a side, or (for a rejected
+    /// segment/log) edit, drop, or skip it; nothing is ever dropped silently.
     Resolve {
         /// The intent id from the bare read's `#` column.
         id: u64,
         /// local: re-assert your session/segment on the server · server: park
         /// the local intents for review (never deleted) · both: write the
         /// local session as a segment and let the server session stand.
-        #[arg(long, value_parser = Resolution::NAMES.to_vec())]
-        keep: String,
+        #[arg(long, value_parser = Resolution::NAMES.to_vec(),
+              conflicts_with_all = ["edit", "drop", "skip"])]
+        keep: Option<String>,
+        /// Open the rejected write's payload in $EDITOR (its times/minutes
+        /// lines), then retry the replay with the corrected values.
+        #[arg(long, conflicts_with_all = ["drop", "skip"])]
+        edit: bool,
+        /// Drop the rejected write — explicit and final, nothing is written.
+        /// Requires --force: dropping discards the queued gesture forever.
+        #[arg(long, conflicts_with = "skip")]
+        drop: bool,
+        /// Confirm --drop.
+        #[arg(long, requires = "drop")]
+        force: bool,
+        /// Skip it for now — parked in the queue for review, excluded from
+        /// replay; the stream behind it keeps syncing.
+        #[arg(long)]
+        skip: bool,
     },
 }
 
@@ -62,7 +82,8 @@ pub async fn run(cfg: &Config, args: QueueArgs) -> Result<i32> {
     // diverged verb doesn't carry one (resolve's keep-local/keep-both).
     let cached = crate::timer_cache::load().map(|s| s.timer);
 
-    let outcome = dispatch(&api, &store, cached, args.cmd, args.json, colored).await?;
+    let editor = crate::editor::resolve_editor();
+    let outcome = dispatch(&api, &store, cached, args.cmd, args.json, colored, &editor).await?;
     for line in &outcome.out {
         println!("{line}");
     }
@@ -114,6 +135,7 @@ impl Outcome {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch(
     api: &ApiClient,
     store: &QueueStore,
@@ -121,13 +143,29 @@ async fn dispatch(
     cmd: Option<QueueCmd>,
     json: bool,
     colored: bool,
+    editor: &str,
 ) -> Result<Outcome, ApiError> {
     Ok(match cmd {
         None => read(store, json, colored),
         Some(QueueCmd::Sync) => sync(api, store, json, colored).await,
-        Some(QueueCmd::Resolve { id, keep }) => {
-            resolve_cmd(api, store, cached.as_ref(), id, &keep, json, colored).await
-        }
+        Some(QueueCmd::Resolve {
+            id,
+            keep,
+            edit,
+            drop,
+            force,
+            skip,
+        }) => match (keep, edit, drop, skip) {
+            (Some(keep), false, false, false) => {
+                resolve_cmd(api, store, cached.as_ref(), id, &keep, json, colored).await
+            }
+            (None, true, false, false) => edit_cmd(api, store, id, json, colored, editor).await,
+            (None, false, true, false) => drop_cmd(api, store, id, force, json, colored).await,
+            (None, false, false, true) => skip_cmd(api, store, id, json, colored).await,
+            _ => Outcome::refuse(
+                "pick exactly one resolution: --keep=local|server|both, --edit, --drop, or --skip",
+            ),
+        },
     })
 }
 
@@ -377,21 +415,24 @@ async fn resolve_cmd(
         // clap's value_parser already constrains this; belt and braces.
         return Outcome::refuse(format!("unknown --keep \"{keep}\" — local | server | both"));
     };
-    let resolved = match queue::resolve(api, store, cached, id, resolution, jiff::Timestamp::now())
-        .await
-    {
-        Ok(resolved) => resolved,
-        Err(queue::ResolveError::Api(ApiError::Transport(_))) => {
-            return Outcome::refuse("offline — resolving needs the wire; retry online");
-        }
-        Err(e @ (queue::ResolveError::NotDiverged(_) | queue::ResolveError::CannotCompose(_))) => {
-            return Outcome::refuse(e.to_string());
-        }
-        Err(queue::ResolveError::Api(e)) => {
-            return Outcome::refuse(format!("the server refused the resolution: {e}"));
-        }
-        Err(e @ queue::ResolveError::Queue(_)) => return Outcome::fail(e.to_string()),
-    };
+    let resolved =
+        match queue::resolve(api, store, cached, id, resolution, jiff::Timestamp::now()).await {
+            Ok(resolved) => resolved,
+            Err(queue::ResolveError::Api(ApiError::Transport(_))) => {
+                return Outcome::refuse("offline — resolving needs the wire; retry online");
+            }
+            Err(
+                e @ (queue::ResolveError::NotDiverged(_)
+                | queue::ResolveError::CannotCompose(_)
+                | queue::ResolveError::EditRejected(_)),
+            ) => {
+                return Outcome::refuse(e.to_string());
+            }
+            Err(queue::ResolveError::Api(e)) => {
+                return Outcome::refuse(format!("the server refused the resolution: {e}"));
+            }
+            Err(e @ queue::ResolveError::Queue(_)) => return Outcome::fail(e.to_string()),
+        };
 
     // Keep-local/keep-both unblocked the queue — continue the drain behind the
     // choice. Take-server parked the whole session; there is nothing behind it.
@@ -446,6 +487,169 @@ async fn resolve_cmd(
             if count == 1 { "" } else { "s" }
         ),
     };
+    if let Some(n) = replayed.filter(|n| *n > 0) {
+        line.push_str(&format!(" · {n} replayed behind it"));
+    }
+    Outcome::ok(line)
+}
+
+// ------------------------------- the rejected write's gestures (#109) ------
+
+/// `resolve <id> --edit` — the §Diverged · rejected segment `e`: open the
+/// stored payload's times in `$EDITOR`, re-pend the corrected write, retry
+/// the replay. An abort (`:cq`) changes nothing; a buffer that doesn't parse
+/// refuses and the intent stays diverged. Exits 4 when the retry diverges
+/// again — the caller must know the server still refuses.
+async fn edit_cmd(
+    api: &ApiClient,
+    store: &QueueStore,
+    id: u64,
+    json: bool,
+    colored: bool,
+    editor: &str,
+) -> Outcome {
+    let intent = match store.intents() {
+        Ok(intents) => intents.into_iter().find(|i| i.id == id),
+        Err(e) => return Outcome::fail(e.to_string()),
+    };
+    let Some(intent) = intent.filter(Intent::is_diverged) else {
+        return Outcome::refuse(format!("intent #{id} is not waiting on a divergence"));
+    };
+    let Some(seed) = queue::edit_seed(&intent) else {
+        return Outcome::refuse(format!(
+            "a diverged {} has nothing editable — resolve it with --keep=local|server|both",
+            intent.kind.word()
+        ));
+    };
+    let buffer = match crate::editor::edit_with(editor, &seed) {
+        Ok(crate::editor::EditorOutcome::Saved(buffer)) => buffer,
+        Ok(crate::editor::EditorOutcome::Aborted) => {
+            return Outcome::refuse("edit aborted — nothing changed, the intent stays diverged");
+        }
+        Err(e) => return Outcome::fail(format!("editor failed: {e}")),
+    };
+    let updated = match queue::apply_edit(store, id, &buffer) {
+        Ok(updated) => updated,
+        Err(e @ queue::ResolveError::Queue(_)) => return Outcome::fail(e.to_string()),
+        Err(e) => return Outcome::refuse(e.to_string()),
+    };
+
+    // The corrected write is pending again — retry now and report honestly.
+    let report = queue::drain(api, store).await.ok();
+    let (still_diverged, replayed) = report
+        .map(|r| (r.diverged, r.replayed))
+        .unwrap_or((false, 0));
+    let code = if still_diverged { EXIT_DIVERGED } else { 0 };
+
+    if json {
+        let mut v = serde_json::json!({
+            "resolved": id, "outcome": "edited",
+            "verb": updated.kind.word(),
+            "replayed": replayed, "diverged": still_diverged,
+        });
+        if still_diverged {
+            v["outcome"] = "edited-still-diverged".into();
+        }
+        return Outcome {
+            out: vec![v.to_string()],
+            err: vec![],
+            code,
+        };
+    }
+    let line = if still_diverged {
+        format!(
+            "{} edited, but the server still refuses — diverged again; edit once more, or --drop/--skip",
+            paint("✗", COLOR_DIVERGED, colored)
+        )
+    } else {
+        format!(
+            "{} edited — the corrected {} replayed ({replayed} landed)",
+            paint("✓", COLOR_SYNCED, colored),
+            updated.kind.word()
+        )
+    };
+    Outcome {
+        out: vec![line],
+        err: vec![],
+        code,
+    }
+}
+
+/// `resolve <id> --drop --force` — the §Diverged · rejected segment `x`: the
+/// queue's one user-chosen delete. `--force` is the confirmation (the TUI's
+/// second `x`); without it the verb refuses and nothing changes.
+async fn drop_cmd(
+    api: &ApiClient,
+    store: &QueueStore,
+    id: u64,
+    force: bool,
+    json: bool,
+    colored: bool,
+) -> Outcome {
+    if !force {
+        return Outcome::refuse(
+            "dropping discards the queued write forever — rerun with --force to confirm",
+        );
+    }
+    let dropped = match queue::drop_intent(store, id) {
+        Ok(dropped) => dropped,
+        Err(e @ queue::ResolveError::Queue(_)) => return Outcome::fail(e.to_string()),
+        Err(e) => return Outcome::refuse(e.to_string()),
+    };
+    // The stream is unblocked — drain what was queued behind the choice.
+    let replayed = queue::drain(api, store).await.ok().map(|r| r.replayed);
+
+    if json {
+        let mut v = serde_json::json!({
+            "resolved": id, "outcome": "dropped", "verb": dropped.kind.word(),
+        });
+        if let Some(n) = replayed {
+            v["replayed"] = n.into();
+        }
+        return Outcome::ok(v.to_string());
+    }
+    let mut line = format!(
+        "{} dropped — the queued {} left the queue; nothing was written",
+        paint("✓", COLOR_SYNCED, colored),
+        dropped.kind.word()
+    );
+    if let Some(n) = replayed.filter(|n| *n > 0) {
+        line.push_str(&format!(" · {n} replayed behind it"));
+    }
+    Outcome::ok(line)
+}
+
+/// `resolve <id> --skip` — the §Diverged · rejected segment `s`: park it
+/// (reason `skipped`), kept in the queue for a later decision, out of the
+/// replay line; the stream behind it keeps syncing.
+async fn skip_cmd(
+    api: &ApiClient,
+    store: &QueueStore,
+    id: u64,
+    json: bool,
+    colored: bool,
+) -> Outcome {
+    let skipped = match queue::skip_intent(store, id) {
+        Ok(skipped) => skipped,
+        Err(e @ queue::ResolveError::Queue(_)) => return Outcome::fail(e.to_string()),
+        Err(e) => return Outcome::refuse(e.to_string()),
+    };
+    let replayed = queue::drain(api, store).await.ok().map(|r| r.replayed);
+
+    if json {
+        let mut v = serde_json::json!({
+            "resolved": id, "outcome": "skipped", "verb": skipped.kind.word(),
+        });
+        if let Some(n) = replayed {
+            v["replayed"] = n.into();
+        }
+        return Outcome::ok(v.to_string());
+    }
+    let mut line = format!(
+        "{} skipped — the {} stays in the queue (parked), nothing lost",
+        paint("✓", COLOR_SYNCED, colored),
+        skipped.kind.word()
+    );
     if let Some(n) = replayed.filter(|n| *n > 0) {
         line.push_str(&format!(" · {n} replayed behind it"));
     }
@@ -522,11 +726,35 @@ mod tests {
             .unwrap();
     }
 
+    /// The pick-a-side shape of the resolve verb, gestures off.
+    fn resolve_keep(id: u64, keep: &str) -> QueueCmd {
+        QueueCmd::Resolve {
+            id,
+            keep: Some(keep.into()),
+            edit: false,
+            drop: false,
+            force: false,
+            skip: false,
+        }
+    }
+
+    /// One rejected-write gesture, everything else off.
+    fn resolve_gesture(id: u64, edit: bool, drop: bool, force: bool, skip: bool) -> QueueCmd {
+        QueueCmd::Resolve {
+            id,
+            keep: None,
+            edit,
+            drop,
+            force,
+            skip,
+        }
+    }
+
     #[tokio::test]
     async fn empty_queue_reads_calm_and_exits_zero() {
         let dir = scratch();
         let store = seeded(&dir, 0);
-        let outcome = dispatch(&dead_api(), &store, None, None, false, false)
+        let outcome = dispatch(&dead_api(), &store, None, None, false, false, "false")
             .await
             .unwrap();
         assert_eq!(outcome.code, 0);
@@ -537,7 +765,7 @@ mod tests {
     async fn pending_intents_read_as_a_table_and_exit_queued() {
         let dir = scratch();
         let store = seeded(&dir, 2);
-        let outcome = dispatch(&dead_api(), &store, None, None, false, false)
+        let outcome = dispatch(&dead_api(), &store, None, None, false, false, "false")
             .await
             .unwrap();
         assert_eq!(outcome.code, EXIT_QUEUED);
@@ -554,7 +782,7 @@ mod tests {
         let dir = scratch();
         let store = seeded(&dir, 2);
         diverge_first(&store);
-        let outcome = dispatch(&dead_api(), &store, None, None, false, false)
+        let outcome = dispatch(&dead_api(), &store, None, None, false, false, "false")
             .await
             .unwrap();
         assert_eq!(outcome.code, EXIT_DIVERGED);
@@ -566,7 +794,7 @@ mod tests {
         let dir = scratch();
         let store = seeded(&dir, 2);
         diverge_first(&store);
-        let outcome = dispatch(&dead_api(), &store, None, None, true, false)
+        let outcome = dispatch(&dead_api(), &store, None, None, true, false, "false")
             .await
             .unwrap();
         assert_eq!(outcome.code, EXIT_DIVERGED);
@@ -586,7 +814,7 @@ mod tests {
     async fn json_read_of_an_empty_queue_has_null_age() {
         let dir = scratch();
         let store = seeded(&dir, 0);
-        let outcome = dispatch(&dead_api(), &store, None, None, true, false)
+        let outcome = dispatch(&dead_api(), &store, None, None, true, false, "false")
             .await
             .unwrap();
         assert_eq!(outcome.code, 0);
@@ -600,7 +828,7 @@ mod tests {
         let dir = scratch();
         let store = seeded(&dir, 1);
         std::fs::write(dir.join("queue.json"), "{not json").unwrap();
-        let outcome = dispatch(&dead_api(), &store, None, None, false, false)
+        let outcome = dispatch(&dead_api(), &store, None, None, false, false, "false")
             .await
             .unwrap();
         assert_eq!(outcome.code, EXIT_FAILED);
@@ -628,6 +856,7 @@ mod tests {
             Some(QueueCmd::Sync),
             false,
             false,
+            "false",
         )
         .await
         .unwrap();
@@ -647,6 +876,7 @@ mod tests {
             Some(QueueCmd::Sync),
             false,
             false,
+            "false",
         )
         .await
         .unwrap();
@@ -665,6 +895,7 @@ mod tests {
             Some(QueueCmd::Sync),
             false,
             false,
+            "false",
         )
         .await
         .unwrap();
@@ -694,6 +925,7 @@ mod tests {
             Some(QueueCmd::Sync),
             false,
             false,
+            "false",
         )
         .await
         .unwrap();
@@ -723,6 +955,7 @@ mod tests {
             Some(QueueCmd::Sync),
             true,
             false,
+            "false",
         )
         .await
         .unwrap();
@@ -787,7 +1020,7 @@ mod tests {
                 };
             })
             .unwrap();
-        let outcome = dispatch(&dead_api(), &store, None, None, false, false)
+        let outcome = dispatch(&dead_api(), &store, None, None, false, false, "false")
             .await
             .unwrap();
         assert_eq!(outcome.code, EXIT_DIVERGED);
@@ -829,12 +1062,10 @@ mod tests {
             &client(&server),
             &store,
             None,
-            Some(QueueCmd::Resolve {
-                id,
-                keep: "local".into(),
-            }),
+            Some(resolve_keep(id, "local")),
             false,
             false,
+            "false",
         )
         .await
         .unwrap();
@@ -857,12 +1088,10 @@ mod tests {
             &dead_api(),
             &store,
             None,
-            Some(QueueCmd::Resolve {
-                id,
-                keep: "server".into(),
-            }),
+            Some(resolve_keep(id, "server")),
             false,
             false,
+            "false",
         )
         .await
         .unwrap();
@@ -883,7 +1112,7 @@ mod tests {
         assert!(intents.iter().all(Intent::is_parked));
 
         // The bare read now shows parked rows and reads calm (exit 0).
-        let read = dispatch(&dead_api(), &store, None, None, false, false)
+        let read = dispatch(&dead_api(), &store, None, None, false, false, "false")
             .await
             .unwrap();
         assert_eq!(read.code, 0, "parked-only is a calm queue");
@@ -923,12 +1152,10 @@ mod tests {
             &client(&server),
             &store,
             None,
-            Some(QueueCmd::Resolve {
-                id: start.id,
-                keep: "both".into(),
-            }),
+            Some(resolve_keep(start.id, "both")),
             true,
             false,
+            "false",
         )
         .await
         .unwrap();
@@ -968,12 +1195,10 @@ mod tests {
             &client(&server),
             &store,
             Some(cached_running()),
-            Some(QueueCmd::Resolve {
-                id: stop.id,
-                keep: "local".into(),
-            }),
+            Some(resolve_keep(stop.id, "local")),
             false,
             false,
+            "false",
         )
         .await
         .unwrap();
@@ -994,12 +1219,10 @@ mod tests {
             &dead_api(),
             &store,
             None,
-            Some(QueueCmd::Resolve {
-                id: 99,
-                keep: "server".into(),
-            }),
+            Some(resolve_keep(99, "server")),
             false,
             false,
+            "false",
         )
         .await
         .unwrap();
@@ -1013,12 +1236,10 @@ mod tests {
             &dead_api(),
             &store,
             None,
-            Some(QueueCmd::Resolve {
-                id,
-                keep: "local".into(),
-            }),
+            Some(resolve_keep(id, "local")),
             false,
             false,
+            "false",
         )
         .await
         .unwrap();
@@ -1058,7 +1279,7 @@ mod tests {
             })
             .unwrap();
 
-        let outcome = dispatch(&dead_api(), &store, None, None, true, false)
+        let outcome = dispatch(&dead_api(), &store, None, None, true, false, "false")
             .await
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&outcome.out[0]).unwrap();
@@ -1090,7 +1311,7 @@ mod tests {
         let dir = scratch();
         let store = seeded(&dir, 1);
         diverge_first(&store);
-        let outcome = dispatch(&dead_api(), &store, None, None, true, false)
+        let outcome = dispatch(&dead_api(), &store, None, None, true, false, "false")
             .await
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&outcome.out[0]).unwrap();
@@ -1120,10 +1341,207 @@ mod tests {
             Some(QueueCmd::Sync),
             false,
             false,
+            "false",
         )
         .await
         .unwrap();
         assert_eq!(outcome.code, 0, "parked is not queued-offline");
         assert_eq!(outcome.out, vec!["nothing to replay · 1 parked for review"]);
+    }
+
+    // ------------------------- the rejected write's gestures (#109) --------
+
+    /// A diverged `SegmentCreate` — the §Diverged · rejected segment case.
+    fn seeded_rejected_segment(dir: &std::path::Path) -> (QueueStore, u64) {
+        let store = QueueStore::at(dir.join("queue.json"));
+        let seg = store
+            .enqueue(IntentKind::SegmentCreate {
+                activity_id: 9,
+                started_at: "2026-07-15T14:02:00Z".parse().unwrap(),
+                minutes: 45,
+            })
+            .unwrap();
+        diverge_first(&store);
+        (store, seg.id)
+    }
+
+    /// The headless edit-retry round-trip, fake `$EDITOR` and all: the script
+    /// rewrites the buffer's times, the corrected segment replays on the wire,
+    /// and the queue drains.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn resolve_edit_roundtrips_through_the_editor_and_retries() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch();
+        let (store, id) = seeded_rejected_segment(&dir);
+
+        // A fake editor that replaces the seeded buffer with corrected times.
+        let editor = dir.join("fake-editor.sh");
+        std::fs::write(
+            &editor,
+            "#!/bin/sh\nprintf 'started_at: 2026-07-15T15:10:00Z\\nminutes: 30\\n' > \"$1\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/activities/9/segments"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "segment": { "started_at": "2026-07-15T15:10:00Z", "duration_minutes": 30 }
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 88, "activity_id": 9, "minutes": 30
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let outcome = dispatch(
+            &client(&server),
+            &store,
+            None,
+            Some(resolve_gesture(id, true, false, false, false)),
+            false,
+            false,
+            editor.to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, 0);
+        assert!(outcome.out[0].contains("edited"), "{}", outcome.out[0]);
+        assert!(outcome.out[0].contains("1 landed"), "{}", outcome.out[0]);
+        assert!(
+            store.intents().unwrap().is_empty(),
+            "the corrected write synced"
+        );
+    }
+
+    /// An aborted edit (`:cq` — the editor exits non-zero) changes nothing:
+    /// the intent stays diverged and the verb refuses.
+    #[tokio::test]
+    async fn resolve_edit_abort_keeps_the_intent_diverged() {
+        let dir = scratch();
+        let (store, id) = seeded_rejected_segment(&dir);
+        // `false` exits 1 without touching the buffer — an abort.
+        let outcome = dispatch(
+            &dead_api(),
+            &store,
+            None,
+            Some(resolve_gesture(id, true, false, false, false)),
+            false,
+            false,
+            "false",
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, 1);
+        assert!(
+            outcome.err[0].contains("edit aborted"),
+            "{}",
+            outcome.err[0]
+        );
+        assert!(store.intents().unwrap()[0].is_diverged(), "untouched");
+    }
+
+    #[tokio::test]
+    async fn resolve_drop_requires_force_then_removes_the_intent() {
+        let dir = scratch();
+        let (store, id) = seeded_rejected_segment(&dir);
+
+        // Without --force: refused — drop is explicit AND confirmed.
+        let outcome = dispatch(
+            &dead_api(),
+            &store,
+            None,
+            Some(resolve_gesture(id, false, true, false, false)),
+            false,
+            false,
+            "false",
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.err[0].contains("--force"), "{}", outcome.err[0]);
+        assert_eq!(store.intents().unwrap().len(), 1, "nothing left the queue");
+
+        // With --force: gone, explicitly — and the line says nothing was written.
+        let outcome = dispatch(
+            &dead_api(),
+            &store,
+            None,
+            Some(resolve_gesture(id, false, true, true, false)),
+            true,
+            false,
+            "false",
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, 0);
+        let v: serde_json::Value = serde_json::from_str(&outcome.out[0]).unwrap();
+        assert_eq!(v["outcome"], "dropped");
+        assert_eq!(v["verb"], "log");
+        assert!(
+            store.intents().unwrap().is_empty(),
+            "the one user-chosen delete"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_skip_parks_and_the_queue_reads_calm() {
+        let dir = scratch();
+        let (store, id) = seeded_rejected_segment(&dir);
+        let outcome = dispatch(
+            &dead_api(),
+            &store,
+            None,
+            Some(resolve_gesture(id, false, false, false, true)),
+            false,
+            false,
+            "false",
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, 0);
+        assert!(outcome.out[0].contains("skipped"), "{}", outcome.out[0]);
+        assert!(
+            outcome.out[0].contains("nothing lost"),
+            "{}",
+            outcome.out[0]
+        );
+
+        let intents = store.intents().unwrap();
+        assert_eq!(intents.len(), 1, "kept in the queue");
+        assert!(intents[0].is_parked());
+
+        // The bare read now shows the parked row and exits calm.
+        let read = dispatch(&dead_api(), &store, None, None, false, false, "false")
+            .await
+            .unwrap();
+        assert_eq!(read.code, 0, "skipped-only is a calm queue");
+    }
+
+    #[tokio::test]
+    async fn resolve_with_no_gesture_refuses_naming_the_choices() {
+        let dir = scratch();
+        let (store, id) = seeded_rejected_segment(&dir);
+        let outcome = dispatch(
+            &dead_api(),
+            &store,
+            None,
+            Some(resolve_gesture(id, false, false, false, false)),
+            false,
+            false,
+            "false",
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, 1);
+        assert!(
+            outcome.err[0].contains("--keep=local|server|both, --edit, --drop, or --skip"),
+            "{}",
+            outcome.err[0]
+        );
+        assert!(store.intents().unwrap()[0].is_diverged(), "untouched");
     }
 }

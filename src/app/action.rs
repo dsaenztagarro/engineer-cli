@@ -164,6 +164,31 @@ pub enum Action {
     /// `b` on the reconcile panel — keep both: the local session is written
     /// via `create_segment` and the server session stands.
     TimerReconcileBoth,
+    /// `e` on the reconcile panel's rejected-write face (#109) — open the
+    /// intent's payload in `$EDITOR`. The screen builds the seed and hands it
+    /// up via [`Action::QueueIntentEdit`]; the run loop owns the terminal.
+    TimerReconcileEdit,
+    /// The `$EDITOR` hand-off finished with a saved buffer — parse it back,
+    /// re-pend the intent, and retry the drain (`queue::apply_edit`).
+    TimerReconcileEditApply {
+        intent_id: u64,
+        buffer: String,
+    },
+    /// `x` on the reconcile panel's rejected-write face — drop the intent.
+    /// First press arms the confirm; only the very next `x` goes through
+    /// (the explicit, confirmed delete — never silent).
+    TimerReconcileDrop,
+    /// `s` on the reconcile panel's rejected-write face — skip: park the
+    /// intent (reason `skipped`), kept in the queue, out of the replay line.
+    TimerReconcileSkip,
+    /// Stash a queue intent's editable payload for the run loop's `$EDITOR`
+    /// hand-off (the `git commit` pattern the capture overlay and the week
+    /// retro already ride). The saved buffer comes back as
+    /// [`Action::TimerReconcileEditApply`].
+    QueueIntentEdit {
+        intent_id: u64,
+        seed: String,
+    },
     TimerCleared,
     TimerReload,
     /// The `s` key — stage-dependent primary: starts the clock when absent,
@@ -278,9 +303,12 @@ pub enum Action {
     // Activities table (`src/app/screens/activities.rs`). The first surface to
     // expose `meta.page`: `ActivitiesLoaded` carries the page's rows plus the
     // pagination meta; mutations (complete/archive/duplicate) refetch the page
-    // via `RefreshActivities` rather than patching a row in place.
+    // via `RefreshActivities` rather than patching a row in place. The rows
+    // arrive already folded with the pending queue (`queue::fold_activities`,
+    // #109) — still-queued creates render `◔ … provisional · queued` mixed
+    // with the confirmed, and queued segment minutes ride their parent row.
     ActivitiesLoaded {
-        items: Vec<Activity>,
+        items: Vec<crate::queue::FoldedActivity>,
         page: u32,
         per_page: u32,
         total: u32,

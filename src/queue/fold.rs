@@ -1,19 +1,24 @@
-//! The fold: cached server snapshot ⊕ pending intents → the *effective* local
-//! timer every offline read renders (offline-write.brief.md §3 — the queue is
-//! not a second ledger; the fold of it over the last server truth is what the
-//! user sees).
+//! The fold: server truth ⊕ pending intents → the *effective* picture every
+//! offline read renders (offline-write.brief.md §3 — the queue is not a
+//! second ledger; the fold of it over the last server truth is what the user
+//! sees). [`fold_timer`] composes the effective local clock; its sibling
+//! [`fold_activities`] mixes still-queued activity/segment writes into a
+//! fetched list as `◔ … provisional · queued` rows (#109, §Segment audit ·
+//! mixed).
 //!
-//! Pure over its inputs and computed fresh on every read — callers re-read
+//! Pure over their inputs and computed fresh on every read — callers re-read
 //! the queue each time, so a drained, dropped, or newly-enqueued intent shows
 //! up on the very next read with nothing to invalidate. Nothing here writes:
 //! the effective timer is never persisted, and `timer-cache.json` stays
 //! server-truth-only.
 
-use crate::api::Timer;
+use std::collections::HashSet;
+
+use crate::api::{Activity, Timer};
 use crate::timer_cache::StaleTimer;
 use crate::timer_clock;
 
-use super::intent::{Intent, IntentKind};
+use super::intent::{provisional_id, Intent, IntentKind};
 
 /// Where the effective timer came from — the honesty fields a caller renders
 /// next to the folded clock.
@@ -125,6 +130,96 @@ pub fn fold_timer(
             queue_depth,
         },
     ))
+}
+
+/// One row of the folded activities read: the fetched (or synthesized) row
+/// plus what the queue says about it. A provisional row — a still-queued
+/// `ActivityCreate` — carries the negative `provisional_id` and renders
+/// `◔ … provisional · queued` (§Segment audit · mixed); a confirmed row with
+/// `queued_minutes > 0` has pending `SegmentCreate` minutes folded onto it,
+/// rendered `◔ +Nm queued` next to the server-confirmed duration.
+#[derive(Debug, Clone)]
+pub struct FoldedActivity {
+    pub activity: Activity,
+    /// Minutes from pending `SegmentCreate` intents folded onto this row.
+    pub queued_minutes: u32,
+}
+
+impl FoldedActivity {
+    fn confirmed(activity: Activity) -> Self {
+        Self {
+            activity,
+            queued_minutes: 0,
+        }
+    }
+
+    /// Whether the row itself is a still-queued create — the negative
+    /// provisional id is the marker, exactly as everywhere else (#108).
+    pub fn is_provisional(&self) -> bool {
+        self.activity.id < 0
+    }
+}
+
+/// Fold the pending activity-write intents into a fetched activities list —
+/// the read-time composition the Activities table (and any segment-audit
+/// surface) renders, `fold_timer`'s sibling (§Segment audit · mixed). Pure
+/// over its inputs, computed fresh on every read, never written into any
+/// cache: a drained or dropped intent disappears from the picture on the
+/// very next fetch.
+///
+/// - A pending `ActivityCreate` appends a provisional row: negative
+///   `provisional_id`, the body's own title/kind/minutes, anchored at the
+///   moment the user gestured (`queued_at`).
+/// - A pending `SegmentCreate` folds its minutes onto the row it belongs to —
+///   a real fetched row, or a provisional one from earlier in the queue (the
+///   provisional parent id matches the synthesized row's id). Minutes on an
+///   activity that isn't in `rows` (another page, another filter) are
+///   dropped from *this* view only — the queue still holds them.
+/// - Ordering mirrors the drain's per-stream contract: nothing folds past the
+///   first diverged intent in its stream (an open choice gates the picture as
+///   it gates the replay), and parked intents never fold.
+pub fn fold_activities(rows: Vec<Activity>, intents: &[Intent]) -> Vec<FoldedActivity> {
+    let mut folded: Vec<FoldedActivity> = rows.into_iter().map(FoldedActivity::confirmed).collect();
+
+    let mut ordered: Vec<&Intent> = intents.iter().collect();
+    ordered.sort_by_key(|i| i.id);
+    let mut blocked: HashSet<&str> = HashSet::new();
+    for intent in ordered {
+        if intent.is_diverged() {
+            blocked.insert(intent.stream.as_str());
+            continue; // a diverged write is a loud choice, never a calm ◔ row
+        }
+        if !intent.is_pending() || blocked.contains(intent.stream.as_str()) {
+            continue;
+        }
+        match &intent.kind {
+            IntentKind::ActivityCreate { body } => {
+                folded.push(FoldedActivity::confirmed(Activity {
+                    id: provisional_id(intent.id),
+                    title: body.title.clone(),
+                    kind: body.kind.clone(),
+                    status: Some("planned".into()),
+                    duration_minutes: body.duration_minutes,
+                    started_at: Some(intent.queued_at),
+                    ..Default::default()
+                }));
+            }
+            IntentKind::SegmentCreate {
+                activity_id,
+                minutes,
+                ..
+            } => {
+                // A segment whose parent create is diverged references a
+                // provisional id with no folded row — it falls through this
+                // find and stays out of the picture, like the drain holds it.
+                if let Some(row) = folded.iter_mut().find(|f| f.activity.id == *activity_id) {
+                    row.queued_minutes += *minutes;
+                }
+            }
+            _ => {}
+        }
+    }
+    folded
 }
 
 /// The wall-clock moment the snapshot was taken, recovered from its age.
@@ -367,6 +462,142 @@ mod tests {
         );
         assert!(fold_timer(None, &[pause], now()).is_none());
         assert!(fold_timer(None, &[], now()).is_none(), "nothing to compose");
+    }
+
+    // --- fold_activities (#109, §Segment audit · mixed) ---------------------
+
+    fn parked(mut i: Intent) -> Intent {
+        i.state = IntentState::Parked {
+            reason: "skipped · Segment overlaps".into(),
+        };
+        i
+    }
+
+    fn create_intent(id: u64, title: &str, minutes: Option<u32>) -> Intent {
+        use crate::api::ActivityCreate;
+        intent(
+            id,
+            IntentKind::ActivityCreate {
+                body: ActivityCreate {
+                    title: title.into(),
+                    duration_minutes: minutes,
+                    kind: Some("build".into()),
+                    ..Default::default()
+                },
+            },
+        )
+    }
+
+    fn segment_intent(id: u64, activity_id: i64, minutes: u32) -> Intent {
+        intent(
+            id,
+            IntentKind::SegmentCreate {
+                activity_id,
+                started_at: ts("2026-07-15T14:02:00Z"),
+                minutes,
+            },
+        )
+    }
+
+    fn fetched(id: i64, title: &str, minutes: u32) -> Activity {
+        Activity {
+            id,
+            title: title.into(),
+            duration_minutes: Some(minutes),
+            status: Some("completed".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn queued_creates_render_as_provisional_rows_mixed_after_the_confirmed() {
+        let rows = vec![fetched(9, "Raft leader election", 52)];
+        let intents = [create_intent(3, "Paxos made live", Some(20))];
+
+        let folded = fold_activities(rows, &intents);
+        assert_eq!(folded.len(), 2, "confirmed + provisional, one list");
+        assert!(!folded[0].is_provisional());
+        let row = &folded[1];
+        assert!(row.is_provisional());
+        assert_eq!(row.activity.id, -3, "the provisional id is -(intent.id)");
+        assert_eq!(row.activity.title, "Paxos made live");
+        assert_eq!(row.activity.duration_minutes, Some(20));
+        assert_eq!(
+            row.activity.started_at,
+            Some(ts("2026-07-15T09:59:00Z")),
+            "anchored at the gesture, so WHEN renders"
+        );
+    }
+
+    #[test]
+    fn queued_segment_minutes_fold_onto_the_row_they_belong_to() {
+        let rows = vec![
+            fetched(9, "Raft leader election", 52),
+            fetched(12, "DDIA", 30),
+        ];
+        let intents = [segment_intent(4, 9, 20), segment_intent(5, 9, 14)];
+
+        let folded = fold_activities(rows, &intents);
+        assert_eq!(folded.len(), 2, "no new rows — the minutes ride the parent");
+        assert_eq!(folded[0].queued_minutes, 34, "20m + 14m queued on #9");
+        assert_eq!(
+            folded[0].activity.duration_minutes,
+            Some(52),
+            "the confirmed duration is never rewritten — the queued minutes ride beside it"
+        );
+        assert_eq!(folded[1].queued_minutes, 0);
+    }
+
+    #[test]
+    fn a_queued_segment_on_a_queued_create_folds_onto_the_provisional_row() {
+        let create = create_intent(3, "Paxos made live", Some(20));
+        let segment = segment_intent(4, -3, 15); // references the create's provisional id
+        let folded = fold_activities(vec![], &[create, segment]);
+        assert_eq!(folded.len(), 1);
+        assert!(folded[0].is_provisional());
+        assert_eq!(folded[0].queued_minutes, 15);
+    }
+
+    #[test]
+    fn an_empty_queue_leaves_the_fetched_rows_untouched() {
+        // The after-drain read: intents left the queue, the fold is identity.
+        let folded = fold_activities(vec![fetched(9, "Raft", 52)], &[]);
+        assert_eq!(folded.len(), 1);
+        assert!(!folded[0].is_provisional());
+        assert_eq!(folded[0].queued_minutes, 0);
+    }
+
+    #[test]
+    fn a_diverged_create_never_folds_and_holds_its_dependent_segment() {
+        // The rejected create is a loud choice, not a calm ◔ row; the segment
+        // referencing its provisional id has no row to land on — out of the
+        // picture exactly as the drain holds it.
+        let gated = diverged(create_intent(3, "Paxos made live", Some(20)));
+        let dependent = segment_intent(4, -3, 15);
+        let folded = fold_activities(vec![fetched(9, "Raft", 52)], &[gated, dependent]);
+        assert_eq!(folded.len(), 1, "only the confirmed row");
+        assert_eq!(folded[0].queued_minutes, 0);
+    }
+
+    #[test]
+    fn a_diverged_intent_gates_only_its_stream_in_the_fold() {
+        // Streams mirror the drain: a diverged segment on activity:9 gates
+        // later intents on activity:9, while the shared activity stream's
+        // create still folds.
+        let gated = diverged(segment_intent(3, 9, 45));
+        let behind = segment_intent(4, 9, 10); // same stream — held
+        let other = create_intent(5, "Paxos made live", None); // stream "activity" — flows
+        let folded = fold_activities(vec![fetched(9, "Raft", 52)], &[gated, behind, other]);
+        assert_eq!(folded[0].queued_minutes, 0, "nothing folds past the choice");
+        assert_eq!(folded.len(), 2, "the unrelated declare still folds");
+        assert!(folded[1].is_provisional());
+    }
+
+    #[test]
+    fn a_parked_intent_never_folds_into_the_activities_read() {
+        let skipped = parked(segment_intent(3, 9, 45));
+        let folded = fold_activities(vec![fetched(9, "Raft", 52)], &[skipped]);
+        assert_eq!(folded[0].queued_minutes, 0, "kept for review, not a row");
     }
 
     #[test]

@@ -232,6 +232,12 @@ enum Panel {
     /// highlighted side, `b` keeps both (session family), Esc defers (the
     /// panel reopens on the next poll while the divergence stands). Nothing
     /// resolves, drops, or merges without a gesture.
+    ///
+    /// A **rejected write** (#109, §Diverged · rejected segment — a 422 on a
+    /// replayed `SegmentCreate`/`ActivityCreate`) wears a different face on
+    /// the same panel: no sides to pick, three gestures instead — `e` edit
+    /// times (`$EDITOR`), `x` drop (armed, the second `x` confirms), `s`
+    /// skip & keep queued.
     Reconcile {
         /// The diverged intent, its stored RFC 7807 payload included — the
         /// server's objection renders verbatim (generic fallback today;
@@ -240,7 +246,19 @@ enum Panel {
         intent: Box<Intent>,
         /// 0 = local, 1 = server.
         selected: usize,
+        /// An `x` on the rejected-write face armed the drop confirm; only the
+        /// very next `x` goes through — any other gesture disarms.
+        confirm_drop: bool,
     },
+}
+
+/// The rejected-write face of the reconcile panel (#109): a server-refused
+/// segment or activity create resolves through edit/drop/skip, not sides.
+fn rejected_write(intent: &Intent) -> bool {
+    matches!(
+        intent.kind,
+        IntentKind::SegmentCreate { .. } | IntentKind::ActivityCreate { .. }
+    )
 }
 
 /// The reclaim list rows, in display order: trim · keep · stop · discard.
@@ -365,7 +383,18 @@ impl Timer {
         // The reconcile panel: the same plain-chooser grammar, plus `b` for
         // keep-both. Esc defers — the divergence stands and the panel reopens
         // on the next poll, exactly the reclaim list's deferral idiom.
-        if matches!(panel, Panel::Reconcile { .. }) {
+        // The rejected-write face has no sides: its gestures are the design's
+        // `e` edit / `x` drop / `s` skip, and Esc still defers.
+        if let Panel::Reconcile { intent, .. } = panel {
+            if rejected_write(intent) {
+                return match key.code {
+                    KeyCode::Esc => Some(Action::TimerBindCancel),
+                    KeyCode::Char('e') => Some(Action::TimerReconcileEdit),
+                    KeyCode::Char('x') => Some(Action::TimerReconcileDrop),
+                    KeyCode::Char('s') => Some(Action::TimerReconcileSkip),
+                    _ => None,
+                };
+            }
             return match key.code {
                 KeyCode::Esc => Some(Action::TimerBindCancel),
                 KeyCode::Enter => Some(Action::TimerBindSubmit),
@@ -399,6 +428,13 @@ impl Timer {
         // disarms it.
         if self.discard_armed && !matches!(action, Action::TimerDiscard) {
             self.discard_armed = false;
+        }
+        // The rejected-write drop confirm is strictly two consecutive `x`s the
+        // same way — any other gesture disarms it.
+        if !matches!(action, Action::TimerReconcileDrop) {
+            if let Some(Panel::Reconcile { confirm_drop, .. }) = self.panel.as_mut() {
+                *confirm_drop = false;
+            }
         }
         match action {
             // Snapshot update (from on_enter, the header poll, or a completed
@@ -473,6 +509,7 @@ impl Timer {
                     self.panel = Some(Panel::Reconcile {
                         intent,
                         selected: 0,
+                        confirm_drop: false,
                     });
                 }
                 (Some(intent), Some(Panel::Reconcile { intent: cur, .. })) => *cur = intent,
@@ -494,6 +531,81 @@ impl Timer {
                     let id = intent.id;
                     self.close_panel();
                     spawn_resolve(api, tx, self.queue_paths.clone(), id, Resolution::KeepBoth);
+                }
+            }
+            // `e` on the rejected-write face: hand the payload's editable
+            // lines to the run loop's $EDITOR hand-off. The panel stays —
+            // the intent is still diverged until the saved buffer applies.
+            Action::TimerReconcileEdit => {
+                if let Some(Panel::Reconcile { intent, .. }) = self.panel.as_ref() {
+                    match crate::queue::edit_seed(intent) {
+                        Some(seed) => {
+                            let _ = tx.send(Action::QueueIntentEdit {
+                                intent_id: intent.id,
+                                seed,
+                            });
+                        }
+                        None => {
+                            return Some((
+                                Level::Warning,
+                                "this divergence has nothing editable — pick a side instead".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+            // The saved $EDITOR buffer: parse it back, re-pend the intent,
+            // retry the drain — all off the reducer thread.
+            Action::TimerReconcileEditApply { intent_id, buffer } => {
+                self.close_panel();
+                spawn_edit_apply(api, tx, self.queue_paths.clone(), intent_id, buffer);
+            }
+            // `x` on the rejected-write face: armed, then confirmed — the
+            // queue's one user-chosen delete is never a single keystroke.
+            Action::TimerReconcileDrop => {
+                if let Some(Panel::Reconcile {
+                    intent,
+                    confirm_drop,
+                    ..
+                }) = self.panel.as_mut()
+                {
+                    if !rejected_write(intent) {
+                        return None;
+                    }
+                    if !*confirm_drop {
+                        *confirm_drop = true;
+                        return Some((
+                            Level::Warning,
+                            "drop this queued write? `x` again to confirm — it will never be written".into(),
+                        ));
+                    }
+                    let id = intent.id;
+                    self.close_panel();
+                    spawn_reject_gesture(
+                        api,
+                        tx,
+                        self.queue_paths.clone(),
+                        id,
+                        RejectGesture::Drop,
+                    );
+                }
+            }
+            // `s` on the rejected-write face: skip — parked (kept, reviewed
+            // later), and the stream behind it keeps syncing.
+            Action::TimerReconcileSkip => {
+                if let Some(Panel::Reconcile { intent, .. }) = self.panel.as_ref() {
+                    if !rejected_write(intent) {
+                        return None;
+                    }
+                    let id = intent.id;
+                    self.close_panel();
+                    spawn_reject_gesture(
+                        api,
+                        tx,
+                        self.queue_paths.clone(),
+                        id,
+                        RejectGesture::Skip,
+                    );
                 }
             }
             Action::TimerReload => spawn_load(api, tx),
@@ -774,8 +886,15 @@ impl Timer {
             }
             // ⏎ keeps the highlighted side: local re-asserts the gesture on
             // the server (switch / create_segment), server parks the local
-            // intents for review — never a delete either way.
-            Some(Panel::Reconcile { intent, selected }) => {
+            // intents for review — never a delete either way. The rejected-
+            // write face has no sides, so ⏎ never reaches here for it (its
+            // keys are e/x/s).
+            Some(Panel::Reconcile {
+                intent, selected, ..
+            }) => {
+                if rejected_write(intent) {
+                    return None;
+                }
                 let resolution = if *selected == 0 {
                     Resolution::KeepLocal
                 } else {
@@ -1596,7 +1715,12 @@ impl Timer {
     /// is gone. A code-less problem renders the objection verbatim, exactly as
     /// the generic fallback always did.
     fn render_reconcile_panel(&mut self, frame: &mut Frame, area: Rect) {
-        let Some(Panel::Reconcile { intent, selected }) = self.panel.as_ref() else {
+        let Some(Panel::Reconcile {
+            intent,
+            selected,
+            confirm_drop,
+        }) = self.panel.as_ref()
+        else {
             return;
         };
         let IntentState::Diverged {
@@ -1610,6 +1734,17 @@ impl Timer {
         else {
             return;
         };
+        if rejected_write(intent) {
+            return render_rejected_write(
+                frame,
+                area,
+                intent,
+                *status,
+                title,
+                detail,
+                *confirm_drop,
+            );
+        }
         let is_stop = matches!(intent.kind, IntentKind::TimerStop { .. });
         let already_running = code.as_deref() == Some(crate::api::codes::TIMER_ALREADY_RUNNING);
         let gone = code.as_deref() == Some(crate::api::codes::NO_LIVE_TIMER);
@@ -1858,8 +1993,17 @@ impl Timer {
                 ]);
             }
             // The reconcile gestures the design panels advertise; `b` only
-            // where there are two sessions to keep.
+            // where there are two sessions to keep, and the rejected-write
+            // face's own three (§Diverged · rejected segment).
             Some(Panel::Reconcile { intent, .. }) => {
+                if rejected_write(intent) {
+                    return widgets::footer_hints(&[
+                        ("e", "edit times ($EDITOR)"),
+                        ("x", "drop it"),
+                        ("s", "skip & keep queued"),
+                        ("Esc", "decide later"),
+                    ]);
+                }
                 return if matches!(intent.kind, IntentKind::TimerStop { .. }) {
                     widgets::footer_hints(&[
                         ("j/k", "choose"),
@@ -1946,6 +2090,106 @@ impl Timer {
             }
         }
     }
+}
+
+/// §Diverged · rejected segment (#109): the rejected-write face of the
+/// reconcile panel. No sides to pick — the refused write's own identity
+/// (times, minutes, target), the server's objection verbatim, and the three
+/// gestures: `e` edit times, `x` drop (confirmed), `s` skip & keep queued.
+fn render_rejected_write(
+    frame: &mut Frame,
+    area: Rect,
+    intent: &Intent,
+    status: u16,
+    title: &str,
+    detail: &str,
+    confirm_drop: bool,
+) {
+    let danger = Style::default()
+        .fg(theme::DANGER)
+        .add_modifier(Modifier::BOLD);
+    let heading = match intent.kind {
+        IntentKind::SegmentCreate { .. } => "Server refused this segment",
+        _ => "Server refused this log",
+    };
+    let block = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(theme::DANGER))
+        .title(Span::styled(format!(" {heading} "), danger));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let hhmm = |ts: jiff::Timestamp| {
+        ts.to_zoned(jiff::tz::TimeZone::system())
+            .strftime("%H:%M")
+            .to_string()
+    };
+    // The refused write's own identity — what the user gestured, verbatim.
+    let (what, caption) = match &intent.kind {
+        IntentKind::SegmentCreate {
+            activity_id,
+            started_at,
+            minutes,
+        } => {
+            let end = jiff::Timestamp::from_second(started_at.as_second() + *minutes as i64 * 60)
+                .unwrap_or(*started_at);
+            let target = if *activity_id < 0 {
+                "a queued activity".to_string()
+            } else {
+                format!("activity #{activity_id}")
+            };
+            (
+                format!("segment {}–{}", hhmm(*started_at), hhmm(end)),
+                format!("· {minutes}m · {target}"),
+            )
+        }
+        IntentKind::ActivityCreate { body } => {
+            let mut caption = body
+                .duration_minutes
+                .map(|m| format!("· {m}m"))
+                .unwrap_or_default();
+            if let Some(day) = body.planned_on {
+                caption.push_str(&format!(" · planned {day}"));
+            }
+            (format!("log \"{}\"", body.title), caption)
+        }
+        other => (other.word().to_string(), String::new()),
+    };
+    let age_s = (jiff::Timestamp::now().as_second() - intent.queued_at.as_second()).max(0);
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(what, Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {caption}"), theme::muted()),
+            Span::styled(format!("   queued {} ago", fmt_age(age_s)), theme::muted()),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("{status}"), danger),
+            Span::styled(
+                if detail.is_empty() {
+                    format!(" {title}")
+                } else {
+                    format!(" {title} — {detail}")
+                },
+                theme::muted(),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "the offending minutes stay in the queue until you decide — nothing is written or dropped behind your back.",
+            theme::muted(),
+        )),
+    ];
+    if confirm_drop {
+        lines.push(Line::from(Span::styled(
+            "x again to drop it — it will never be written",
+            danger,
+        )));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: true }),
+        inner,
+    );
 }
 
 /// The watch-face digit font: 5 rows tall, `█`-on-space, one column of gap
@@ -2547,6 +2791,136 @@ fn spawn_resolve(
             }
         }
     });
+}
+
+/// The rejected-write gestures that act on the store alone (#109): drop
+/// (explicit, already confirmed by the second `x`) and skip (park).
+#[derive(Clone, Copy)]
+enum RejectGesture {
+    Drop,
+    Skip,
+}
+
+/// Apply a drop/skip to the rejected write through the shared `queue`
+/// gestures — the same functions `engineer queue resolve --drop/--skip`
+/// calls. Both unblock the intent's stream, so the drain continues behind
+/// the choice, streaming the shipped reconnect transcript.
+fn spawn_reject_gesture(
+    api: &ApiClient,
+    tx: &UnboundedSender<Action>,
+    paths: QueuePaths,
+    intent_id: u64,
+    gesture: RejectGesture,
+) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => return notify_seam_error(&tx, "reconcile failed", e),
+        };
+        let store = match queue_store(&paths) {
+            Ok(store) => store,
+            Err(e) => return notify_seam_error(&tx, "reconcile failed", e),
+        };
+        let outcome = match gesture {
+            RejectGesture::Drop => crate::queue::drop_intent(&store, intent_id).map(|dropped| {
+                format!(
+                    "dropped — the queued {} left the queue; nothing was written",
+                    dropped.kind.word()
+                )
+            }),
+            RejectGesture::Skip => crate::queue::skip_intent(&store, intent_id).map(|skipped| {
+                format!(
+                    "skipped — the {} stays in the queue (parked), nothing lost",
+                    skipped.kind.word()
+                )
+            }),
+        };
+        match outcome {
+            Ok(text) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Success,
+                    text,
+                });
+                drain_behind(&queued, &tx).await;
+                let _ = tx.send(Action::TimerReload);
+            }
+            Err(e) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Error,
+                    text: format!("reconcile failed: {e} — the intent stays as it was"),
+                });
+                let _ = tx.send(Action::TimerReload);
+            }
+        }
+    });
+}
+
+/// Apply a saved $EDITOR buffer to the rejected write (`queue::apply_edit`):
+/// the corrected payload re-pends and the drain retries it immediately. A
+/// buffer that doesn't parse refuses loudly and the intent stays diverged —
+/// the panel reopens on the next poll.
+fn spawn_edit_apply(
+    api: &ApiClient,
+    tx: &UnboundedSender<Action>,
+    paths: QueuePaths,
+    intent_id: u64,
+    buffer: String,
+) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => return notify_seam_error(&tx, "edit failed", e),
+        };
+        let store = match queue_store(&paths) {
+            Ok(store) => store,
+            Err(e) => return notify_seam_error(&tx, "edit failed", e),
+        };
+        match crate::queue::apply_edit(&store, intent_id, &buffer) {
+            Ok(updated) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Success,
+                    text: format!("edited — retrying the queued {}", updated.kind.word()),
+                });
+                drain_behind(&queued, &tx).await;
+                let _ = tx.send(Action::TimerReload);
+            }
+            Err(e) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Error,
+                    text: format!("edit refused: {e} — the intent stays diverged"),
+                });
+                let _ = tx.send(Action::TimerReload);
+            }
+        }
+    });
+}
+
+/// The store the reject gestures mutate — the screen's injected scratch paths
+/// in tests, the shared XDG queue in production.
+fn queue_store(paths: &QueuePaths) -> Result<QueueStore, crate::queue::QueueError> {
+    match paths {
+        Some((queue, _)) => Ok(QueueStore::at(queue.clone())),
+        None => QueueStore::open_default(),
+    }
+}
+
+/// Continue the drain behind a resolved choice, streaming the shipped
+/// reconnect transcript (`ReplayProgress` per landed intent, the report
+/// tile at the end) — the same tail `spawn_resolve` runs.
+async fn drain_behind(queued: &crate::queue::QueuedClient, tx: &UnboundedSender<Action>) {
+    let tx2 = tx.clone();
+    if let Some(report) = queued
+        .drain_reporting(|intent| {
+            let _ = tx2.send(Action::ReplayProgress {
+                word: intent.kind.word().to_string(),
+            });
+        })
+        .await
+    {
+        let _ = tx.send(Action::ReplayFinished(report));
+    }
 }
 
 /// The week's per-day minutes for the rail's sparkline — the current week's
@@ -4089,6 +4463,267 @@ mod tests {
         assert!(text.contains("409 Conflict"), "{text}");
         assert!(text.contains("start · queued"), "the intent's identity");
         assert!(text.contains("never deletes them"), "{text}");
+    }
+
+    // --------------------- the rejected write's face (#109, case B)
+
+    /// A diverged `SegmentCreate`, exactly as a 422 on replay parks it.
+    fn rejected_segment() -> Intent {
+        let mut intent = diverged_intent(IntentKind::SegmentCreate {
+            activity_id: 9,
+            started_at: "2026-07-15T14:02:00Z".parse().unwrap(),
+            minutes: 45,
+        });
+        if let IntentState::Diverged {
+            status,
+            title,
+            detail,
+            ..
+        } = &mut intent.state
+        {
+            *status = 422;
+            *title = "Segment overlaps".into();
+            *detail = "overlaps an existing segment 14:20–15:05 (web)".into();
+        }
+        intent
+    }
+
+    /// Seed the screen's scratch store with a diverged segment and open the
+    /// panel on it — the full path a drop/skip gesture mutates.
+    fn seeded_rejected_screen() -> (Timer, ApiClient, mpsc::UnboundedSender<Action>, QueueStore) {
+        let (mut s, api, tx) = setup();
+        let (queue_path, _) = s.queue_paths.clone().unwrap();
+        let store = QueueStore::at(&queue_path);
+        store
+            .enqueue(IntentKind::SegmentCreate {
+                activity_id: 9,
+                started_at: "2026-07-15T14:02:00Z".parse().unwrap(),
+                minutes: 45,
+            })
+            .unwrap();
+        store
+            .mutate(|doc| {
+                doc.intents_mut()[0].state = IntentState::Diverged {
+                    status: 422,
+                    title: "Segment overlaps".into(),
+                    detail: "overlaps an existing segment 14:20–15:05 (web)".into(),
+                    type_uri: None,
+                    errors: vec![],
+                    code: None,
+                    conflict: Default::default(),
+                };
+            })
+            .unwrap();
+        let intent = store.intents().unwrap().remove(0);
+        s.panel = Some(Panel::Reconcile {
+            intent: Box::new(intent),
+            selected: 0,
+            confirm_drop: false,
+        });
+        (s, api, tx, store)
+    }
+
+    /// Poll the store until `pred` holds — the spawned gesture lands async.
+    async fn wait_for(store: &QueueStore, pred: impl Fn(&[Intent]) -> bool) -> Vec<Intent> {
+        for _ in 0..200 {
+            let intents = store.intents().unwrap();
+            if pred(&intents) {
+                return intents;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        store.intents().unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_rejected_face_routes_e_x_s_and_defers_never_the_sides() {
+        use crossterm::event::KeyModifiers;
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerDivergedLoaded(Some(Box::new(rejected_segment()))),
+        )
+        .await;
+        let press = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+        assert!(matches!(
+            s.intercept_key(press(KeyCode::Char('e'))),
+            Some(Action::TimerReconcileEdit)
+        ));
+        assert!(matches!(
+            s.intercept_key(press(KeyCode::Char('x'))),
+            Some(Action::TimerReconcileDrop)
+        ));
+        assert!(matches!(
+            s.intercept_key(press(KeyCode::Char('s'))),
+            Some(Action::TimerReconcileSkip)
+        ));
+        assert!(matches!(
+            s.intercept_key(press(KeyCode::Esc)),
+            Some(Action::TimerBindCancel)
+        ));
+        // No sides on this face: j/k/⏎/b do nothing.
+        assert!(s.intercept_key(press(KeyCode::Char('j'))).is_none());
+        assert!(s.intercept_key(press(KeyCode::Enter)).is_none());
+        assert!(s.intercept_key(press(KeyCode::Char('b'))).is_none());
+    }
+
+    #[tokio::test]
+    async fn rejected_drop_arms_warns_then_the_second_x_drops_from_the_queue() {
+        let (mut s, api, tx, store) = seeded_rejected_screen();
+
+        // First `x`: armed, loud, nothing dropped.
+        let warned = s.handle(Action::TimerReconcileDrop, &api, &tx).await;
+        let (level, text) = warned.expect("the confirm is surfaced");
+        assert_eq!(level, Level::Warning);
+        assert!(text.contains("x` again"), "{text}");
+        assert!(
+            matches!(
+                s.panel,
+                Some(Panel::Reconcile {
+                    confirm_drop: true,
+                    ..
+                })
+            ),
+            "armed, still open"
+        );
+        assert_eq!(store.intents().unwrap().len(), 1, "nothing left the queue");
+
+        // Any other gesture disarms — a stray `x` later must not drop.
+        feed(&mut s, &api, &tx, Action::TimerToggleRail).await;
+        assert!(matches!(
+            s.panel,
+            Some(Panel::Reconcile {
+                confirm_drop: false,
+                ..
+            })
+        ));
+
+        // Arm again, confirm: the intent leaves the queue — explicitly.
+        feed(&mut s, &api, &tx, Action::TimerReconcileDrop).await;
+        feed(&mut s, &api, &tx, Action::TimerReconcileDrop).await;
+        assert!(s.panel.is_none(), "the choice is made");
+        let intents = wait_for(&store, |i| i.is_empty()).await;
+        assert!(intents.is_empty(), "the one user-chosen delete");
+    }
+
+    #[tokio::test]
+    async fn rejected_skip_parks_the_intent_and_keeps_it_stored() {
+        let (mut s, api, tx, store) = seeded_rejected_screen();
+        feed(&mut s, &api, &tx, Action::TimerReconcileSkip).await;
+        assert!(s.panel.is_none());
+        let intents = wait_for(&store, |i| i.iter().all(Intent::is_parked)).await;
+        assert_eq!(intents.len(), 1, "kept in the queue — never deleted");
+        match &intents[0].state {
+            IntentState::Parked { reason } => {
+                assert!(reason.starts_with("skipped"), "{reason}")
+            }
+            other => panic!("expected parked, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_edit_hands_the_seed_to_the_editor_hand_off() {
+        // A live receiver this time — the assertion is the dispatched action.
+        let config = Config::for_environment(Environment::Development);
+        let api = ApiClient::with_token(config.api_url.clone(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Timer {
+            queue_paths: Some(scratch_paths()),
+            ..Timer::default()
+        };
+        s.handle(
+            Action::TimerDivergedLoaded(Some(Box::new(rejected_segment()))),
+            &api,
+            &tx,
+        )
+        .await;
+        s.handle(Action::TimerReconcileEdit, &api, &tx).await;
+        let action = rx.try_recv().expect("the hand-off is dispatched");
+        match action {
+            Action::QueueIntentEdit { intent_id, seed } => {
+                assert_eq!(intent_id, 7);
+                assert!(seed.contains("started_at: 2026-07-15T14:02:00Z"), "{seed}");
+                assert!(seed.contains("minutes: 45"), "{seed}");
+                assert!(seed.contains("422 Segment overlaps"), "{seed}");
+            }
+            other => panic!("expected the editor hand-off, got {other:?}"),
+        }
+        assert!(
+            matches!(s.panel, Some(Panel::Reconcile { .. })),
+            "still diverged until the saved buffer applies"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_edit_apply_repends_the_corrected_intent() {
+        let (mut s, api, tx, store) = seeded_rejected_screen();
+        let id = store.intents().unwrap()[0].id;
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerReconcileEditApply {
+                intent_id: id,
+                buffer: "started_at: 2026-07-15T15:10:00Z\nminutes: 30".into(),
+            },
+        )
+        .await;
+        assert!(s.panel.is_none());
+        // The retry-drain hits the dev api (dead) — the intent stays *pending*
+        // with the corrected payload: re-pended, never lost.
+        let intents = wait_for(&store, |i| i.iter().all(Intent::is_pending)).await;
+        assert_eq!(intents.len(), 1);
+        match &intents[0].kind {
+            IntentKind::SegmentCreate {
+                started_at,
+                minutes,
+                ..
+            } => {
+                assert_eq!(started_at.to_string(), "2026-07-15T15:10:00Z");
+                assert_eq!(*minutes, 30);
+            }
+            other => panic!("expected the corrected segment, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_rejected_face_renders_the_design_copy_and_hints() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerDivergedLoaded(Some(Box::new(rejected_segment()))),
+        )
+        .await;
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
+        terminal.draw(|f| s.render(f, f.area())).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("Server refused this segment"), "{text}");
+        assert!(text.contains("422 Segment overlaps"), "{text}");
+        assert!(text.contains("45m"), "the gestured minutes: {text}");
+        assert!(
+            text.contains("nothing is written or dropped"),
+            "the never-silent line: {text}"
+        );
+
+        let hints = format!("{:?}", s.hints());
+        assert!(hints.contains("edit times"), "{hints}");
+        assert!(hints.contains("drop it"), "{hints}");
+        assert!(hints.contains("skip & keep queued"), "{hints}");
+        assert!(hints.contains("decide later"), "{hints}");
     }
 
     // -------------------------------------- the coded conflicts (#107)

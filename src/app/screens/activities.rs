@@ -17,6 +17,15 @@
 //!
 //! Mutations refetch the current page rather than patching the row in place, so
 //! the visible ledger always mirrors the server (the notes-browser discipline).
+//!
+//! Offline honesty (#109, §Segment audit · mixed): every fetch folds the
+//! pending queue over the server page (`queue::fold_activities`) — a
+//! still-queued create renders as a full `◔ … provisional · queued` row mixed
+//! with the confirmed, and a queued segment's minutes ride its parent row as
+//! `◔+Nm`. Read-time composition only: nothing provisional is ever written
+//! into a cache, and the rows settle to plain on the next fetch after the
+//! drain. Row actions refuse on a provisional row — there is no server id to
+//! act on yet.
 
 use jiff::Timestamp;
 use ratatui::layout::{Constraint, Rect};
@@ -28,8 +37,11 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::{Activity, ActivityFilters, ApiClient};
 use crate::app::action::Action;
+use crate::queue::{self, FoldedActivity, QueueStore};
 use crate::ui::notify::Level;
 use crate::ui::{layout::bordered, theme, widgets};
+
+use super::QueuePaths;
 
 /// Page size we request. Also the divisor for "page N of M" when the server
 /// omits `per_page` from `meta`.
@@ -47,7 +59,9 @@ const FILTERS: [(&str, Option<&str>, Option<&str>); 5] = [
 ];
 
 pub struct Activities {
-    items: Vec<Activity>,
+    /// The server page with the pending queue folded over it (#109) — the
+    /// provisional rows carry negative ids, exactly as the queue minted them.
+    items: Vec<FoldedActivity>,
     state: TableState,
     /// 1-based current page (server-side).
     page: u32,
@@ -61,6 +75,9 @@ pub struct Activities {
     loading: bool,
     /// `Some` while the full-field detail read is open, over the table.
     detail: Option<Activity>,
+    /// Queue location for the read-time fold; `None` (production) reads the
+    /// shared XDG queue. Tests inject a scratch dir.
+    queue_paths: QueuePaths,
 }
 
 impl Default for Activities {
@@ -78,6 +95,7 @@ impl Default for Activities {
             searching: false,
             loading: false,
             detail: None,
+            queue_paths: None,
         }
     }
 }
@@ -98,11 +116,18 @@ impl Activities {
             per_page: Some(self.per_page),
             ..Default::default()
         };
+        let paths = self.queue_paths.clone();
         tokio::spawn(async move {
             match api.list_activities(&filters).await {
                 Ok(list) => {
+                    // Fold the pending queue over the fetched page — read-time
+                    // composition, re-read fresh on every fetch so a drained
+                    // intent's row settles to plain on the very next load.
+                    // Best-effort on the read side, like the timer fold: an
+                    // unreadable queue folds as empty (enqueue stays loud).
+                    let intents = read_queue(&paths);
                     let _ = tx.send(Action::ActivitiesLoaded {
-                        items: list.data,
+                        items: queue::fold_activities(list.data, &intents),
                         page: list.meta.page,
                         per_page: list.meta.per_page,
                         total: list.meta.total,
@@ -128,19 +153,36 @@ impl Activities {
     }
 
     /// The rows visible after the client-side `/` narrow (all rows when empty).
-    fn visible(&self) -> Vec<&Activity> {
+    fn visible(&self) -> Vec<&FoldedActivity> {
         if self.query.is_empty() {
             return self.items.iter().collect();
         }
         let q = self.query.to_ascii_lowercase();
-        self.items.iter().filter(|a| matches_query(a, &q)).collect()
+        self.items
+            .iter()
+            .filter(|f| matches_query(&f.activity, &q))
+            .collect()
     }
 
-    fn selected(&self) -> Option<Activity> {
+    fn selected(&self) -> Option<FoldedActivity> {
         let vis = self.visible();
         self.state
             .selected()
             .and_then(|i| vis.get(i).cloned().cloned())
+    }
+
+    /// The selected row when it names a real server record — the row actions'
+    /// gate. A provisional (still-queued) row has no server id to act on, so
+    /// the gesture refuses with the way forward instead of 404ing blind.
+    fn selected_confirmed(&self) -> Result<Option<Activity>, (Level, String)> {
+        match self.selected() {
+            Some(f) if f.is_provisional() => Err((
+                Level::Warning,
+                "still queued — it syncs when the wire returns; resolve a stuck write in `engineer queue`".into(),
+            )),
+            Some(f) => Ok(Some(f.activity)),
+            None => Ok(None),
+        }
     }
 
     /// The detail read and the search prompt own keys before the global keymap.
@@ -246,11 +288,16 @@ impl Activities {
                 self.state.select(Some(0));
             }
             Action::ActivitiesOpenDetail => {
-                if let Some(a) = self.selected() {
+                if let Some(f) = self.selected() {
                     // Open instantly from the row, then refine with the full
                     // record (segments count, generated notes the list omits).
-                    let id = a.id;
-                    self.detail = Some(a);
+                    // A provisional row has no server record to refine from —
+                    // the local fold is everything there is, honestly.
+                    let id = f.activity.id;
+                    self.detail = Some(f.activity);
+                    if id < 0 {
+                        return None;
+                    }
                     let (api, tx) = (api.clone(), tx.clone());
                     tokio::spawn(async move {
                         if let Ok(full) = api.get_activity(id).await {
@@ -266,7 +313,10 @@ impl Activities {
             }
             Action::ActivitiesCloseDetail => self.detail = None,
             Action::ActivitiesComplete => {
-                if let Some(a) = self.selected() {
+                if let Some(a) = match self.selected_confirmed() {
+                    Ok(a) => a,
+                    Err(warn) => return Some(warn),
+                } {
                     let (api, tx) = (api.clone(), tx.clone());
                     let title = a.title.clone();
                     tokio::spawn(async move {
@@ -289,7 +339,10 @@ impl Activities {
                 }
             }
             Action::ActivitiesArchive => {
-                if let Some(a) = self.selected() {
+                if let Some(a) = match self.selected_confirmed() {
+                    Ok(a) => a,
+                    Err(warn) => return Some(warn),
+                } {
                     let archived = a.is_archived();
                     let (api, tx) = (api.clone(), tx.clone());
                     tokio::spawn(async move {
@@ -321,7 +374,10 @@ impl Activities {
                 }
             }
             Action::ActivitiesDuplicate => {
-                if let Some(a) = self.selected() {
+                if let Some(a) = match self.selected_confirmed() {
+                    Ok(a) => a,
+                    Err(warn) => return Some(warn),
+                } {
                     let (api, tx) = (api.clone(), tx.clone());
                     let title = a.title.clone();
                     tokio::spawn(async move {
@@ -344,7 +400,10 @@ impl Activities {
                 }
             }
             Action::ActivitiesStartTimer => {
-                if let Some(a) = self.selected() {
+                if let Some(a) = match self.selected_confirmed() {
+                    Ok(a) => a,
+                    Err(warn) => return Some(warn),
+                } {
                     let (api, tx) = (api.clone(), tx.clone());
                     let title = a.title.clone();
                     tokio::spawn(async move {
@@ -462,16 +521,16 @@ impl Activities {
         let rows: Vec<Row> = self
             .visible()
             .iter()
-            .map(|a| activity_row(a, now))
+            .map(|f| activity_row(f, now))
             .collect();
         let table = Table::new(
             rows,
             [
-                Constraint::Length(9),  // status pill
+                Constraint::Length(9),  // status pill (or the ◔ queued mark)
                 Constraint::Length(10), // kind
                 Constraint::Min(16),    // title (clipped by the column)
                 Constraint::Length(14), // domain (by name)
-                Constraint::Length(6),  // duration
+                Constraint::Length(11), // duration (+ the folded ◔+Nm queued)
                 Constraint::Length(10), // when (relative)
             ],
         )
@@ -587,28 +646,85 @@ fn matches_query(a: &Activity, q: &str) -> bool {
         || hit(&a.status)
 }
 
-fn activity_row(a: &Activity, now: Timestamp) -> Row<'static> {
+fn activity_row(f: &FoldedActivity, now: Timestamp) -> Row<'static> {
+    let a = &f.activity;
+    let when = a
+        .started_at
+        .map(|t| fmt_relative(t, now))
+        .unwrap_or_default();
+
+    // §Segment audit · mixed: a still-queued create is a full ◔ row — the
+    // amber mark where the pill would be, the state named in the title cell,
+    // dim against the confirmed rows. Same table, one glyph.
+    if f.is_provisional() {
+        let amber = Style::default().fg(theme::WARN);
+        let dur = a
+            .duration_minutes
+            .map(|d| format!("{d}m"))
+            .unwrap_or_default();
+        return Row::new(vec![
+            Cell::from("◔ queued").style(amber),
+            Cell::from(a.kind.clone().unwrap_or_default()).style(theme::muted()),
+            Cell::from(Line::from(vec![
+                Span::styled(a.title.clone(), amber),
+                Span::styled("  provisional · queued", theme::muted()),
+            ])),
+            Cell::from(a.domain_name.clone().unwrap_or_default()).style(theme::muted()),
+            Cell::from(dur).style(amber),
+            Cell::from(when).style(theme::muted()),
+        ]);
+    }
+
     let title_style = if a.is_archived() {
         theme::muted()
     } else {
         Style::default()
     };
-    let when = a
-        .started_at
-        .map(|t| fmt_relative(t, now))
-        .unwrap_or_default();
-    let dur = a
-        .duration_minutes
-        .map(|d| format!("{d}m"))
-        .unwrap_or_default();
+    // Queued segment minutes ride beside the confirmed duration, marked —
+    // never summed into it as if the server had acknowledged them.
+    let dur_cell = if f.queued_minutes > 0 {
+        Cell::from(Line::from(vec![
+            Span::styled(
+                a.duration_minutes
+                    .map(|d| format!("{d}m"))
+                    .unwrap_or_default(),
+                theme::muted(),
+            ),
+            Span::styled(
+                format!(" ◔+{}m", f.queued_minutes),
+                Style::default().fg(theme::WARN),
+            ),
+        ]))
+    } else {
+        Cell::from(
+            a.duration_minutes
+                .map(|d| format!("{d}m"))
+                .unwrap_or_default(),
+        )
+        .style(theme::muted())
+    };
     Row::new(vec![
         Cell::from(widgets::activity_status_pill(a.status.as_deref())),
         Cell::from(a.kind.clone().unwrap_or_default()).style(theme::muted()),
         Cell::from(a.title.clone()).style(title_style),
         Cell::from(a.domain_name.clone().unwrap_or_default()).style(theme::muted()),
-        Cell::from(dur).style(theme::muted()),
+        dur_cell,
         Cell::from(when).style(theme::muted()),
     ])
+}
+
+/// The queue for the read-time fold — best-effort like every read-side queue
+/// touch: an unreadable queue reads as empty here (`engineer queue` is the
+/// loud surface for that), and the fetched page renders unfolded.
+fn read_queue(paths: &QueuePaths) -> Vec<crate::queue::Intent> {
+    let store = match paths {
+        Some((queue, _)) => QueueStore::at(queue.clone()),
+        None => match QueueStore::open_default() {
+            Ok(store) => store,
+            Err(_) => return Vec::new(),
+        },
+    };
+    store.intents().unwrap_or_default()
 }
 
 /// A compact relative "when": `now`, `5m ago`, `3h ago`, `2d ago`, `3w ago`,
@@ -673,7 +789,9 @@ mod tests {
 
     fn loaded(items: Vec<Activity>, page: u32, per_page: u32, total: u32) -> Action {
         Action::ActivitiesLoaded {
-            items,
+            // An empty queue folds to the confirmed rows unchanged — the
+            // shape `fetch` sends when nothing is pending.
+            items: queue::fold_activities(items, &[]),
             page,
             per_page,
             total,
@@ -785,7 +903,7 @@ mod tests {
             feed(&mut s, &api, &tx, Action::ActivitiesSearchInput(c)).await;
         }
         assert_eq!(s.visible().len(), 1);
-        assert_eq!(s.visible()[0].id, 1);
+        assert_eq!(s.visible()[0].activity.id, 1);
         feed(&mut s, &api, &tx, Action::ActivitiesSearchCancel).await;
         assert!(!s.searching);
         assert!(s.query.is_empty());
@@ -801,7 +919,7 @@ mod tests {
             feed(&mut s, &api, &tx, Action::ActivitiesSearchInput(c)).await;
         }
         assert_eq!(s.visible().len(), 1);
-        assert_eq!(s.visible()[0].id, 3);
+        assert_eq!(s.visible()[0].activity.id, 3);
     }
 
     #[tokio::test]
@@ -934,5 +1052,178 @@ mod tests {
         s.state.select(Some(0));
         s.handle(Action::ActivitiesStartTimer, &api, &tx).await;
         assert!(recv_matching(&mut rx, |a| matches!(a, Action::RefreshTimer)).await);
+    }
+
+    // ---- provisional rows in the read (#109, §Segment audit · mixed) ----
+
+    use crate::queue::IntentKind;
+
+    /// A per-test scratch queue so the fold never touches the shared XDG state.
+    fn scratch_queue() -> (std::path::PathBuf, QueueStore) {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "engineer-activities-screen-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("queue.json");
+        let store = QueueStore::at(&path);
+        (path, store)
+    }
+
+    fn render_activities(s: &mut Activities) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut terminal = Terminal::new(TestBackend::new(110, 20)).unwrap();
+        terminal.draw(|f| s.render(f, f.area())).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    /// The full read path, offline work included: the fetch folds the pending
+    /// queue over the server page — the queued create is a `◔` row mixed with
+    /// the confirmed, and the queued segment's minutes ride its parent row.
+    #[tokio::test]
+    async fn fetch_folds_the_pending_queue_over_the_server_page() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/activities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    { "id": 1, "title": "Raft leader election", "kind": "build",
+                      "status": "started", "duration_minutes": 52 }
+                ],
+                "meta": { "page": 1, "per_page": 25, "total": 1 }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (queue_path, store) = scratch_queue();
+        store
+            .enqueue(IntentKind::ActivityCreate {
+                body: crate::api::ActivityCreate {
+                    title: "Paxos made live".into(),
+                    duration_minutes: Some(20),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        store
+            .enqueue(IntentKind::SegmentCreate {
+                activity_id: 1,
+                started_at: "2026-07-15T14:02:00Z".parse().unwrap(),
+                minutes: 14,
+            })
+            .unwrap();
+
+        let api = srv_client(&server);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Activities {
+            queue_paths: Some((queue_path, std::path::PathBuf::new())),
+            ..Activities::default()
+        };
+        s.on_enter(&api, &tx);
+        let loaded = loop {
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .expect("the load lands")
+            {
+                Some(a @ Action::ActivitiesLoaded { .. }) => break a,
+                Some(_) => continue,
+                None => panic!("channel closed"),
+            }
+        };
+        s.handle(loaded, &api, &tx).await;
+
+        assert_eq!(s.items.len(), 2, "confirmed + provisional, one list");
+        assert_eq!(s.items[0].queued_minutes, 14, "the queued segment rides #1");
+        assert!(s.items[1].is_provisional());
+        assert_eq!(s.items[1].activity.title, "Paxos made live");
+
+        let text = render_activities(&mut s);
+        assert!(text.contains("◔ queued"), "the mark: {text}");
+        assert!(text.contains("provisional · queued"), "the state: {text}");
+        assert!(text.contains("◔+14m"), "queued minutes beside DUR: {text}");
+        assert!(text.contains("Raft leader election"), "mixed: {text}");
+    }
+
+    /// The after-drain read: the same fetch with an emptied queue folds to the
+    /// plain page — provisional rows clear on the very next load.
+    #[tokio::test]
+    async fn provisional_rows_clear_after_the_drain() {
+        let (mut s, api, tx) = setup();
+        let queued = queue::fold_activities(
+            three(),
+            &[crate::queue::Intent {
+                id: 3,
+                idempotency_key: "key-3".into(),
+                stream: "activity".into(),
+                queued_at: jiff::Timestamp::now(),
+                kind: IntentKind::ActivityCreate {
+                    body: crate::api::ActivityCreate {
+                        title: "Paxos made live".into(),
+                        ..Default::default()
+                    },
+                },
+                state: crate::queue::IntentState::Pending,
+                attempts: 0,
+                last_error: None,
+            }],
+        );
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::ActivitiesLoaded {
+                items: queued,
+                page: 1,
+                per_page: 25,
+                total: 3,
+            },
+        )
+        .await;
+        assert_eq!(s.items.len(), 4, "the ◔ row is in the list");
+
+        // The next fetch after the drain: the queue is empty, the fold is
+        // identity — the row settled into (or left) the server page.
+        feed(&mut s, &api, &tx, loaded(three(), 1, 25, 3)).await;
+        assert_eq!(s.items.len(), 3);
+        assert!(s.items.iter().all(|f| !f.is_provisional()));
+    }
+
+    #[tokio::test]
+    async fn row_actions_refuse_on_a_provisional_row() {
+        let (mut s, api, tx) = setup();
+        let mut rows = three();
+        rows.push(activity(serde_json::json!({
+            "id": -3, "title": "Paxos made live", "status": "planned"
+        })));
+        feed(&mut s, &api, &tx, loaded(rows, 1, 25, 3)).await;
+        s.state.select(Some(3)); // the provisional row
+
+        for action in [
+            Action::ActivitiesComplete,
+            Action::ActivitiesArchive,
+            Action::ActivitiesDuplicate,
+            Action::ActivitiesStartTimer,
+        ] {
+            let warned = s.handle(action, &api, &tx).await;
+            let (level, text) = warned.expect("the refusal is surfaced");
+            assert_eq!(level, Level::Warning);
+            assert!(text.contains("still queued"), "{text}");
+        }
+
+        // The detail opens from the local fold — there is no server record to
+        // refine from, and no fetch is spawned for a negative id.
+        feed(&mut s, &api, &tx, Action::ActivitiesOpenDetail).await;
+        assert_eq!(s.detail.as_ref().unwrap().title, "Paxos made live");
     }
 }
