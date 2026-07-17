@@ -46,7 +46,12 @@ pub fn edit(seed: &str) -> Result<EditorOutcome> {
 /// [`EditorOutcome::Aborted`] on a non-zero exit and [`EditorOutcome::Saved`]
 /// (trailing newline trimmed, possibly empty) on a clean save.
 pub fn edit_with(editor: &str, seed: &str) -> Result<EditorOutcome> {
-    let path = std::env::temp_dir().join(format!("engineer-note-{}.md", std::process::id()));
+    // Unique per call, not just per process: concurrent sessions in one
+    // process (parallel tests; a TUI overlay racing a spawned task) must
+    // never share a buffer file.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("engineer-note-{}-{seq}.md", std::process::id()));
     std::fs::write(&path, seed)?;
 
     let mut parts = editor.split_whitespace();
