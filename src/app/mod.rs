@@ -65,6 +65,10 @@ pub enum EditorTarget {
     /// The week's retro reflection (#117) — a save persists (empty clears); an
     /// abort keeps the stored note (abort ≠ empty-save).
     WeekNote { iso_week: String },
+    /// A rejected queued write's payload (#109, §Diverged · rejected segment) —
+    /// a save parses back through `queue::apply_edit` and retries the replay;
+    /// an abort keeps the intent diverged, untouched.
+    QueueIntent { intent_id: u64 },
 }
 
 pub struct App {
@@ -257,6 +261,18 @@ fn run_editor(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
         EditorTarget::WeekNote { iso_week } => match outcome {
             EditorOutcome::Saved(body) => app.dispatch(Action::WeekReflectSave { iso_week, body }),
             EditorOutcome::Aborted => app.dispatch(Action::WeekReflectAbort),
+        },
+        // The rejected queued write: a save parses back and retries the
+        // replay; an abort changes nothing — the intent stays diverged and
+        // the panel reopens on the next poll.
+        EditorTarget::QueueIntent { intent_id } => match outcome {
+            EditorOutcome::Saved(buffer) => {
+                app.dispatch(Action::TimerReconcileEditApply { intent_id, buffer })
+            }
+            EditorOutcome::Aborted => app.notify(
+                Level::Info,
+                "edit aborted — nothing changed, the queued write stays diverged".to_string(),
+            ),
         },
     }
     Ok(())
@@ -589,6 +605,15 @@ impl App {
                 self.pending_editor = Some(PendingEditor {
                     seed,
                     target: EditorTarget::WeekNote { iso_week },
+                });
+            }
+            // The reconcile panel's `e` (#109): stash the rejected write's
+            // editable payload for the same terminal-owned $EDITOR hand-off;
+            // the saved buffer comes back as `TimerReconcileEditApply`.
+            Action::QueueIntentEdit { intent_id, seed } => {
+                self.pending_editor = Some(PendingEditor {
+                    seed,
+                    target: EditorTarget::QueueIntent { intent_id },
                 });
             }
             capture_action @ (Action::CaptureKey(_)

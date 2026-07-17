@@ -1,13 +1,36 @@
 //! The replay pass — pending intents re-send in order when the wire returns
 //! (offline-write.brief.md §8 Foundation, "a replay-on-reconnect pass").
 //!
-//! Strict FIFO by intent `id`, one intent at a time, single-flight across
-//! processes via the `replay.lock` sidecar. The server stays authoritative:
-//! a replayed intent leaves the queue the moment the server acknowledges it,
-//! and the pass halts the instant the server *disagrees* — a divergence needs
-//! a human choice before anything later replays, or ordering would lie.
+//! **The ordering contract (per-stream FIFO, #109 — relaxing #101's global
+//! halt).** Intents replay one at a time in global queue order (`id`), but a
+//! server divergence gates only **its own stream** (`Intent::stream`), never
+//! the whole pass:
+//!
+//! - **In-stream order is never violated.** Nothing replays past the first
+//!   diverged intent *in its stream* — not in this pass, and not in a later
+//!   one while the divergence stands (a pre-existing diverged intent blocks
+//!   its stream from the start of every pass).
+//! - **Streams are independent.** A diverged `activity:<id>` write holds that
+//!   activity's stream and nothing else: the `timer` stream, other
+//!   activities, targets, notes, and week notes keep replaying.
+//! - **The id-map dependency edge counts as a stream dependency.** An intent
+//!   still referencing a provisional (negative) activity id — a
+//!   `SegmentCreate` on `-N`, an edit/archive of a queued declare — is
+//!   blocked until the `ActivityCreate` that mints the real id lands. The
+//!   parent create lives on the shared `"activity"` stream while the
+//!   dependent keys `"activity:-N"`, so the stream field alone cannot order
+//!   them; the negative reference *is* the edge, checked explicitly: a
+//!   reference the id-map cannot resolve to a real id means the parent is
+//!   diverged, parked, or blocked, and the dependent (and its stream) holds.
+//! - **A transport failure halts the whole pass.** Offline is global, not
+//!   per-stream — the wire dropped for everyone, so everything stays pending.
+//!
+//! Single-flight across processes via the `replay.lock` sidecar. The server
+//! stays authoritative: a replayed intent leaves the queue the moment the
+//! server acknowledges it, and a divergence waits loudly for a human choice —
+//! `ReplayReport::diverged` stays `true` while *any* stream is blocked on one.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::api::{ActivityUpdate, ApiClient, ApiError};
 
@@ -28,7 +51,9 @@ pub struct ReplayReport {
     /// Intents still in play after the pass (pending + diverged). Parked
     /// intents are kept for review, not waiting to sync, so they never count.
     pub remaining: usize,
-    /// A divergence is waiting on a human choice.
+    /// A divergence is waiting on a human choice — some stream is blocked.
+    /// Other streams may have replayed in the same pass (`replayed` counts
+    /// across all of them), so `diverged` and a non-zero `replayed` coexist.
     pub diverged: bool,
 }
 
@@ -44,13 +69,14 @@ pub enum ReplayError {
 }
 
 /// Drain the queue: replay pending intents oldest-first until they are gone,
-/// the wire drops, or the server diverges.
+/// the wire drops, or their stream diverges.
 ///
 /// Single-flight: if another process holds the replay lock this returns
 /// immediately with a report of the queue as it stands — callers skip
-/// silently, they never wait. An already-diverged intent gates the whole
-/// pass the same way a fresh divergence halts it: everything queued behind
-/// the choice stays queued.
+/// silently, they never wait. An already-diverged intent gates **its stream**
+/// the same way a fresh divergence does: everything queued behind the choice
+/// on that stream stays queued, while other streams keep replaying (the
+/// per-stream contract in the module docs).
 pub async fn drain(api: &ApiClient, store: &QueueStore) -> Result<ReplayReport, ReplayError> {
     drain_reporting(api, store, |_| {}).await
 }
@@ -69,11 +95,17 @@ pub async fn drain_reporting(
         return report(store, 0, 0);
     };
 
-    if store.summary()?.diverged > 0 {
-        return report(store, 0, 0);
-    }
-
-    let mut pending = store.pending()?;
+    let intents = store.intents()?;
+    // Streams already gated by an open divergence: nothing replays past an
+    // unresolved choice *within its stream*. Other streams flow (#109 —
+    // relaxing #101's whole-queue halt). Fresh divergences join this set as
+    // the pass runs.
+    let mut blocked: HashSet<String> = intents
+        .iter()
+        .filter(|i| i.is_diverged())
+        .map(|i| i.stream.clone())
+        .collect();
+    let mut pending: Vec<Intent> = intents.into_iter().filter(Intent::is_pending).collect();
     pending.sort_by_key(|i| i.id);
     let mut replayed = 0usize;
     let mut deduped = 0usize;
@@ -86,6 +118,18 @@ pub async fn drain_reporting(
     let mut id_map: HashMap<i64, i64> = HashMap::new();
 
     for intent in pending {
+        if blocked.contains(&intent.stream) {
+            continue; // in-stream order: nothing replays past its stream's open choice
+        }
+        // The id-map dependency edge: a reference that still resolves to a
+        // provisional (negative) id means the parent `ActivityCreate` has not
+        // landed — it is diverged, parked, or blocked behind a divergence on
+        // the shared "activity" stream. The dependent (and everything behind
+        // it on its stream) holds until the parent's choice is made.
+        if references_unlanded_create(&intent.kind, &id_map) {
+            blocked.insert(intent.stream.clone());
+            continue;
+        }
         match send_intent(api, &intent, &id_map).await {
             Ok(ack) => {
                 // Acknowledged — the server is authoritative now; the intent
@@ -145,8 +189,9 @@ pub async fn drain_reporting(
             }) => {
                 // The server moved on — persist its objection verbatim (the
                 // coded conflict's `code` + extensions included, so the
-                // reconcile surfaces can render the server's side) and halt:
-                // nothing later replays past an unresolved divergence.
+                // reconcile surfaces can render the server's side) and gate
+                // the stream: nothing later replays past an unresolved
+                // divergence *on this stream*; the other streams keep going.
                 store.mutate(|doc| {
                     if let Some(i) = doc.intents_mut().iter_mut().find(|i| i.id == intent.id) {
                         i.attempts += 1;
@@ -161,7 +206,7 @@ pub async fn drain_reporting(
                         };
                     }
                 })?;
-                break;
+                blocked.insert(intent.stream.clone());
             }
             // Auth / decode — neither "offline" nor "the server said no";
             // the caller decides (exit 5 in `engineer queue`).
@@ -198,11 +243,28 @@ impl Ack {
 /// Resolve a possibly-provisional activity id through the drain's id-map: a
 /// negative `-(create.intent_id)` maps to the real server id once that create
 /// landed earlier this pass (the queued reference still carries the provisional
-/// id in this stale snapshot). A real id, or one whose parent hasn't landed,
-/// passes through unchanged — strict FIFO guarantees the parent create always
-/// lands first, so the only miss is an id that was already real.
+/// id in this stale snapshot). A real id passes through unchanged; a negative
+/// miss (the parent create hasn't landed) passes through too, but
+/// [`references_unlanded_create`] holds such an intent before it ever sends.
 fn resolve_activity(id_map: &HashMap<i64, i64>, activity_id: i64) -> i64 {
     id_map.get(&activity_id).copied().unwrap_or(activity_id)
+}
+
+/// The id-map dependency edge, made explicit: does this intent still reference
+/// a provisional (negative) activity id the map cannot resolve? Enqueue order
+/// guarantees the minting `ActivityCreate` always has the lower id, so by the
+/// time a dependent is reached in id order, an unresolved negative reference
+/// can only mean the parent did **not** land — diverged this pass or an
+/// earlier one, parked, dropped, or blocked behind a divergence on the shared
+/// `"activity"` stream. The dependent must hold: posting against a negative id
+/// would 404, and posting against a guessed id would be a silent mis-file.
+fn references_unlanded_create(kind: &IntentKind, id_map: &HashMap<i64, i64>) -> bool {
+    let reference = match kind {
+        IntentKind::SegmentCreate { activity_id, .. } => *activity_id,
+        IntentKind::ActivityUpdate { id, .. } | IntentKind::ActivityArchive { id } => *id,
+        _ => return false,
+    };
+    resolve_activity(id_map, reference) < 0
 }
 
 /// Re-send one intent through the typed call for its kind, carrying the
@@ -592,8 +654,12 @@ mod tests {
         assert_eq!(report.replayed, 1);
     }
 
+    /// Was `problem_halts_the_drain_…` under #101's global FIFO; #109 relaxed
+    /// the halt to per-stream, and both intents here share the `timer` stream,
+    /// so the observable behavior is unchanged: nothing replays past the
+    /// divergence *in its stream*.
     #[tokio::test]
-    async fn problem_halts_the_drain_and_persists_diverged() {
+    async fn problem_halts_the_stream_and_persists_diverged() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/v1/timer/pause"))
@@ -607,7 +673,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        // Nothing after the divergence may replay.
+        // Nothing after the divergence may replay on the same stream.
         Mock::given(method("POST"))
             .and(path("/api/v1/timer/resume"))
             .respond_with(ResponseTemplate::new(200))
@@ -780,8 +846,11 @@ mod tests {
         assert_eq!(store.intents().unwrap()[0].attempts, 0, "never attempted");
     }
 
+    /// Was `an_existing_divergence_gates_the_whole_pass` under #101; #109
+    /// scopes the gate to the diverged intent's stream. The pending intent
+    /// *behind the choice on the same stream* stays queued across passes.
     #[tokio::test]
-    async fn an_existing_divergence_gates_the_whole_pass() {
+    async fn an_existing_divergence_gates_its_stream_across_passes() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(200))
@@ -807,7 +876,10 @@ mod tests {
             .unwrap();
 
         let report = drain(&client(&server), &store).await.unwrap();
-        assert_eq!(report.replayed, 0, "nothing replays past an open choice");
+        assert_eq!(
+            report.replayed, 0,
+            "nothing replays past the stream's open choice"
+        );
         assert_eq!(report.remaining, 2);
         assert!(report.diverged);
     }
@@ -1331,5 +1403,188 @@ mod tests {
         let report = drain(&client(&server), &store).await.unwrap();
         assert_eq!(report.replayed, 2, "the declare and its edit both landed");
         assert!(store.intents().unwrap().is_empty());
+    }
+
+    // --- per-stream FIFO (#109): a divergence blocks its stream, not the pass ---
+
+    /// The relaxation's core case: an `ActivityCreate` diverges (422) while the
+    /// timer stream keeps flowing — both timer intents land on the wire in the
+    /// same drain, asserted by wiremock, while the activity stream holds.
+    #[tokio::test]
+    async fn a_diverged_activity_stream_never_blocks_the_timer_stream() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/activities"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "title": "Study day is closed", "status": 422,
+                "detail": "2026-07-14 is closed to new work"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // The proof on the wire: the timer intents land while the activity holds.
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/pause"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "running": true })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/resume"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "running": true })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("per-stream-flow");
+        let create = store.enqueue(completed_create()).unwrap();
+        store.enqueue(IntentKind::TimerPause { at: at() }).unwrap();
+        store.enqueue(IntentKind::TimerResume { at: at() }).unwrap();
+
+        let report = drain(&client(&server), &store).await.unwrap();
+        assert_eq!(report.replayed, 2, "the timer stream drained");
+        assert!(
+            report.diverged,
+            "…while the activity stream waits on a choice"
+        );
+        assert_eq!(report.remaining, 1, "only the diverged create is left");
+
+        let intents = store.intents().unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].id, create.id);
+        assert!(intents[0].is_diverged());
+    }
+
+    /// The dependency edge (rule c): a queued segment referencing a diverged
+    /// create's provisional id must hold — its nominal stream (`activity:-N`)
+    /// differs from the create's (`activity`), so the negative reference is
+    /// what carries the dependency. An unrelated stream still flows.
+    #[tokio::test]
+    async fn a_segment_on_a_provisional_id_holds_while_its_create_is_diverged() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/activities"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "title": "Study day is closed", "status": 422, "detail": "closed"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // The blocked dependent must never reach the wire — not on the
+        // provisional id, not on any guessed one.
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(
+                r"^/api/v1/activities/.+/segments$",
+            ))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(0)
+            .mount(&server)
+            .await;
+        // An unrelated stream keeps flowing past the held dependency.
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/targets/42/retire"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 42, "axis": "domain", "scope": { "axis": "domain", "value": 7 },
+                "hours_per_week": 8.0, "active": false, "retired": true
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("per-stream-edge");
+        let create = store.enqueue(completed_create()).unwrap();
+        let segment = store
+            .enqueue(IntentKind::SegmentCreate {
+                activity_id: -(create.id as i64),
+                started_at: "2026-07-15T13:00:00Z".parse().unwrap(),
+                minutes: 20,
+            })
+            .unwrap();
+        store.enqueue(IntentKind::TargetRetire { id: 42 }).unwrap();
+
+        let report = drain(&client(&server), &store).await.unwrap();
+        assert_eq!(report.replayed, 1, "only the independent target landed");
+        assert!(report.diverged);
+        assert_eq!(
+            report.remaining, 2,
+            "the diverged create + its held segment"
+        );
+
+        let intents = store.intents().unwrap();
+        assert!(intents.iter().any(|i| i.id == create.id && i.is_diverged()));
+        let held = intents.iter().find(|i| i.id == segment.id).unwrap();
+        assert!(held.is_pending(), "held, never sent, never diverged");
+        assert_eq!(held.attempts, 0, "the dependent was not even attempted");
+    }
+
+    /// In-stream order (rule a): a divergence at the head of `activity:9`
+    /// blocks the edit queued behind it on the same stream, while a different
+    /// activity's stream replays in the same pass.
+    #[tokio::test]
+    async fn in_stream_order_holds_behind_a_divergence_while_other_activities_flow() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/activities/9/segments"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "title": "Segment overlaps", "status": 422,
+                "detail": "overlaps an existing segment 14:20–15:05"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // The edit behind the diverged segment on activity:9 must hold…
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/activities/9"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        // …while activity:12's stream replays.
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/activities/12"))
+            .and(body_json(serde_json::json!({
+                "activity": { "title": "revised" }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 12, "title": "revised", "status": "planned"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("per-stream-order");
+        store
+            .enqueue(IntentKind::SegmentCreate {
+                activity_id: 9,
+                started_at: "2026-07-15T14:02:00Z".parse().unwrap(),
+                minutes: 45,
+            })
+            .unwrap();
+        store
+            .enqueue(IntentKind::ActivityUpdate {
+                id: 9,
+                title: "held behind the choice".into(),
+            })
+            .unwrap();
+        store
+            .enqueue(IntentKind::ActivityUpdate {
+                id: 12,
+                title: "revised".into(),
+            })
+            .unwrap();
+
+        let report = drain(&client(&server), &store).await.unwrap();
+        assert_eq!(report.replayed, 1, "only the other activity's stream moved");
+        assert!(report.diverged);
+        assert_eq!(report.remaining, 2);
+
+        let intents = store.intents().unwrap();
+        assert!(intents[0].is_diverged(), "the head hit the wall");
+        assert!(intents[1].is_pending(), "same stream: held, untouched");
+        assert_eq!(intents[1].attempts, 0);
     }
 }

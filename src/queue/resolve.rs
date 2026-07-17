@@ -22,10 +22,21 @@
 //! arm refuses with [`ResolveError::CannotCompose`] naming what's missing, and
 //! the intent stays diverged — loud, unresolved, un-dropped.
 
+//! **The rejected write (§Diverged · rejected segment, #109).** A 422 on a
+//! replayed `SegmentCreate`/`ActivityCreate` (an overlap, a closed study day)
+//! resolves through three gestures instead of the pick-a-side pair: **edit**
+//! ([`edit_seed`] → `$EDITOR` → [`apply_edit`] re-pends the intent with the
+//! corrected payload and a fresh idempotency key), **drop** ([`drop_intent`] —
+//! the one genuinely user-chosen delete in the queue's life, always explicit
+//! and confirmed by the caller), and **skip** ([`skip_intent`] — parks it,
+//! reason `skipped`, kept in `queue.json` and out of replay until a later
+//! choice). Both surfaces (the TUI reconcile panel, `engineer queue resolve
+//! --edit/--drop/--skip`) call these same functions.
+
 use crate::api::{codes, ApiClient, ApiError, ConflictInfo, Timer};
 use crate::timer_clock;
 
-use super::intent::{Intent, IntentKind, IntentState};
+use super::intent::{new_idempotency_key, provisional_id, Intent, IntentKind, IntentState};
 use super::store::{QueueError, QueueStore};
 
 /// The three sides a divergence can resolve to. `NAMES` order is the
@@ -97,6 +108,10 @@ pub enum ResolveError {
     /// stays diverged; nothing is written or dropped.
     #[error("{0}")]
     CannotCompose(String),
+    /// The saved editor buffer didn't parse back into a valid payload — the
+    /// intent stays diverged, untouched, and the refusal names what's wrong.
+    #[error("{0}")]
+    EditRejected(String),
 }
 
 /// Apply `resolution` to the diverged intent `intent_id`. `cached` is the
@@ -208,6 +223,259 @@ fn park_group(
         count
     })?;
     Ok(Resolved::Parked { count })
+}
+
+// ---------------------------------------------------------------------------
+// The rejected write's gestures (§Diverged · rejected segment, #109):
+// edit / drop / skip. All three act on a *diverged* intent only.
+// ---------------------------------------------------------------------------
+
+/// The editable representation the `$EDITOR` hand-off opens for a rejected
+/// write — small `key: value` lines, seeded from the stored payload, with the
+/// server's objection as a comment so the fix is made against it. `None` for
+/// kinds that carry nothing time-shaped to edit (a diverged timer verb
+/// resolves through the pick-a-side panel instead).
+pub fn edit_seed(intent: &Intent) -> Option<String> {
+    let objection = match &intent.state {
+        IntentState::Diverged { status, title, .. } => format!("{status} {title}"),
+        _ => return None,
+    };
+    let mut lines = vec![
+        format!(
+            "# Queued {} — the server refused it: {objection}.",
+            intent.kind.word()
+        ),
+        "# Edit the values and save to retry; quit without saving to leave it as is.".to_string(),
+    ];
+    match &intent.kind {
+        IntentKind::SegmentCreate {
+            started_at,
+            minutes,
+            ..
+        } => {
+            lines.push(format!("started_at: {started_at}"));
+            lines.push(format!("minutes: {minutes}"));
+        }
+        IntentKind::ActivityCreate { body } => {
+            lines.push(format!("title: {}", body.title));
+            if let Some(minutes) = body.duration_minutes {
+                lines.push(format!("minutes: {minutes}"));
+            }
+            if let Some(day) = body.planned_on {
+                lines.push(format!("planned_on: {day}"));
+            }
+        }
+        _ => return None,
+    }
+    lines.push(String::new());
+    Some(lines.join("\n"))
+}
+
+/// Parse a saved editor buffer back into the diverged intent's payload and
+/// re-pend it, all under the writer lock: the corrected write rejoins the
+/// queue as pending and the next drain retries it. The idempotency key is
+/// re-minted — the edited payload is a *new* logical write, and re-sending a
+/// different body under the old key would either replay the stored rejection
+/// or trip the server's key/payload mismatch guard. A buffer that doesn't
+/// parse refuses with [`ResolveError::EditRejected`] and changes nothing.
+pub fn apply_edit(
+    store: &QueueStore,
+    intent_id: u64,
+    buffer: &str,
+) -> Result<Intent, ResolveError> {
+    let fields = parse_edit_lines(buffer)?;
+    let get = |key: &str| {
+        fields
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    };
+    let minutes = get("minutes")
+        .map(|v| {
+            v.parse::<u32>().ok().filter(|m| *m > 0).ok_or_else(|| {
+                ResolveError::EditRejected(format!(
+                    "minutes must be a whole number above zero, got \"{v}\""
+                ))
+            })
+        })
+        .transpose()?;
+    let started_at = get("started_at")
+        .map(|v| {
+            v.parse::<jiff::Timestamp>().map_err(|_| {
+                ResolveError::EditRejected(format!(
+                    "started_at must be an RFC 3339 timestamp (e.g. 2026-07-15T14:02:00Z), got \"{v}\""
+                ))
+            })
+        })
+        .transpose()?;
+    let planned_on = get("planned_on")
+        .map(|v| {
+            v.parse::<jiff::civil::Date>().map_err(|_| {
+                ResolveError::EditRejected(format!(
+                    "planned_on must be a calendar day (e.g. 2026-07-15), got \"{v}\""
+                ))
+            })
+        })
+        .transpose()?;
+    let title = get("title").map(str::to_string);
+    if title.as_deref().is_some_and(|t| t.trim().is_empty()) {
+        return Err(ResolveError::EditRejected("title must not be empty".into()));
+    }
+    // A field the kind can't hold refuses rather than silently dropping — an
+    // ignored `started_at` would retry the unchanged payload behind the
+    // user's back.
+    let refuse_foreign = |kind: &str, allowed: &[&str]| -> Result<(), ResolveError> {
+        match fields.iter().find(|(k, _)| !allowed.contains(&k.as_str())) {
+            Some((k, _)) => Err(ResolveError::EditRejected(format!(
+                "a queued {kind} has no \"{k}\" — editable fields: {}",
+                allowed.join(", ")
+            ))),
+            None => Ok(()),
+        }
+    };
+
+    let updated = store.mutate(|doc| -> Result<Intent, ResolveError> {
+        let Some(intent) = doc.intents_mut().iter_mut().find(|i| i.id == intent_id) else {
+            return Err(ResolveError::NotDiverged(intent_id));
+        };
+        if !intent.is_diverged() {
+            return Err(ResolveError::NotDiverged(intent_id));
+        }
+        match &mut intent.kind {
+            IntentKind::SegmentCreate {
+                started_at: at,
+                minutes: m,
+                ..
+            } => {
+                refuse_foreign("log", &["started_at", "minutes"])?;
+                if let Some(v) = started_at {
+                    *at = v;
+                }
+                if let Some(v) = minutes {
+                    *m = v;
+                }
+            }
+            IntentKind::ActivityCreate { body } => {
+                refuse_foreign("plan", &["title", "minutes", "planned_on"])?;
+                if let Some(v) = title {
+                    body.title = v;
+                }
+                if let Some(v) = minutes {
+                    body.duration_minutes = Some(v);
+                }
+                if let Some(v) = planned_on {
+                    body.planned_on = Some(v);
+                }
+            }
+            other => {
+                return Err(ResolveError::EditRejected(format!(
+                    "a diverged {} has nothing editable — resolve it with keep local/server/both instead",
+                    other.word()
+                )))
+            }
+        }
+        intent.state = IntentState::Pending;
+        intent.last_error = None;
+        intent.idempotency_key = new_idempotency_key();
+        Ok(intent.clone())
+    })??;
+    Ok(updated)
+}
+
+/// Drop a diverged intent — the queue's one genuinely user-chosen delete,
+/// distinct from [`IntentState::Parked`] (which keeps). The *caller* owns the
+/// confirmation (the TUI's second `x`, the CLI's `--force`); this function is
+/// the final act. Refuses while still-queued intents reference the intent's
+/// provisional id — dropping the parent create would orphan them against an
+/// id that will never exist. Returns the dropped record so the surface can
+/// say exactly what left.
+pub fn drop_intent(store: &QueueStore, intent_id: u64) -> Result<Intent, ResolveError> {
+    store.mutate(|doc| -> Result<Intent, ResolveError> {
+        let Some(intent) = doc.intents().iter().find(|i| i.id == intent_id).cloned() else {
+            return Err(ResolveError::NotDiverged(intent_id));
+        };
+        if !intent.is_diverged() {
+            return Err(ResolveError::NotDiverged(intent_id));
+        }
+        let prov = provisional_id(intent.id);
+        let dependents = doc
+            .intents()
+            .iter()
+            .filter(|i| references_activity(&i.kind, prov))
+            .count();
+        if dependents > 0 {
+            return Err(ResolveError::CannotCompose(format!(
+                "{dependents} queued write{} still reference{} this provisional activity — edit it instead, or resolve on the web; dropping it would orphan them",
+                if dependents == 1 { "" } else { "s" },
+                if dependents == 1 { "s" } else { "" },
+            )));
+        }
+        doc.intents_mut().retain(|i| i.id != intent_id);
+        Ok(intent)
+    })?
+}
+
+/// Skip a diverged intent: park it (reason `skipped · <the objection>`), kept
+/// in `queue.json` for a later decision, excluded from replay — so its stream
+/// unblocks without anything being written or dropped.
+pub fn skip_intent(store: &QueueStore, intent_id: u64) -> Result<Intent, ResolveError> {
+    store.mutate(|doc| -> Result<Intent, ResolveError> {
+        let Some(intent) = doc.intents_mut().iter_mut().find(|i| i.id == intent_id) else {
+            return Err(ResolveError::NotDiverged(intent_id));
+        };
+        let IntentState::Diverged { title, .. } = &intent.state else {
+            return Err(ResolveError::NotDiverged(intent_id));
+        };
+        intent.state = IntentState::Parked {
+            reason: format!("skipped · {title}"),
+        };
+        Ok(intent.clone())
+    })?
+}
+
+/// Does this kind reference the given (provisional) activity id?
+fn references_activity(kind: &IntentKind, activity_id: i64) -> bool {
+    match kind {
+        IntentKind::SegmentCreate {
+            activity_id: id, ..
+        }
+        | IntentKind::ActivityUpdate { id, .. }
+        | IntentKind::ActivityArchive { id } => *id == activity_id,
+        _ => false,
+    }
+}
+
+/// Split a saved buffer into `key: value` pairs, skipping blank lines and `#`
+/// comments. An unrecognised line refuses loudly — a silent skip could eat a
+/// typo'd `minutes` and retry the unchanged payload.
+fn parse_edit_lines(buffer: &str) -> Result<Vec<(String, String)>, ResolveError> {
+    const KEYS: [&str; 4] = ["started_at", "minutes", "title", "planned_on"];
+    let mut fields = Vec::new();
+    for line in buffer.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            return Err(ResolveError::EditRejected(format!(
+                "unrecognised line \"{line}\" — expected `key: value`"
+            )));
+        };
+        let key = key.trim();
+        if !KEYS.contains(&key) {
+            return Err(ResolveError::EditRejected(format!(
+                "unknown field \"{key}\" — editable fields: {}",
+                KEYS.join(", ")
+            )));
+        }
+        fields.push((key.to_string(), value.trim().to_string()));
+    }
+    if fields.is_empty() {
+        return Err(ResolveError::EditRejected(
+            "the buffer names no fields — nothing to retry".into(),
+        ));
+    }
+    Ok(fields)
 }
 
 /// Keep-local on a session verb: `start_timer(activity_id, switch: true)` —
@@ -1032,6 +1300,282 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, ResolveError::NotDiverged(999)), "{err}");
+    }
+
+    // --- the rejected write's gestures (#109): edit / drop / skip -----------
+
+    /// A diverged `SegmentCreate` — the §Diverged · rejected segment case.
+    fn seeded_rejected_segment(tag: &str) -> (QueueStore, Intent) {
+        let store = tmp_store(tag);
+        let seg = store
+            .enqueue(IntentKind::SegmentCreate {
+                activity_id: 9,
+                started_at: ts("2026-07-15T14:02:00Z"),
+                minutes: 45,
+            })
+            .unwrap();
+        diverge_as(
+            &store,
+            seg.id,
+            422,
+            "Segment overlaps",
+            None,
+            ConflictInfo::default(),
+        );
+        (store, seg)
+    }
+
+    #[test]
+    fn edit_seed_names_the_objection_and_the_editable_times() {
+        let (store, seg) = seeded_rejected_segment("edit-seed");
+        let intent = store.intents().unwrap().remove(0);
+        let seed = edit_seed(&intent).expect("a rejected segment is editable");
+        assert!(seed.contains("422 Segment overlaps"), "{seed}");
+        assert!(seed.contains("started_at: 2026-07-15T14:02:00Z"), "{seed}");
+        assert!(seed.contains("minutes: 45"), "{seed}");
+        let _ = seg;
+
+        // A diverged timer verb has nothing time-shaped to edit.
+        let store = tmp_store("edit-seed-timer");
+        let pause = store
+            .enqueue(IntentKind::TimerPause {
+                at: ts("2026-07-15T09:40:00Z"),
+            })
+            .unwrap();
+        diverge(&store, pause.id);
+        assert!(edit_seed(&store.intents().unwrap()[0]).is_none());
+    }
+
+    /// The edit-retry round-trip: the corrected payload re-pends under the
+    /// writer lock with a **fresh** idempotency key, and the next drain lands
+    /// it — asserted on the wire, corrected times and all.
+    #[tokio::test]
+    async fn apply_edit_repends_the_corrected_segment_and_the_drain_retries_it() {
+        let (store, seg) = seeded_rejected_segment("edit-retry");
+
+        let updated = apply_edit(
+            &store,
+            seg.id,
+            "# comment survives\nstarted_at: 2026-07-15T15:10:00Z\nminutes: 30\n",
+        )
+        .unwrap();
+        assert!(updated.is_pending(), "back in the replay line");
+        assert_ne!(
+            updated.idempotency_key, seg.idempotency_key,
+            "the edited payload is a new logical write — never the old key"
+        );
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/activities/9/segments"))
+            .and(body_partial_json(serde_json::json!({
+                "segment": { "started_at": "2026-07-15T15:10:00Z", "duration_minutes": 30 }
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 88, "activity_id": 9, "minutes": 30
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let report = super::super::replay::drain(&client(&server), &store)
+            .await
+            .unwrap();
+        assert_eq!(report.replayed, 1, "the corrected write landed");
+        assert!(store.intents().unwrap().is_empty());
+    }
+
+    #[test]
+    fn apply_edit_refuses_bad_buffers_and_changes_nothing() {
+        let (store, seg) = seeded_rejected_segment("edit-refuse");
+        for (buffer, names) in [
+            ("minutes: 0", "above zero"),
+            ("minutes: soon", "above zero"),
+            ("started_at: 14:02", "RFC 3339"),
+            ("nonsense line", "key: value"),
+            ("elapsed: 45", "unknown field"),
+            ("title: Raft", "no \"title\""), // a segment has no title line
+            ("# only comments\n", "nothing to retry"),
+        ] {
+            let err = apply_edit(&store, seg.id, buffer).unwrap_err();
+            assert!(
+                matches!(err, ResolveError::EditRejected(_)),
+                "{buffer}: {err}"
+            );
+            assert!(err.to_string().contains(names), "{buffer}: {err}");
+            assert!(
+                store.intents().unwrap()[0].is_diverged(),
+                "kept diverged, untouched"
+            );
+        }
+
+        // A pending intent is not editable — edit is a divergence gesture.
+        let pending = store
+            .enqueue(IntentKind::SegmentCreate {
+                activity_id: 9,
+                started_at: ts("2026-07-15T16:00:00Z"),
+                minutes: 10,
+            })
+            .unwrap();
+        assert!(matches!(
+            apply_edit(&store, pending.id, "minutes: 20"),
+            Err(ResolveError::NotDiverged(_))
+        ));
+    }
+
+    #[test]
+    fn apply_edit_reshapes_a_rejected_activity_create() {
+        use crate::api::ActivityCreate;
+        let store = tmp_store("edit-create");
+        let create = store
+            .enqueue(IntentKind::ActivityCreate {
+                body: ActivityCreate {
+                    title: "Raft leader election".into(),
+                    duration_minutes: Some(20),
+                    planned_on: Some("2026-07-14".parse().unwrap()),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        diverge_as(
+            &store,
+            create.id,
+            422,
+            "Study day is closed",
+            None,
+            ConflictInfo::default(),
+        );
+
+        // The closed-day fix: move the day, trim the minutes.
+        apply_edit(&store, create.id, "planned_on: 2026-07-15\nminutes: 25").unwrap();
+        let intents = store.intents().unwrap();
+        assert!(intents[0].is_pending());
+        match &intents[0].kind {
+            IntentKind::ActivityCreate { body } => {
+                assert_eq!(body.planned_on, Some("2026-07-15".parse().unwrap()));
+                assert_eq!(body.duration_minutes, Some(25));
+                assert_eq!(body.title, "Raft leader election", "untouched fields keep");
+            }
+            other => panic!("expected the create, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn drop_is_explicit_removes_the_intent_and_unblocks_its_stream() {
+        let (store, seg) = seeded_rejected_segment("drop");
+        // A pending edit behind the diverged segment on the same stream.
+        store
+            .enqueue(IntentKind::ActivityUpdate {
+                id: 9,
+                title: "revised".into(),
+            })
+            .unwrap();
+
+        let dropped = drop_intent(&store, seg.id).unwrap();
+        assert_eq!(dropped.id, seg.id, "the surface can say what left");
+        let intents = store.intents().unwrap();
+        assert_eq!(intents.len(), 1, "gone — the one user-chosen delete");
+        assert!(intents[0].is_pending(), "the stream is unblocked");
+
+        // The unblocked stream drains behind the choice.
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/activities/9"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 9, "title": "revised", "status": "planned"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let report = super::super::replay::drain(&client(&server), &store)
+            .await
+            .unwrap();
+        assert_eq!(report.replayed, 1);
+        assert!(!report.diverged);
+    }
+
+    #[test]
+    fn drop_refuses_a_pending_intent_and_a_parent_with_dependents() {
+        // Pending: not a divergence choice.
+        let store = tmp_store("drop-refuse");
+        let pending = store
+            .enqueue(IntentKind::TimerPause {
+                at: ts("2026-07-15T09:40:00Z"),
+            })
+            .unwrap();
+        assert!(matches!(
+            drop_intent(&store, pending.id),
+            Err(ResolveError::NotDiverged(_))
+        ));
+
+        // A diverged create with a queued segment referencing its provisional
+        // id: dropping the parent would orphan the segment forever — refuse,
+        // naming the way out.
+        use crate::api::ActivityCreate;
+        let store = tmp_store("drop-orphan");
+        let create = store
+            .enqueue(IntentKind::ActivityCreate {
+                body: ActivityCreate {
+                    title: "Raft".into(),
+                    duration_minutes: Some(20),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        store
+            .enqueue(IntentKind::SegmentCreate {
+                activity_id: -(create.id as i64),
+                started_at: ts("2026-07-15T14:02:00Z"),
+                minutes: 15,
+            })
+            .unwrap();
+        diverge(&store, create.id);
+        let err = drop_intent(&store, create.id).unwrap_err();
+        assert!(matches!(err, ResolveError::CannotCompose(_)), "{err}");
+        assert!(err.to_string().contains("orphan"), "{err}");
+        assert_eq!(store.intents().unwrap().len(), 2, "nothing left the queue");
+    }
+
+    #[tokio::test]
+    async fn skip_parks_as_skipped_and_it_never_replays() {
+        let (store, seg) = seeded_rejected_segment("skip");
+        let skipped = skip_intent(&store, seg.id).unwrap();
+        match &skipped.state {
+            IntentState::Parked { reason } => {
+                assert!(reason.starts_with("skipped"), "{reason}");
+                assert!(
+                    reason.contains("Segment overlaps"),
+                    "the objection rides along: {reason}"
+                );
+            }
+            other => panic!("expected parked, got {other:?}"),
+        }
+
+        // Kept in the queue, out of the replay line — a drain touches nothing.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let report = super::super::replay::drain(&client(&server), &store)
+            .await
+            .unwrap();
+        assert_eq!(report.replayed, 0, "a skipped intent never replays");
+        assert_eq!(report.remaining, 0, "…and never counts as waiting");
+        assert!(!report.diverged);
+        assert_eq!(store.intents().unwrap().len(), 1, "kept, never deleted");
+
+        // Skip is a divergence gesture too.
+        let pending = store
+            .enqueue(IntentKind::TimerPause {
+                at: ts("2026-07-15T09:40:00Z"),
+            })
+            .unwrap();
+        assert!(matches!(
+            skip_intent(&store, pending.id),
+            Err(ResolveError::NotDiverged(_))
+        ));
     }
 
     #[tokio::test]
