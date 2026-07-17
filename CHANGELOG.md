@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-17
+
 ### Added
 
 - **The deliberate notes faces — the chapter/section anchor picker, a guarded permanent delete, unlink as "detach from book".** EPIC #120's last ticket, wiring the three verbs the notes client shipped behind `#![allow(dead_code)]` with no face (brief §5's decision record). **The anchor picker** grows the capture/edit overlay's anchor step past a book + a bare page: a new `chapter/§` field mounts the **shared fuzzy picker** (`src/ui/picker.rs`) over the book's `book_anchor_data` (chapters, sections indented beneath), so a note can pin `ch 3 · §3.2`, not just `p.142` — the tree is fetched on first open and the picker mounts as soon as it lands. The read-back stays the server's `address_label` (never re-derived client-side — the overlay only echoes the choice while composing). The **`NoteInput` contract** is held tight: on an edit, an anchor the user never touches omits `anchors` from the PATCH (citations stay put); touching it — picking a chapter/section, editing the page, or changing the book — sends the rebuilt anchors, which replaces. **Delete** is a guarded, visibly-distinct gesture on the note **detail** (never a bare key in the browse list, never adjacent to `a` archive): `X` (shift) arms a red `✖ delete (permanent)` banner, a second `X` confirms and calls `delete_note`, any other key cancels — chosen over a context-free `:note delete` palette verb because the TUI palette carries no note to address (an id-keyed delete better fits a future `engineer note delete`). It is **live-only**: destructive and terminal, an offline delete refuses honestly (`offline — delete needs the server; retry online`, the #94/#95 precedent) rather than queue a synthesized outcome. **Unlink** is `u · detach from book` on the detail — distinct from `a` archive, the note survives with only its book anchor severed (`unlink_note`); a loose note refuses (`not linked to a book`). Unlink and the richer-anchor save ride the same plain API path archive already uses — note writes aren't queue-aware yet (that lands with Phase C #111/#112). The module's blanket `#![allow(dead_code)]` is gone now the three clients are faced; only the response DTOs keep a **narrow** struct-level allowance for the wire fields the UI doesn't read yet. (`notes.dc.html` §Anchor picker + §Note detail + §5's decision record; EPIC #120, #124 — the epic's final surface)
@@ -171,7 +173,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Explicit environment selection** via the `--env` flag and `ENGINEER_ENV` variable (`production` default, or `development` for localhost), with built-in URL presets so a fresh run needs no config file. Layered configuration: environment preset < `~/.config/engineer-cli/config.toml` (XDG-honored on all platforms, including macOS) < `ENGINEER_*` env vars.
 - **GitHub Actions CI** running `cargo test` on pushes to `master` and on pull requests.
 
-[Unreleased]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/dsaenztagarro/engineer-cli/compare/v0.5.0...v0.6.0
