@@ -32,6 +32,9 @@ pub struct Notes {
     loading: bool,
     /// `Some` while the full-content detail read is open, over the list.
     detail: Option<Note>,
+    /// A permanent-delete caught its first press on the detail; the next press
+    /// of the same key confirms, any other key disarms (guarded, live-only).
+    delete_armed: bool,
 }
 
 impl Default for Notes {
@@ -46,6 +49,7 @@ impl Default for Notes {
             show_archived: false,
             loading: false,
             detail: None,
+            delete_armed: false,
         }
     }
 }
@@ -88,10 +92,25 @@ impl Notes {
     /// The detail read and the search prompt own keys before the global keymap.
     pub fn intercept_key(&mut self, key: KeyEvent) -> Option<Action> {
         if self.detail.is_some() {
+            // A pending delete confirmation intercepts the very next key: the
+            // same `X` confirms, anything else cancels (guarded gesture — the
+            // note is only destroyed on the deliberate second press).
+            if self.delete_armed {
+                return Some(if key.code == KeyCode::Char('X') {
+                    Action::NotesDeleteConfirm
+                } else {
+                    Action::NotesDeleteDisarm
+                });
+            }
             return match key.code {
-                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('h') => {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('h') | KeyCode::Char('q') => {
                     Some(Action::NotesCloseDetail)
                 }
+                // `u` = detach from book (unlink), distinct from `a` archive.
+                KeyCode::Char('u') => Some(Action::NotesUnlinkSelected),
+                // `X` (shift) arms the permanent delete — deliberate, far from
+                // `a`, and never a bare key in the browse list.
+                KeyCode::Char('X') => Some(Action::NotesDeleteArm),
                 _ => None,
             };
         }
@@ -186,7 +205,10 @@ impl Notes {
                     self.detail = Some(*note);
                 }
             }
-            Action::NotesCloseDetail => self.detail = None,
+            Action::NotesCloseDetail => {
+                self.detail = None;
+                self.delete_armed = false;
+            }
             Action::NotesArchiveSelected => {
                 if let Some(note) = self.selected().cloned() {
                     let archived = note.archived_at.is_some();
@@ -224,6 +246,86 @@ impl Notes {
                     // Hand the note to the app-level quick-capture overlay,
                     // pre-filled for a PATCH — one editor for new and existing.
                     let _ = tx.send(Action::CaptureOpenEdit(Box::new(note)));
+                }
+            }
+            Action::NotesUnlinkSelected => {
+                // Detach the open note from its book — the note survives, only
+                // its book anchor is severed (a different intent from archive).
+                let note = self.detail.as_ref().or_else(|| self.selected());
+                match note {
+                    Some(n) if n.book_id.is_some() || n.book_title.is_some() => {
+                        let id = n.id;
+                        let (api, tx) = (api.clone(), tx.clone());
+                        tokio::spawn(async move {
+                            match api.unlink_note(id).await {
+                                Ok(_) => {
+                                    let _ = tx.send(Action::Notify {
+                                        level: Level::Success,
+                                        text: "detached from book".into(),
+                                    });
+                                    let _ = tx.send(Action::NotesCloseDetail);
+                                    let _ = tx.send(Action::RefreshNotes);
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(Action::Notify {
+                                        level: Level::Error,
+                                        text: format!("unlink failed: {e}"),
+                                    });
+                                }
+                            }
+                        });
+                    }
+                    Some(_) => {
+                        return Some((Level::Warning, "not linked to a book".into()));
+                    }
+                    None => {}
+                }
+            }
+            Action::NotesDeleteArm => {
+                self.delete_armed = true;
+                return Some((
+                    Level::Warning,
+                    "delete (permanent) — press X again to confirm".into(),
+                ));
+            }
+            Action::NotesDeleteDisarm => {
+                self.delete_armed = false;
+                return Some((Level::Info, "delete cancelled".into()));
+            }
+            Action::NotesDeleteConfirm => {
+                self.delete_armed = false;
+                // Delete is destructive and terminal — live-only, with an honest
+                // offline refusal (the #94/#95 triage/connect precedent). It does
+                // not ride the write queue: a synthesized offline "deleted" would
+                // be a lie, and note writes aren't queue-aware yet (Phase C
+                // #111/#112).
+                if let Some(note) = self.detail.as_ref().or_else(|| self.selected()) {
+                    let id = note.id;
+                    let (api, tx) = (api.clone(), tx.clone());
+                    tokio::spawn(async move {
+                        match api.delete_note(id).await {
+                            Ok(()) => {
+                                let _ = tx.send(Action::Notify {
+                                    level: Level::Success,
+                                    text: "deleted (permanent)".into(),
+                                });
+                                let _ = tx.send(Action::NotesCloseDetail);
+                                let _ = tx.send(Action::RefreshNotes);
+                            }
+                            Err(crate::api::ApiError::Transport(_)) => {
+                                let _ = tx.send(Action::Notify {
+                                    level: Level::Error,
+                                    text: "offline — delete needs the server; retry online".into(),
+                                });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Action::Notify {
+                                    level: Level::Error,
+                                    text: format!("delete failed: {e}"),
+                                });
+                            }
+                        }
+                    });
                 }
             }
             _ => {}
@@ -294,6 +396,16 @@ impl Notes {
         if note.archived_at.is_some() {
             lines.push(Line::from(Span::styled("archived", theme::muted())));
         }
+        if self.delete_armed {
+            // The destructive gesture reads red and unmistakable — never the
+            // quiet dim of archive.
+            lines.push(Line::from(Span::styled(
+                "✖ delete (permanent) — X again to confirm, cannot be undone",
+                Style::default()
+                    .fg(theme::DANGER)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
         lines.push(Line::from(""));
         for raw in note.content.as_deref().unwrap_or("").split('\n') {
             lines.push(Line::from(raw.to_string()));
@@ -319,8 +431,20 @@ impl Notes {
     }
 
     pub fn hints(&self) -> Line<'static> {
+        if self.delete_armed {
+            return Line::from(Span::styled(
+                "delete (permanent) — X again to confirm · any key cancels",
+                theme::focused(),
+            ));
+        }
         if self.detail.is_some() {
-            return widgets::footer_hints(&[("↵/Esc", "close"), ("h", "back")]);
+            return widgets::footer_hints(&[
+                ("e", "edit"),
+                ("a", "archive"),
+                ("u", "detach book"),
+                ("X", "delete"),
+                ("q", "back"),
+            ]);
         }
         if self.searching {
             return Line::from(Span::styled(
@@ -573,5 +697,98 @@ mod tests {
             "id": 1, "title": "", "content": "\n  first real line\nsecond"
         }));
         assert_eq!(note_headline(&n), "first real line");
+    }
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::from(KeyCode::Char(c))
+    }
+
+    #[test]
+    fn detail_maps_unlink_and_delete_keys_only_while_open() {
+        let mut s = Notes {
+            detail: Some(note(
+                serde_json::json!({ "id": 4, "title": "t", "book_id": 11 }),
+            )),
+            ..Notes::default()
+        };
+        assert!(matches!(
+            s.intercept_key(key('u')),
+            Some(Action::NotesUnlinkSelected)
+        ));
+        assert!(matches!(
+            s.intercept_key(key('X')),
+            Some(Action::NotesDeleteArm)
+        ));
+        assert!(matches!(
+            s.intercept_key(key('q')),
+            Some(Action::NotesCloseDetail)
+        ));
+        // In the browse list, the delete key is inert — never a bare list delete.
+        s.detail = None;
+        assert!(s.intercept_key(key('X')).is_none());
+        assert!(s.intercept_key(key('u')).is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_arms_then_a_second_press_confirms() {
+        let (mut s, api, tx) = setup();
+        s.detail = Some(note(serde_json::json!({ "id": 9, "title": "doomed" })));
+
+        // First X arms and warns; the note is not yet touched.
+        assert!(matches!(
+            s.intercept_key(key('X')),
+            Some(Action::NotesDeleteArm)
+        ));
+        let out = s.handle(Action::NotesDeleteArm, &api, &tx).await;
+        assert!(matches!(out, Some((Level::Warning, _))));
+        assert!(s.delete_armed);
+
+        // A second X (while armed) confirms → the wire call fires; disarmed after.
+        assert!(matches!(
+            s.intercept_key(key('X')),
+            Some(Action::NotesDeleteConfirm)
+        ));
+        s.handle(Action::NotesDeleteConfirm, &api, &tx).await;
+        assert!(!s.delete_armed);
+    }
+
+    #[tokio::test]
+    async fn delete_disarms_on_any_other_key() {
+        let (mut s, api, tx) = setup();
+        s.detail = Some(note(serde_json::json!({ "id": 9, "title": "doomed" })));
+        s.intercept_key(key('X'));
+        s.handle(Action::NotesDeleteArm, &api, &tx).await;
+        assert!(s.delete_armed);
+
+        // Any non-X key while armed cancels — the note survives.
+        assert!(matches!(
+            s.intercept_key(key('j')),
+            Some(Action::NotesDeleteDisarm)
+        ));
+        let out = s.handle(Action::NotesDeleteDisarm, &api, &tx).await;
+        assert!(matches!(out, Some((Level::Info, _))));
+        assert!(!s.delete_armed);
+    }
+
+    #[tokio::test]
+    async fn closing_the_detail_disarms_a_pending_delete() {
+        let (mut s, api, tx) = setup();
+        s.detail = Some(note(serde_json::json!({ "id": 9, "title": "doomed" })));
+        s.handle(Action::NotesDeleteArm, &api, &tx).await;
+        assert!(s.delete_armed);
+        s.handle(Action::NotesCloseDetail, &api, &tx).await;
+        assert!(!s.delete_armed);
+        assert!(s.detail.is_none());
+    }
+
+    #[tokio::test]
+    async fn unlink_a_loose_note_refuses_honestly() {
+        let (mut s, api, tx) = setup();
+        // A note with no book can't be detached — refuse rather than call.
+        s.detail = Some(note(serde_json::json!({ "id": 5, "title": "loose" })));
+        let out = s.handle(Action::NotesUnlinkSelected, &api, &tx).await;
+        assert!(matches!(out, Some((Level::Warning, _))));
+        // The note stays open (nothing was severed).
+        assert!(s.detail.is_some());
     }
 }

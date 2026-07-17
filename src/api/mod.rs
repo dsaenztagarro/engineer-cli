@@ -40,7 +40,7 @@ pub use error::{codes, ApiError, ConflictInfo, FieldError};
 // no callers yet.
 #[allow(unused_imports)]
 pub use error::ConflictTimer;
-pub use notes::{Anchor, Note, NoteFilters, NoteInput};
+pub use notes::{Anchor, AnchorData, Note, NoteFilters, NoteInput};
 // The content-first title rule lives in the notes domain; both note surfaces
 // (the TUI capture overlay and the headless `engineer note`) reuse this one
 // spelling rather than each re-deriving it.

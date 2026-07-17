@@ -1,10 +1,11 @@
 //! Notes — paper-first study notes, optionally anchored to places in a book.
-#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 
 use super::{ApiClient, ApiError, List};
 
+// API model: fields mirror the wire format; the UI reads only a subset today.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct Citation {
     pub id: i64,
@@ -22,6 +23,8 @@ pub struct Citation {
     pub address_label: Option<String>,
 }
 
+// API model: fields mirror the wire format; the UI reads only a subset today.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Note {
     pub id: i64,
@@ -112,6 +115,8 @@ pub struct NoteFilters {
 }
 
 /// Editions/chapters/sections a note anchor can point at — `GET /books/:id/anchor_data`.
+// `editions` mirrors the wire format; the picker anchors over chapters/sections.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct AnchorData {
     #[serde(default)]
@@ -120,6 +125,8 @@ pub struct AnchorData {
     pub chapters: Vec<AnchorChapter>,
 }
 
+// API model: the edition list mirrors the wire format; unused by the picker today.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct AnchorEdition {
     pub id: i64,
@@ -303,6 +310,88 @@ mod tests {
         let (title, content) = derive_title_content("   \n  ");
         assert!(title.is_empty());
         assert!(content.is_none());
+    }
+
+    #[tokio::test]
+    async fn book_anchor_data_reads_chapters_and_sections() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/books/11/anchor_data"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "editions": [{ "id": 1, "label": "1st", "canonical": true }],
+                "chapters": [{
+                    "id": 3, "number": 3, "title": "Modularity, Objects, and State",
+                    "sections": [{ "id": 32, "number": "3.2", "title": "The Environment Model" }]
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let data = client(&server).book_anchor_data(11).await.unwrap();
+        assert_eq!(data.chapters.len(), 1);
+        assert_eq!(data.chapters[0].id, 3);
+        assert_eq!(data.chapters[0].sections[0].id, 32);
+        assert_eq!(data.chapters[0].sections[0].number.as_deref(), Some("3.2"));
+    }
+
+    #[tokio::test]
+    async fn update_note_with_chapter_section_anchor_sends_the_richer_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/notes/7"))
+            .and(body_partial_json(serde_json::json!({
+                "note": { "anchors": [{ "chapter_id": 3, "section_id": 32 }] }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 7, "title": "MVCC", "book_id": 11
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let body = NoteInput {
+            title: "MVCC".into(),
+            book_id: Some(11),
+            anchors: Some(vec![Anchor {
+                chapter_id: Some(3),
+                section_id: Some(32),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        client(&server).update_note(7, &body).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_note_hits_the_member_route() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/v1/notes/9"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        client(&server).delete_note(9).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unlink_note_patches_the_member_route_and_keeps_the_note() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/notes/4/unlink"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 4, "title": "kept", "book_id": null, "book_linked": false
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let note = client(&server).unlink_note(4).await.unwrap();
+        assert_eq!(note.id, 4);
+        assert!(!note.book_linked);
+        assert!(note.book_id.is_none());
     }
 
     #[tokio::test]

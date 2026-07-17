@@ -25,16 +25,32 @@ use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 use tui_textarea::{CursorMove, TextArea};
 
-use crate::api::{derive_title_content, Anchor, ApiClient, Book, Note, NoteInput};
+use crate::api::{derive_title_content, Anchor, AnchorData, ApiClient, Book, Note, NoteInput};
 use crate::app::action::Action;
 use crate::ui::notify::Level;
+use crate::ui::picker::{Picker, PickerItem};
 use crate::ui::{layout::bordered, theme, widgets};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Field {
     Content,
     Book,
+    /// The richer chapter/section anchor over the book's `anchor_data` — Enter
+    /// mounts the shared fuzzy picker (`book_anchor_data`, notes.dc.html §Anchor
+    /// picker), so a note can pin `ch 3 · §3.2`, not just a bare page.
+    Anchor,
     Page,
+}
+
+/// What a row in the chapter/section picker sets when chosen. A chapter row
+/// pins the chapter; a section row pins its chapter *and* the section. `echo` is
+/// the concise place string shown in the overlay while composing — the durable
+/// read-back is always the server's `address_label` (never re-derived here).
+#[derive(Clone)]
+struct AnchorChoice {
+    chapter_id: Option<i64>,
+    section_id: Option<i64>,
+    echo: String,
 }
 
 pub struct QuickCapture {
@@ -43,6 +59,24 @@ pub struct QuickCapture {
     field: Field,
     book_id: Option<i64>,
     book_label: Option<String>,
+    /// The richer anchor over the chosen book's chapters/sections.
+    chapter_id: Option<i64>,
+    section_id: Option<i64>,
+    /// The concise place echo for the chosen chapter/section (`ch 3 · §3.2`),
+    /// shown while composing; `None` when only a book (and maybe a page) is set.
+    anchor_echo: Option<String>,
+    /// The book's fetched chapter/section tree, `None` until first needed.
+    /// Invalidated (set `None`) whenever the book changes.
+    anchor_data: Option<AnchorData>,
+    /// `true` while an `anchor_data` fetch is in flight to open the picker as
+    /// soon as it arrives (the first Enter on the anchor field).
+    anchor_loading: bool,
+    /// The shared fuzzy picker over chapters/sections, when open.
+    anchor_picker: Option<Picker<AnchorChoice>>,
+    /// Whether the anchor was touched this session. On an *edit*, an untouched
+    /// anchor omits `anchors` from the PATCH (leaving citations untouched — the
+    /// `NoteInput` contract); a touched one sends the rebuilt anchors (replace).
+    anchor_touched: bool,
     /// `Some(note_id)` when editing an existing note (save → PATCH).
     editing: Option<i64>,
     pending: bool,
@@ -63,6 +97,13 @@ impl Default for QuickCapture {
             field: Field::Content,
             book_id: None,
             book_label: None,
+            chapter_id: None,
+            section_id: None,
+            anchor_echo: None,
+            anchor_data: None,
+            anchor_loading: false,
+            anchor_picker: None,
+            anchor_touched: false,
             editing: None,
             pending: false,
             confirm_discard: false,
@@ -93,16 +134,25 @@ impl QuickCapture {
     }
 
     /// The overlay pre-filled to edit an existing note — one editor, two verbs.
+    /// The anchor fields are seeded from the first citation for display, but the
+    /// draft starts `anchor_touched: false`: an edit that never opens the anchor
+    /// step omits `anchors` on the PATCH, leaving the note's citations untouched
+    /// (the `NoteInput` contract). Touching the anchor flips the flag and the
+    /// save then replaces them.
     pub fn for_edit(note: Note) -> Self {
         let text = note.content.clone().unwrap_or_else(|| note.title.clone());
+        let cite = note.citations.first();
         let mut s = Self {
             content: make_textarea(&text),
             editing: Some(note.id),
             book_id: note.book_id,
             book_label: note.book_title,
+            chapter_id: cite.and_then(|c| c.book_chapter_id),
+            section_id: cite.and_then(|c| c.book_section_id),
+            anchor_echo: cite.and_then(|c| c.address_label.clone()),
             ..Self::default()
         };
-        if let Some(p) = note.citations.first().and_then(|c| c.page) {
+        if let Some(p) = cite.and_then(|c| c.page) {
             s.page = Input::new(p.to_string());
         }
         s
@@ -120,6 +170,22 @@ impl QuickCapture {
                 KeyCode::Down => Some(Action::CaptureBookMove(1)),
                 KeyCode::Backspace => Some(Action::CaptureBookBackspace),
                 KeyCode::Char(c) => Some(Action::CaptureBookInput(c)),
+                _ => None,
+            };
+        }
+        if self.anchor_picker.is_some() {
+            // The shared picker's grammar: arrows / Ctrl-n/p move, letters filter,
+            // Enter picks, Esc cancels (mirrors the books screen's fuzzy jump).
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            return match key.code {
+                KeyCode::Esc => Some(Action::CaptureAnchorPickerClose),
+                KeyCode::Enter => Some(Action::CaptureAnchorPickerSubmit),
+                KeyCode::Up => Some(Action::CaptureAnchorMove(-1)),
+                KeyCode::Down => Some(Action::CaptureAnchorMove(1)),
+                KeyCode::Char('n') if ctrl => Some(Action::CaptureAnchorMove(1)),
+                KeyCode::Char('p') if ctrl => Some(Action::CaptureAnchorMove(-1)),
+                KeyCode::Backspace => Some(Action::CaptureAnchorBackspace),
+                KeyCode::Char(c) if !ctrl => Some(Action::CaptureAnchorInput(c)),
                 _ => None,
             };
         }
@@ -150,8 +216,18 @@ impl QuickCapture {
                     Field::Book => match key.code {
                         KeyCode::Enter => self.open_picker(api, tx),
                         KeyCode::Char('x') | KeyCode::Delete | KeyCode::Backspace => {
-                            self.book_id = None;
-                            self.book_label = None;
+                            self.clear_book();
+                        }
+                        _ => {}
+                    },
+                    Field::Anchor => match key.code {
+                        // Re-dispatch so the picker-open notify (no book / loading)
+                        // bubbles through the reducer's return, not from here.
+                        KeyCode::Enter => {
+                            let _ = tx.send(Action::CaptureAnchorPickerOpen);
+                        }
+                        KeyCode::Char('x') | KeyCode::Delete | KeyCode::Backspace => {
+                            self.clear_anchor();
                         }
                         _ => {}
                     },
@@ -162,6 +238,9 @@ impl QuickCapture {
                             }
                         }
                         self.page.handle_event(&Event::Key(key));
+                        // A real page edit is an anchor edit — flag it so an
+                        // otherwise-untouched PATCH still replaces the citation.
+                        self.anchor_touched = true;
                     }
                 }
             }
@@ -222,16 +301,96 @@ impl QuickCapture {
                     .selected()
                     .and_then(|i| self.book_results.get(i))
                 {
+                    let changed = self.book_id != Some(book.id);
                     self.book_id = Some(book.id);
                     self.book_label = Some(book.title.clone());
-                    // Nudge toward pinning a page now the book is chosen.
-                    self.field = Field::Page;
+                    // A different book invalidates the old chapter/section anchor
+                    // and its fetched tree; picking a book is an anchor edit.
+                    if changed {
+                        self.chapter_id = None;
+                        self.section_id = None;
+                        self.anchor_echo = None;
+                        self.anchor_data = None;
+                        self.anchor_touched = true;
+                    }
+                    // Nudge toward the richer chapter/section anchor now the book
+                    // is chosen (bare page stays one Tab further on).
+                    self.field = Field::Anchor;
                 }
                 self.close_picker();
             }
             Action::CaptureBookPickerClose => self.close_picker(),
+            Action::CaptureAnchorPickerOpen => return self.open_anchor_picker(api, tx),
+            Action::CaptureAnchorDataLoaded(data) => {
+                self.anchor_data = Some(*data);
+                self.anchor_loading = false;
+                // The first Enter on the anchor field kicked the fetch; open the
+                // picker now the tree has arrived.
+                return self.mount_anchor_picker();
+            }
+            Action::CaptureAnchorInput(c) => {
+                if let Some(p) = self.anchor_picker.as_mut() {
+                    p.input(c);
+                }
+            }
+            Action::CaptureAnchorBackspace => {
+                if let Some(p) = self.anchor_picker.as_mut() {
+                    p.backspace();
+                }
+            }
+            Action::CaptureAnchorMove(delta) => {
+                if let Some(p) = self.anchor_picker.as_mut() {
+                    p.move_cursor(delta);
+                }
+            }
+            Action::CaptureAnchorPickerSubmit => {
+                if let Some(choice) = self.anchor_picker.as_ref().and_then(|p| p.selected()) {
+                    self.chapter_id = choice.chapter_id;
+                    self.section_id = choice.section_id;
+                    self.anchor_echo = Some(choice.echo.clone());
+                    self.anchor_touched = true;
+                    // The place is pinned; nudge toward a page to sharpen it.
+                    self.field = Field::Page;
+                }
+                self.anchor_picker = None;
+            }
+            Action::CaptureAnchorPickerClose => self.anchor_picker = None,
             _ => {}
         }
+        None
+    }
+
+    /// Open the chapter/section picker. Needs a book; if its `anchor_data` is
+    /// already fetched, mount immediately, otherwise kick the fetch and mount as
+    /// soon as it lands (`CaptureAnchorDataLoaded`).
+    fn open_anchor_picker(
+        &mut self,
+        api: &ApiClient,
+        tx: &UnboundedSender<Action>,
+    ) -> Option<(Level, String)> {
+        let Some(book_id) = self.book_id else {
+            return Some((Level::Warning, "pick a book first".into()));
+        };
+        if self.anchor_data.is_some() {
+            return self.mount_anchor_picker();
+        }
+        self.anchor_loading = true;
+        spawn_anchor_data(api, tx, book_id);
+        Some((Level::Info, "loading chapters…".into()))
+    }
+
+    /// Build the shared picker over the loaded chapters/sections, or warn when
+    /// the book has none.
+    fn mount_anchor_picker(&mut self) -> Option<(Level, String)> {
+        let items = self
+            .anchor_data
+            .as_ref()
+            .map(anchor_items)
+            .unwrap_or_default();
+        if items.is_empty() {
+            return Some((Level::Warning, "no chapters to anchor for this book".into()));
+        }
+        self.anchor_picker = Some(Picker::new("chapter · §section", items));
         None
     }
 
@@ -249,6 +408,22 @@ impl QuickCapture {
         self.book_results.clear();
     }
 
+    /// Drop the book link and, with it, the chapter/section anchor it scoped.
+    fn clear_book(&mut self) {
+        self.book_id = None;
+        self.book_label = None;
+        self.clear_anchor();
+        self.anchor_data = None;
+    }
+
+    /// Drop the chapter/section anchor, keeping the book link and any page.
+    fn clear_anchor(&mut self) {
+        self.chapter_id = None;
+        self.section_id = None;
+        self.anchor_echo = None;
+        self.anchor_touched = true;
+    }
+
     fn move_book_selection(&mut self, delta: i32) {
         let len = self.book_results.len();
         if len == 0 {
@@ -263,7 +438,8 @@ impl QuickCapture {
     fn next_field(&self) -> Field {
         match self.field {
             Field::Content => Field::Book,
-            Field::Book => Field::Page,
+            Field::Book => Field::Anchor,
+            Field::Anchor => Field::Page,
             Field::Page => Field::Content,
         }
     }
@@ -272,7 +448,8 @@ impl QuickCapture {
         match self.field {
             Field::Content => Field::Page,
             Field::Book => Field::Content,
-            Field::Page => Field::Book,
+            Field::Anchor => Field::Book,
+            Field::Page => Field::Anchor,
         }
     }
 
@@ -293,26 +470,29 @@ impl QuickCapture {
     }
 
     /// True when the draft holds any input worth protecting from an accidental
-    /// discard — typed content, a chosen book, or a page.
+    /// discard — typed content, a chosen book, a chapter/section, or a page.
     fn has_input(&self) -> bool {
         !self.content_text().trim().is_empty()
             || self.book_id.is_some()
+            || self.chapter_id.is_some()
+            || self.section_id.is_some()
             || !self.page.value().trim().is_empty()
     }
 
-    /// Build the note payload from the draft. The simplest faithful anchor is a
-    /// book plus a page: `book_id` links the book, and a `page` citation pins
-    /// the place. A page with no book can't be anchored, so it's dropped.
+    /// Build the note payload from the draft. `book_id` links the book; a
+    /// citation is built from any of chapter/section/page under it (the richer
+    /// anchor over `anchor_data`, or a bare page). An anchor with no book can't
+    /// be pinned, so it's dropped.
+    ///
+    /// The `NoteInput` contract: on an *edit* whose anchor was never touched,
+    /// `anchors` is omitted so the note's citations stay untouched; a touched
+    /// anchor (or any new capture) sends the rebuilt anchors, which replaces.
     fn build_input(&self) -> NoteInput {
         let (title, content) = derive_title_content(&self.content_text());
-        let page: Option<u32> = self.page.value().trim().parse().ok();
-        let anchors = match (self.book_id, page) {
-            (Some(_), Some(p)) => Some(vec![Anchor {
-                page: Some(p),
-                ..Default::default()
-            }]),
-            // On an edit, `anchors: None` leaves existing anchors untouched.
-            _ => None,
+        let anchors = if self.editing.is_some() && !self.anchor_touched {
+            None
+        } else {
+            self.current_anchors()
         };
         NoteInput {
             title,
@@ -323,12 +503,40 @@ impl QuickCapture {
         }
     }
 
+    /// The citation the draft currently describes: a book plus at least one of
+    /// chapter/section/page. `None` when there's nothing to pin (a book-only
+    /// link, or a loose note).
+    fn current_anchors(&self) -> Option<Vec<Anchor>> {
+        self.book_id?;
+        let page: Option<u32> = self.page.value().trim().parse().ok();
+        if self.chapter_id.is_none() && self.section_id.is_none() && page.is_none() {
+            return None;
+        }
+        Some(vec![Anchor {
+            chapter_id: self.chapter_id,
+            section_id: self.section_id,
+            page,
+            ..Default::default()
+        }])
+    }
+
+    /// The composing echo of the chosen place (book · chapter/§ · page). This is
+    /// a local confirmation of what will be pinned; the durable one-line
+    /// read-back is the server's `address_label`, shown in the browser.
     fn preview(&self) -> Option<String> {
-        let page = self.page.value().trim().to_string();
-        match (self.book_label.as_deref(), page.is_empty()) {
-            (Some(b), false) => Some(format!("anchor: {b} · p.{page}")),
+        let page = self.page.value().trim();
+        let mut place = self.anchor_echo.clone().unwrap_or_default();
+        if !page.is_empty() {
+            place = if place.is_empty() {
+                format!("p.{page}")
+            } else {
+                format!("{place} · p.{page}")
+            };
+        }
+        match (self.book_label.as_deref(), place.is_empty()) {
+            (Some(b), false) => Some(format!("anchor: {b} · {place}")),
             (Some(b), true) => Some(format!("anchor: {b}")),
-            (None, false) => Some(format!("anchor: p.{page} — pick a book to save it")),
+            (None, false) => Some(format!("anchor: {place} — pick a book to save it")),
             (None, true) => None,
         }
     }
@@ -349,12 +557,19 @@ impl QuickCapture {
             self.render_picker(frame, inner);
             return;
         }
+        // The shared chapter/section picker renders as its own modal over the
+        // overlay (Clear + border are its own), so draw it last and stop.
+        if let Some(picker) = &self.anchor_picker {
+            picker.render(frame, inner);
+            return;
+        }
 
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(3),    // content editor
                 Constraint::Length(1), // book
+                Constraint::Length(1), // chapter/§ anchor
                 Constraint::Length(1), // page
                 Constraint::Length(1), // anchor preview
             ])
@@ -383,6 +598,20 @@ impl QuickCapture {
             )),
             rows[1],
         );
+        let anchor_value = match (&self.anchor_echo, self.book_id.is_some()) {
+            (Some(echo), _) => echo.clone(),
+            (None, true) => "none — Enter to pick".to_string(),
+            (None, false) => "— pick a book first".to_string(),
+        };
+        frame.render_widget(
+            Paragraph::new(field_line(
+                self.field == Field::Anchor,
+                "chapter/§",
+                anchor_value,
+                false,
+            )),
+            rows[2],
+        );
         frame.render_widget(
             Paragraph::new(field_line(
                 self.field == Field::Page,
@@ -390,7 +619,7 @@ impl QuickCapture {
                 self.page.value().to_string(),
                 true,
             )),
-            rows[2],
+            rows[3],
         );
         if let Some(preview) = self.preview() {
             frame.render_widget(
@@ -398,7 +627,7 @@ impl QuickCapture {
                     format!("  {preview}"),
                     theme::muted(),
                 ))),
-                rows[3],
+                rows[4],
             );
         }
     }
@@ -439,6 +668,12 @@ impl QuickCapture {
         if self.picking {
             return Line::from(Span::styled(
                 "type to search · ↑/↓ pick · ↵ select · Esc back",
+                theme::muted(),
+            ));
+        }
+        if self.anchor_picker.is_some() {
+            return Line::from(Span::styled(
+                "type to filter · ↑/↓ chapter/§ · ↵ pin · Esc back",
                 theme::muted(),
             ));
         }
@@ -503,6 +738,67 @@ fn spawn_book_search(api: &ApiClient, tx: &UnboundedSender<Action>, query: Strin
             let _ = tx.send(Action::CaptureBookResults(list.data));
         }
     });
+}
+
+fn spawn_anchor_data(api: &ApiClient, tx: &UnboundedSender<Action>, book_id: i64) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        match api.book_anchor_data(book_id).await {
+            Ok(data) => {
+                let _ = tx.send(Action::CaptureAnchorDataLoaded(Box::new(data)));
+            }
+            Err(e) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Error,
+                    text: format!("chapters unavailable: {e}"),
+                });
+            }
+        }
+    });
+}
+
+/// Flatten a book's `anchor_data` into picker rows: a chapter, then its
+/// sections indented beneath it. A chapter row pins the chapter; a section row
+/// pins its chapter *and* section. The `echo` is the concise composing label.
+fn anchor_items(data: &AnchorData) -> Vec<PickerItem<AnchorChoice>> {
+    let mut items = Vec::new();
+    for ch in &data.chapters {
+        let ch_place = match ch.number {
+            Some(n) => format!("ch {n}"),
+            None => format!("ch #{}", ch.id),
+        };
+        let ch_label = match &ch.title {
+            Some(t) => format!("{ch_place} · {t}"),
+            None => ch_place.clone(),
+        };
+        items.push(PickerItem::new(
+            ch_label,
+            AnchorChoice {
+                chapter_id: Some(ch.id),
+                section_id: None,
+                echo: ch_place.clone(),
+            },
+        ));
+        for sec in &ch.sections {
+            let sec_place = match &sec.number {
+                Some(n) => format!("§{n}"),
+                None => format!("§#{}", sec.id),
+            };
+            let sec_label = match &sec.title {
+                Some(t) => format!("  {sec_place} · {t}"),
+                None => format!("  {sec_place}"),
+            };
+            items.push(PickerItem::new(
+                sec_label,
+                AnchorChoice {
+                    chapter_id: Some(ch.id),
+                    section_id: Some(sec.id),
+                    echo: format!("{ch_place} · {sec_place}"),
+                },
+            ));
+        }
+    }
+    items
 }
 
 fn spawn_save(
@@ -684,5 +980,149 @@ mod tests {
         assert_eq!(s.content_text(), "old body\nline two");
         assert_eq!(s.book_id, Some(3));
         assert_eq!(s.page.value(), "42");
+    }
+
+    fn sicp_anchor_data() -> AnchorData {
+        serde_json::from_value(serde_json::json!({
+            "chapters": [{
+                "id": 3, "number": 3, "title": "Modularity, Objects, and State",
+                "sections": [
+                    { "id": 31, "number": "3.1", "title": "Assignment and Local State" },
+                    { "id": 32, "number": "3.2", "title": "The Environment Model" }
+                ]
+            }]
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn anchor_picker_open_without_a_book_warns_and_does_not_mount() {
+        let (mut s, api, tx, _rx) = setup();
+        let out = s.handle(Action::CaptureAnchorPickerOpen, &api, &tx).await;
+        assert!(matches!(out, Some((Level::Warning, _))));
+        assert!(s.anchor_picker.is_none());
+    }
+
+    #[tokio::test]
+    async fn anchor_picker_fetch_then_load_mounts_the_picker() {
+        let (mut s, api, tx, _rx) = setup();
+        s.book_id = Some(11);
+        // No anchor_data yet: opening kicks the fetch and reports loading.
+        let out = s.handle(Action::CaptureAnchorPickerOpen, &api, &tx).await;
+        assert!(matches!(out, Some((Level::Info, _))));
+        assert!(s.anchor_loading);
+        assert!(s.anchor_picker.is_none());
+        // The tree lands → the picker mounts.
+        s.handle(
+            Action::CaptureAnchorDataLoaded(Box::new(sicp_anchor_data())),
+            &api,
+            &tx,
+        )
+        .await;
+        assert!(!s.anchor_loading);
+        assert!(s.anchor_picker.is_some());
+    }
+
+    #[tokio::test]
+    async fn anchor_picker_pins_a_chapter_then_a_section_into_the_body() {
+        let (mut s, api, tx, _rx) = setup();
+        s.content = make_textarea("MVCC keeps one version");
+        s.book_id = Some(11);
+        s.anchor_data = Some(sicp_anchor_data());
+
+        // Open → the shared picker mounts over the flattened chapter/section rows.
+        s.handle(Action::CaptureAnchorPickerOpen, &api, &tx).await;
+        assert!(s.anchor_picker.is_some());
+
+        // Row 0 is the chapter; pin it.
+        s.handle(Action::CaptureAnchorPickerSubmit, &api, &tx).await;
+        assert_eq!(s.chapter_id, Some(3));
+        assert_eq!(s.section_id, None);
+        assert!(s.anchor_touched);
+        assert!(s.anchor_picker.is_none());
+        let anchors = s.build_input().anchors.expect("a chapter yields an anchor");
+        assert_eq!(anchors[0].chapter_id, Some(3));
+        assert_eq!(anchors[0].section_id, None);
+
+        // Reopen, step to §3.2 (chapter, §3.1, §3.2), and pin the section.
+        s.handle(Action::CaptureAnchorPickerOpen, &api, &tx).await;
+        s.handle(Action::CaptureAnchorMove(2), &api, &tx).await;
+        s.handle(Action::CaptureAnchorPickerSubmit, &api, &tx).await;
+        assert_eq!(s.chapter_id, Some(3));
+        assert_eq!(s.section_id, Some(32));
+        let anchors = s.build_input().anchors.expect("a section yields an anchor");
+        assert_eq!(anchors[0].chapter_id, Some(3));
+        assert_eq!(anchors[0].section_id, Some(32));
+    }
+
+    #[tokio::test]
+    async fn anchor_picker_filter_then_cancel_leaves_the_anchor_untouched() {
+        let (mut s, api, tx, _rx) = setup();
+        s.book_id = Some(11);
+        s.anchor_data = Some(sicp_anchor_data());
+        s.handle(Action::CaptureAnchorPickerOpen, &api, &tx).await;
+        // Typing filters the picker; Esc closes without pinning anything.
+        s.handle(Action::CaptureAnchorInput('e'), &api, &tx).await;
+        s.handle(Action::CaptureAnchorPickerClose, &api, &tx).await;
+        assert!(s.anchor_picker.is_none());
+        assert_eq!(s.chapter_id, None);
+        assert!(!s.anchor_touched);
+    }
+
+    #[test]
+    fn edit_without_touching_the_anchor_omits_it_from_the_patch() {
+        // The NoteInput contract: an edit that never touches the anchor step
+        // must omit `anchors`, leaving the note's citations untouched.
+        let note: Note = serde_json::from_value(serde_json::json!({
+            "id": 55, "title": "MVCC", "content": "MVCC keeps one version",
+            "book_id": 3, "book_title": "SICP",
+            "citations": [{ "id": 1, "book_chapter_id": 3, "page": 142 }]
+        }))
+        .unwrap();
+        let s = QuickCapture::for_edit(note);
+        assert!(!s.anchor_touched);
+        let body = s.build_input();
+        assert!(
+            body.anchors.is_none(),
+            "an untouched edit omits anchors (citations stay put)"
+        );
+        // The book link itself is still carried on the PATCH.
+        assert_eq!(body.book_id, Some(3));
+    }
+
+    #[tokio::test]
+    async fn edit_that_pins_a_new_anchor_replaces_it_on_the_patch() {
+        let (_ignored, api, tx, _rx) = setup();
+        let note: Note = serde_json::from_value(serde_json::json!({
+            "id": 55, "title": "MVCC", "content": "MVCC keeps one version",
+            "book_id": 11, "book_title": "SICP",
+            "citations": [{ "id": 1, "page": 142 }]
+        }))
+        .unwrap();
+        let mut s = QuickCapture::for_edit(note);
+        s.anchor_data = Some(sicp_anchor_data());
+        // Touch the anchor: open the picker and pin the chapter.
+        s.handle(Action::CaptureAnchorPickerOpen, &api, &tx).await;
+        s.handle(Action::CaptureAnchorPickerSubmit, &api, &tx).await;
+        assert!(s.anchor_touched);
+        let anchors = s.build_input().anchors.expect("the touched anchor is sent");
+        assert_eq!(anchors[0].chapter_id, Some(3));
+    }
+
+    #[test]
+    fn for_edit_seeds_chapter_and_section_from_the_citation() {
+        let note: Note = serde_json::from_value(serde_json::json!({
+            "id": 7, "title": "t", "book_id": 11, "book_title": "SICP",
+            "citations": [{
+                "id": 1, "book_chapter_id": 3, "book_section_id": 32,
+                "page": 294, "address_label": "ch 3 · §3.2 · p.294"
+            }]
+        }))
+        .unwrap();
+        let s = QuickCapture::for_edit(note);
+        assert_eq!(s.chapter_id, Some(3));
+        assert_eq!(s.section_id, Some(32));
+        assert_eq!(s.anchor_echo.as_deref(), Some("ch 3 · §3.2 · p.294"));
+        assert!(!s.anchor_touched);
     }
 }
