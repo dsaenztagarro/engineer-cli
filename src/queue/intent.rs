@@ -90,6 +90,26 @@ pub enum IntentKind {
     ActivityArchive {
         id: i64,
     },
+    /// Append a manual segment to an existing activity — the `engineer log
+    /// --activity` write (after-the-fact time on work already recorded),
+    /// deferred while offline. Carries the target activity, the segment's start,
+    /// and its minutes; the replay re-sends it under the queued
+    /// `Idempotency-Key` (segment-create is in the server's opt-in set, ADR
+    /// 0036), so a lost ack can never write the segment twice.
+    ///
+    /// `activity_id` may be **provisional** — the negative `-(intent.id)` a still
+    /// -queued offline `ActivityCreate` returned. Strict-FIFO replay lands the
+    /// parent create first; when it does, the replay pass rewrites this
+    /// `activity_id` to the real server id (in memory for the rest of the drain,
+    /// and persisted onto this intent under the writer lock), so a segment always
+    /// posts against a real parent even across an interrupted drain (#108). Stream
+    /// `"activity:<id>"`: it orders behind the activity it belongs to (and is
+    /// re-streamed when the id is stitched).
+    SegmentCreate {
+        activity_id: i64,
+        started_at: jiff::Timestamp,
+        minutes: u32,
+    },
     /// Write the week's retro reflection — a deferred `PATCH
     /// /api/v1/weeks/:iso_week/note` (the board's `i`, deferred while offline).
     /// Carries the whole body so the replay re-sends it verbatim; the route
@@ -152,6 +172,10 @@ impl IntentKind {
             Self::ActivityUpdate { id, .. } | Self::ActivityArchive { id } => {
                 format!("activity:{id}")
             }
+            // Orders behind the activity it belongs to. A provisional (negative)
+            // id here is rewritten to the real one when the parent create lands,
+            // and the stream is recomputed with it (replay id-mapping, #108).
+            Self::SegmentCreate { activity_id, .. } => format!("activity:{activity_id}"),
             // One note per week, ordered on its own stream — a later reflection
             // for the same week supersedes the earlier queued one in FIFO order.
             Self::WeekNoteWrite { iso_week, .. } => format!("week:{iso_week}"),
@@ -179,6 +203,7 @@ impl IntentKind {
             Self::ActivityCreate { .. } => "plan",
             Self::ActivityUpdate { .. } => "adjust",
             Self::ActivityArchive { .. } => "drop",
+            Self::SegmentCreate { .. } => "log",
             Self::WeekNoteWrite { .. } => "reflect",
             Self::TargetCreate { .. } => "declare",
             Self::TargetAdjust { .. } => "adjust",
@@ -224,6 +249,17 @@ pub enum IntentState {
         /// server objection's title so the review can still say what happened.
         reason: String,
     },
+}
+
+/// The negative stand-in id a queued **activity/segment** create returns:
+/// `-(intent.id)`, unique per intent (unlike the flat `-1` sentinels the note /
+/// target provisionals use). The uniqueness is load-bearing — the replay id-map
+/// keys on exactly this value to rewrite the references to *this* provisional
+/// resource when its create lands (#108). Every board / audit surface renders
+/// any negative id as `◔ queued`, so only the sign matters to them; the
+/// magnitude matters only to the map.
+pub fn provisional_id(intent_id: u64) -> i64 {
+    -(intent_id as i64)
 }
 
 /// A fresh v4-format idempotency key.
@@ -313,6 +349,29 @@ mod tests {
         let json = serde_json::to_string(&capture).unwrap();
         assert!(json.contains(r#""verb":"note_create""#), "{json}");
         assert_eq!(serde_json::from_str::<IntentKind>(&json).unwrap(), capture);
+    }
+
+    #[test]
+    fn segment_create_intent_roundtrips_and_streams_on_its_activity() {
+        let append = IntentKind::SegmentCreate {
+            activity_id: 9,
+            started_at: "2026-07-15T13:00:00Z".parse().unwrap(),
+            minutes: 20,
+        };
+        assert_eq!(append.word(), "log");
+        assert_eq!(append.stream(), "activity:9", "orders behind its activity");
+        let json = serde_json::to_string(&append).unwrap();
+        assert!(json.contains(r#""verb":"segment_create""#), "{json}");
+        assert_eq!(serde_json::from_str::<IntentKind>(&json).unwrap(), append);
+
+        // A provisional parent id keys the provisional stream, until the replay
+        // stitches the real id (#108).
+        let provisional = IntentKind::SegmentCreate {
+            activity_id: -7,
+            started_at: "2026-07-15T13:00:00Z".parse().unwrap(),
+            minutes: 20,
+        };
+        assert_eq!(provisional.stream(), "activity:-7");
     }
 
     #[test]

@@ -14,6 +14,7 @@ use jiff::Timestamp;
 use crate::api::{ActivityCreate, ApiClient, ApiError};
 use crate::auth::TokenProvider;
 use crate::config::Config;
+use crate::queue::QueuedClient;
 
 #[derive(Args)]
 pub struct LogArgs {
@@ -41,9 +42,10 @@ pub async fn run(cfg: &Config, args: LogArgs) -> Result<i32> {
     let provider = TokenProvider::new(cfg.clone()).await?;
     let token = provider.access_token().await?;
     let api = ApiClient::with_token(cfg.api_url.clone(), token);
+    let queued = QueuedClient::new(&api).map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
     let colored = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
 
-    let outcome = dispatch(&api, args, colored).await;
+    let outcome = dispatch(&api, &queued, args, colored).await;
     for line in &outcome.out {
         println!("{line}");
     }
@@ -77,13 +79,13 @@ impl Outcome {
     }
 }
 
-async fn dispatch(api: &ApiClient, args: LogArgs, colored: bool) -> Outcome {
+async fn dispatch(api: &ApiClient, queued: &QueuedClient, args: LogArgs, colored: bool) -> Outcome {
     if args.minutes == 0 {
         return Outcome::refuse("--minutes must be greater than 0");
     }
     if let Some(title) = args.title {
         log_new(
-            api,
+            queued,
             &title,
             args.minutes,
             args.kind,
@@ -93,7 +95,7 @@ async fn dispatch(api: &ApiClient, args: LogArgs, colored: bool) -> Outcome {
         )
         .await
     } else if let Some(query) = args.activity {
-        log_segment(api, &query, args.minutes, args.json, colored).await
+        log_segment(api, queued, &query, args.minutes, args.json, colored).await
     } else {
         Outcome::refuse(
             "give a title to log a new activity, or --activity <match> to append to one",
@@ -101,9 +103,13 @@ async fn dispatch(api: &ApiClient, args: LogArgs, colored: bool) -> Outcome {
     }
 }
 
-/// Log a new completed activity — the exact write the `a` new-activity form makes.
+/// Log a new completed activity — the exact write the `a` new-activity form
+/// makes. Routes through [`QueuedClient`] like every write: a single create
+/// carrying `duration_minutes` (the server mints the activity *and* its opening
+/// segment from it), so offline it queues one `ActivityCreate` and prints a
+/// provisional line, replaying when the wire returns.
 async fn log_new(
-    api: &ApiClient,
+    queued: &QueuedClient,
     title: &str,
     minutes: u32,
     kind: Option<String>,
@@ -118,37 +124,53 @@ async fn log_new(
         domain_id: domain,
         ..Default::default()
     };
-    match api.create_activity(&create).await {
-        Ok(a) => {
+    match queued.create_activity(&create).await {
+        Ok(out) => {
+            let provisional = out.is_provisional();
+            let a = out.value();
             if json {
-                return Outcome::ok(
-                    serde_json::json!({
-                        "id": a.id,
-                        "title": a.title,
-                        "duration_minutes": a.duration_minutes,
-                        "kind": a.kind,
-                    })
-                    .to_string(),
-                );
+                // A queued create's `id` is the negative provisional stand-in
+                // (`-(intent.id)`) — carried honestly so a script reads "not yet
+                // server-minted" straight off the sign, with `queued: true` to
+                // name it.
+                let mut v = serde_json::json!({
+                    "id": a.id,
+                    "title": a.title,
+                    "duration_minutes": a.duration_minutes,
+                    "kind": a.kind,
+                });
+                if provisional {
+                    v["queued"] = true.into();
+                }
+                return Outcome::ok(v.to_string());
             }
             let extra = kind
                 .as_deref()
                 .map(|k| format!(" · {k}"))
                 .unwrap_or_default();
-            Outcome::ok(format!(
+            let mut line = format!(
                 "{} logged \"{}\" · {minutes}m{extra}",
                 paint("●", COLOR_OK, colored),
                 a.title,
-            ))
+            );
+            if provisional {
+                line.push_str(&paint("  · queued (offline)", COLOR_MUTED, colored));
+            }
+            Outcome::ok(line)
         }
         Err(e) => Outcome::refuse(problem_text(e)),
     }
 }
 
 /// Append minutes to an existing activity — resolve the query to its best match
-/// (the timer bind candidates), then write a manual segment ending now.
+/// (the timer bind candidates, a *live* read), then write a manual segment
+/// ending now through [`QueuedClient`]. The resolve is the offline boundary:
+/// with no wire it can't fuzzy-match, and guessing would log against the wrong
+/// activity, so it refuses with the way forward — the one spelling `timer start`
+/// and `note capture --book` already use.
 async fn log_segment(
     api: &ApiClient,
+    queued: &QueuedClient,
     query: &str,
     minutes: u32,
     json: bool,
@@ -156,6 +178,11 @@ async fn log_segment(
 ) -> Outcome {
     let candidate = match api.timer_candidates(Some(query)).await {
         Ok(list) => list.into_iter().next(),
+        Err(ApiError::Transport(_)) => {
+            return Outcome::refuse(format!(
+                "offline — can't resolve activity \"{query}\"; log a new one, or retry online"
+            ));
+        }
         Err(e) => return Outcome::refuse(problem_text(e)),
     };
     let Some(candidate) = candidate else {
@@ -166,23 +193,29 @@ async fn log_segment(
     let now = Timestamp::now();
     let started = Timestamp::from_second(now.as_second() - minutes as i64 * 60).unwrap_or(now);
 
-    match api.create_segment(candidate.id, started, minutes).await {
-        Ok(_) => {
+    match queued.create_segment(candidate.id, started, minutes).await {
+        Ok(out) => {
+            let provisional = out.is_provisional();
             if json {
-                return Outcome::ok(
-                    serde_json::json!({
-                        "activity_id": candidate.id,
-                        "title": candidate.title,
-                        "minutes": minutes,
-                    })
-                    .to_string(),
-                );
+                let mut v = serde_json::json!({
+                    "activity_id": candidate.id,
+                    "title": candidate.title,
+                    "minutes": minutes,
+                });
+                if provisional {
+                    v["queued"] = true.into();
+                }
+                return Outcome::ok(v.to_string());
             }
-            Outcome::ok(format!(
+            let mut line = format!(
                 "{} logged {minutes}m on \"{}\"",
                 paint("●", COLOR_OK, colored),
                 candidate.title,
-            ))
+            );
+            if provisional {
+                line.push_str(&paint("  · queued (offline)", COLOR_MUTED, colored));
+            }
+            Outcome::ok(line)
         }
         Err(e) => Outcome::refuse(problem_text(e)),
     }
@@ -198,6 +231,7 @@ fn problem_text(e: ApiError) -> String {
 }
 
 const COLOR_OK: u8 = 108; // success green
+const COLOR_MUTED: u8 = 244; // the queued/offline tail
 
 fn paint(s: &str, color: u8, colored: bool) -> String {
     if colored {
@@ -210,12 +244,38 @@ fn paint(s: &str, color: u8, colored: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::queue::IntentKind;
     use url::Url;
     use wiremock::matchers::{body_partial_json, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn client(server: &MockServer) -> ApiClient {
         ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into())
+    }
+
+    fn dead_api() -> ApiClient {
+        ApiClient::with_token(Url::parse("http://127.0.0.1:1/").unwrap(), "tok".into())
+    }
+
+    /// A per-test scratch dir so the queue never touches the shared XDG state.
+    fn scratch() -> std::path::PathBuf {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "engineer-log-cli-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn queued_at(api: &ApiClient, dir: &std::path::Path) -> QueuedClient {
+        QueuedClient::with_paths(
+            api,
+            crate::queue::QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        )
     }
 
     fn args(title: Option<&str>, activity: Option<&str>, minutes: u32) -> LogArgs {
@@ -227,6 +287,15 @@ mod tests {
             domain: None,
             json: false,
         }
+    }
+
+    /// `dispatch` with an isolated, empty queue — what the live tests need.
+    async fn run_dispatch(api: &ApiClient, args: LogArgs, json: bool) -> Outcome {
+        let dir = scratch();
+        let queued = queued_at(api, &dir);
+        let mut args = args;
+        args.json = json;
+        dispatch(api, &queued, args, false).await
     }
 
     #[tokio::test]
@@ -244,7 +313,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let out = dispatch(
+        let out = run_dispatch(
             &client(&server),
             args(Some("Crafting Interpreters ch.4"), None, 45),
             false,
@@ -277,7 +346,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let out = dispatch(&client(&server), args(None, Some("sicp"), 30), false).await;
+        let out = run_dispatch(&client(&server), args(None, Some("sicp"), 30), false).await;
         assert_eq!(out.code, 0);
         assert!(out.out[0].contains("logged 30m on \"SICP ch.3\""));
     }
@@ -291,7 +360,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let out = dispatch(&client(&server), args(None, Some("nope"), 30), false).await;
+        let out = run_dispatch(&client(&server), args(None, Some("nope"), 30), false).await;
         assert_eq!(out.code, 1);
         assert!(out.err[0].contains("no activity matches"));
     }
@@ -299,9 +368,84 @@ mod tests {
     #[tokio::test]
     async fn zero_minutes_and_no_target_are_refused() {
         let server = MockServer::start().await;
-        let zero = dispatch(&client(&server), args(Some("x"), None, 0), false).await;
+        let zero = run_dispatch(&client(&server), args(Some("x"), None, 0), false).await;
         assert_eq!(zero.code, 1);
-        let empty = dispatch(&client(&server), args(None, None, 30), false).await;
+        let empty = run_dispatch(&client(&server), args(None, None, 30), false).await;
         assert_eq!(empty.code, 1);
+    }
+
+    // --- offline (#108): the create shape queues, the append shape refuses ---
+
+    #[tokio::test]
+    async fn offline_log_title_enqueues_a_provisional_activity() {
+        let api = dead_api();
+        let dir = scratch();
+        let queued = queued_at(&api, &dir);
+
+        let out = dispatch(
+            &api,
+            &queued,
+            args(Some("Raft leader election"), None, 20),
+            false,
+        )
+        .await;
+        assert_eq!(out.code, 0, "a title create is never refused offline");
+        assert!(out.out[0].contains("logged \"Raft leader election\" · 20m"));
+        assert!(out.out[0].contains("queued (offline)"), "{}", out.out[0]);
+
+        let intents = crate::queue::QueueStore::at(dir.join("queue.json"))
+            .pending()
+            .unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].kind.word(), "plan");
+        assert_eq!(intents[0].stream, "activity");
+        match &intents[0].kind {
+            IntentKind::ActivityCreate { body } => {
+                assert_eq!(body.title, "Raft leader election");
+                assert_eq!(
+                    body.duration_minutes,
+                    Some(20),
+                    "the server mints the segment"
+                );
+            }
+            other => panic!("expected an ActivityCreate intent, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn offline_log_title_json_carries_the_negative_provisional_id() {
+        let api = dead_api();
+        let dir = scratch();
+        let queued = queued_at(&api, &dir);
+
+        let mut args = args(Some("Raft"), None, 20);
+        args.json = true;
+        let out = dispatch(&api, &queued, args, false).await;
+        assert_eq!(out.code, 0);
+        let v: serde_json::Value = serde_json::from_str(&out.out[0]).unwrap();
+        assert!(
+            v["id"].as_i64().unwrap() < 0,
+            "not yet server-minted: {}",
+            out.out[0]
+        );
+        assert_eq!(v["duration_minutes"], 20);
+        assert_eq!(v["queued"], true);
+    }
+
+    #[tokio::test]
+    async fn offline_log_activity_refuses_it_cannot_resolve() {
+        let api = dead_api();
+        let dir = scratch();
+        let queued = queued_at(&api, &dir);
+
+        let out = dispatch(&api, &queued, args(None, Some("sicp"), 30), false).await;
+        assert_eq!(out.code, 1, "the fuzzy resolve is a live read");
+        assert!(out.err[0].contains("offline"), "{}", out.err[0]);
+        assert!(out.err[0].contains("can't resolve activity \"sicp\""));
+        assert_eq!(
+            queued.queue_summary().depth,
+            0,
+            "an unresolved append queues nothing"
+        );
     }
 }

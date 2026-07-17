@@ -356,6 +356,7 @@ fn compose_local_session(
             IntentKind::ActivityCreate { .. }
             | IntentKind::ActivityUpdate { .. }
             | IntentKind::ActivityArchive { .. }
+            | IntentKind::SegmentCreate { .. }
             | IntentKind::WeekNoteWrite { .. }
             | IntentKind::TargetCreate { .. }
             | IntentKind::TargetAdjust { .. }

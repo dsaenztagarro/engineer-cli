@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ApiClient, ApiError};
+use super::{ApiClient, ApiError, Keyed};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Segment {
@@ -58,6 +58,32 @@ impl ApiClient {
         };
         self.post(&format!("/api/v1/activities/{activity_id}/segments"), &body)
             .await
+    }
+
+    /// The `create_segment` twin carrying an `Idempotency-Key` — the offline
+    /// queue's replay path re-sends a deferred segment through this so a lost ack
+    /// can never write the segment twice (segment-create is in the server's
+    /// opt-in set, ADR 0036, alongside the timer and activity creates). Returns
+    /// `Keyed` so the replay pass can see a stored replay.
+    pub(crate) async fn create_segment_idempotent(
+        &self,
+        activity_id: i64,
+        started_at: jiff::Timestamp,
+        minutes: u32,
+        idempotency_key: &str,
+    ) -> Result<Keyed<Segment>, ApiError> {
+        let body = SegmentCreateBody {
+            segment: SegmentCreate {
+                started_at,
+                duration_minutes: minutes,
+            },
+        };
+        self.post_idempotent(
+            &format!("/api/v1/activities/{activity_id}/segments"),
+            &body,
+            idempotency_key,
+        )
+        .await
     }
 
     /// Edit a segment in place — shortening `minutes` is the trim preset.
