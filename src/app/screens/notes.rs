@@ -18,8 +18,11 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::{ApiClient, Note, NoteFilters};
 use crate::app::action::Action;
+use crate::queue::WriteOutcome;
 use crate::ui::notify::Level;
 use crate::ui::{layout::bordered, theme, widgets};
+
+use super::{notify_seam_error, open_queued, QueuePaths};
 
 pub struct Notes {
     items: Vec<Note>,
@@ -35,6 +38,9 @@ pub struct Notes {
     /// A permanent-delete caught its first press on the detail; the next press
     /// of the same key confirms, any other key disarms (guarded, live-only).
     delete_armed: bool,
+    /// Queue + read-cache locations for the offline write seam — `None`
+    /// (production) uses the shared XDG paths, tests inject a scratch dir.
+    queue_paths: QueuePaths,
 }
 
 impl Default for Notes {
@@ -50,6 +56,7 @@ impl Default for Notes {
             loading: false,
             detail: None,
             delete_armed: false,
+            queue_paths: None,
         }
     }
 }
@@ -213,14 +220,19 @@ impl Notes {
                 if let Some(note) = self.selected().cloned() {
                     let archived = note.archived_at.is_some();
                     let (api, tx) = (api.clone(), tx.clone());
+                    let paths = self.queue_paths.clone();
                     tokio::spawn(async move {
+                        let queued = match open_queued(&api, &paths) {
+                            Ok(q) => q,
+                            Err(e) => return notify_seam_error(&tx, "archive failed", e),
+                        };
                         let res = if archived {
-                            api.unarchive_note(note.id).await
+                            queued.unarchive_note(note.id).await
                         } else {
-                            api.archive_note(note.id).await
+                            queued.archive_note(note.id).await
                         };
                         match res {
-                            Ok(_) => {
+                            Ok(WriteOutcome::Confirmed(_)) => {
                                 let _ = tx.send(Action::Notify {
                                     level: Level::Success,
                                     text: if archived {
@@ -230,6 +242,16 @@ impl Notes {
                                     },
                                 });
                                 let _ = tx.send(Action::RefreshNotes);
+                            }
+                            Ok(WriteOutcome::Provisional(_)) => {
+                                let _ = tx.send(Action::Notify {
+                                    level: Level::Info,
+                                    text: if archived {
+                                        "unarchived · queued (offline) — will sync".into()
+                                    } else {
+                                        "archived · queued (offline) — will sync".into()
+                                    },
+                                });
                             }
                             Err(e) => {
                                 let _ = tx.send(Action::Notify {
@@ -256,15 +278,27 @@ impl Notes {
                     Some(n) if n.book_id.is_some() || n.book_title.is_some() => {
                         let id = n.id;
                         let (api, tx) = (api.clone(), tx.clone());
+                        let paths = self.queue_paths.clone();
                         tokio::spawn(async move {
-                            match api.unlink_note(id).await {
-                                Ok(_) => {
+                            let queued = match open_queued(&api, &paths) {
+                                Ok(q) => q,
+                                Err(e) => return notify_seam_error(&tx, "unlink failed", e),
+                            };
+                            match queued.unlink_note(id).await {
+                                Ok(WriteOutcome::Confirmed(_)) => {
                                     let _ = tx.send(Action::Notify {
                                         level: Level::Success,
                                         text: "detached from book".into(),
                                     });
                                     let _ = tx.send(Action::NotesCloseDetail);
                                     let _ = tx.send(Action::RefreshNotes);
+                                }
+                                Ok(WriteOutcome::Provisional(_)) => {
+                                    let _ = tx.send(Action::Notify {
+                                        level: Level::Info,
+                                        text: "detached · queued (offline) — will sync".into(),
+                                    });
+                                    let _ = tx.send(Action::NotesCloseDetail);
                                 }
                                 Err(e) => {
                                     let _ = tx.send(Action::Notify {
@@ -294,11 +328,11 @@ impl Notes {
             }
             Action::NotesDeleteConfirm => {
                 self.delete_armed = false;
-                // Delete is destructive and terminal — live-only, with an honest
-                // offline refusal (the #94/#95 triage/connect precedent). It does
-                // not ride the write queue: a synthesized offline "deleted" would
-                // be a lie, and note writes aren't queue-aware yet (Phase C
-                // #111/#112).
+                // Delete is destructive and terminal — the one note write kept
+                // live-only (edit/archive/unarchive/unlink now ride the queue,
+                // #111), with an honest offline refusal (the #94/#95
+                // triage/connect precedent): a synthesized offline "deleted" would
+                // be a lie the queue can't walk back, so it needs the server.
                 if let Some(note) = self.detail.as_ref().or_else(|| self.selected()) {
                     let id = note.id;
                     let (api, tx) = (api.clone(), tx.clone());
@@ -790,5 +824,96 @@ mod tests {
         assert!(matches!(out, Some((Level::Warning, _))));
         // The note stays open (nothing was severed).
         assert!(s.detail.is_some());
+    }
+
+    // --- offline write seam (#111): archive / unlink queue through QueuedClient ---
+
+    /// A base URL nothing listens on — reqwest fails before any response, which
+    /// is exactly `ApiError::Transport`, the offline seam's trigger.
+    fn dead_api() -> ApiClient {
+        ApiClient::with_token(
+            url::Url::parse("http://127.0.0.1:1/").unwrap(),
+            "tok".into(),
+        )
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "engineer-notes-screen-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Wait for the spawned offline write's Notify (its enqueue completes just
+    /// before it), so the queue read below is race-free.
+    async fn await_notify(rx: &mut mpsc::UnboundedReceiver<Action>) -> Action {
+        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("a notify within 5s")
+            .expect("an action")
+    }
+
+    #[tokio::test]
+    async fn offline_archive_queues_a_note_archive_intent() {
+        let dir = scratch("archive");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Notes {
+            items: vec![note(serde_json::json!({ "id": 42, "title": "shelve me" }))],
+            queue_paths: Some((dir.join("queue.json"), dir.join("timer-cache.json"))),
+            ..Notes::default()
+        };
+        s.handle(Action::NotesArchiveSelected, &dead_api(), &tx)
+            .await;
+
+        // Offline → the Provisional arm fires an Info "queued" notify.
+        let got = await_notify(&mut rx).await;
+        assert!(matches!(
+            got,
+            Action::Notify {
+                level: Level::Info,
+                ..
+            }
+        ));
+
+        let intents = crate::queue::QueueStore::at(dir.join("queue.json"))
+            .pending()
+            .unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].kind.word(), "archive");
+        assert_eq!(intents[0].stream, "note:42");
+    }
+
+    #[tokio::test]
+    async fn offline_unlink_queues_a_note_unlink_intent() {
+        let dir = scratch("unlink");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Notes {
+            detail: Some(note(
+                serde_json::json!({ "id": 4, "title": "linked", "book_id": 11 }),
+            )),
+            queue_paths: Some((dir.join("queue.json"), dir.join("timer-cache.json"))),
+            ..Notes::default()
+        };
+        s.handle(Action::NotesUnlinkSelected, &dead_api(), &tx)
+            .await;
+
+        let got = await_notify(&mut rx).await;
+        assert!(matches!(
+            got,
+            Action::Notify {
+                level: Level::Info,
+                ..
+            }
+        ));
+
+        let intents = crate::queue::QueueStore::at(dir.join("queue.json"))
+            .pending()
+            .unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].kind.word(), "unlink");
+        assert_eq!(intents[0].stream, "note:4");
     }
 }

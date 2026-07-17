@@ -12,8 +12,8 @@
 use std::path::PathBuf;
 
 use crate::api::{
-    Activity, ActivityCreate, ActivityUpdate, ApiClient, ApiError, Note, NoteInput, Segment,
-    TargetCreate, TargetRef, Timer, TimerStopped, WeekNote,
+    Activity, ActivityCreate, ActivityUpdate, ApiClient, ApiError, Book, BookUpdate, Note,
+    NoteInput, Segment, TargetCreate, TargetRef, Timer, TimerStopped, WeekNote,
 };
 use crate::timer_cache;
 use crate::timer_clock;
@@ -690,6 +690,158 @@ impl QueuedClient {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Revise a study note in place — `PATCH /api/v1/notes/:id` (the browser's
+    /// `e` edit overlay save, including the #124 anchor save). Drain-before-live,
+    /// then the live PATCH; offline it enqueues an [`IntentKind::NoteUpdate`]
+    /// carrying the whole body **verbatim** and echoes a provisional note with
+    /// the new body. The body rides the intent untouched, so the `NoteInput`
+    /// omit-vs-replace anchors contract is held through the queue: an omitted
+    /// `anchors` replays as an omit (citations untouched), a present one replays
+    /// as a replace. Always a real server id — an offline-created note is not
+    /// reachable to edit before it syncs.
+    pub async fn update_note(
+        &self,
+        id: i64,
+        body: &NoteInput,
+    ) -> Result<WriteOutcome<Note>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.update_note(id, body).await {
+            Ok(n) => Ok(WriteOutcome::Confirmed(n)),
+            Err(ApiError::Transport(_)) => self.defer_note(
+                IntentKind::NoteUpdate {
+                    id,
+                    body: body.clone(),
+                },
+                Note {
+                    id,
+                    title: body.title.clone(),
+                    content: body.content.clone(),
+                    book_id: body.book_id,
+                    ..Default::default()
+                },
+            ),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Shelve a note — `PATCH /api/v1/notes/:id/archive` (the browser's `a` on an
+    /// active note). Offline enqueues an [`IntentKind::NoteArchive`] and returns
+    /// the row field-flipped to archived.
+    pub async fn archive_note(&self, id: i64) -> Result<WriteOutcome<Note>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.archive_note(id).await {
+            Ok(n) => Ok(WriteOutcome::Confirmed(n)),
+            Err(ApiError::Transport(_)) => self.defer_note(
+                IntentKind::NoteArchive { id },
+                Note {
+                    id,
+                    archived_at: Some(jiff::Timestamp::now()),
+                    ..Default::default()
+                },
+            ),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Restore a shelved note — `PATCH /api/v1/notes/:id/unarchive` (the
+    /// browser's `a` on an archived note). Offline enqueues an
+    /// [`IntentKind::NoteUnarchive`] and returns the row field-flipped back to
+    /// active (`archived_at` cleared — the `Default`).
+    pub async fn unarchive_note(&self, id: i64) -> Result<WriteOutcome<Note>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.unarchive_note(id).await {
+            Ok(n) => Ok(WriteOutcome::Confirmed(n)),
+            Err(ApiError::Transport(_)) => self.defer_note(
+                IntentKind::NoteUnarchive { id },
+                Note {
+                    id,
+                    ..Default::default()
+                },
+            ),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Detach a note from its book — `PATCH /api/v1/notes/:id/unlink` (the
+    /// detail's `u`). Offline enqueues an [`IntentKind::NoteUnlink`] and returns
+    /// the row field-flipped loose (`book_id` cleared, `book_linked` false — both
+    /// the `Default`).
+    pub async fn unlink_note(&self, id: i64) -> Result<WriteOutcome<Note>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.unlink_note(id).await {
+            Ok(n) => Ok(WriteOutcome::Confirmed(n)),
+            Err(ApiError::Transport(_)) => self.defer_note(
+                IntentKind::NoteUnlink { id },
+                Note {
+                    id,
+                    ..Default::default()
+                },
+            ),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Update a book in place — `PATCH /api/v1/books/:id` (the detail's `s`
+    /// status flip, `p` page set, `⎵` chapter-done). Drain-before-live, then the
+    /// live PATCH; offline it enqueues an [`IntentKind::BookUpdate`] carrying the
+    /// whole partial body and returns `current` field-flipped by the set fields —
+    /// a faithful stand-in the detail renders in place of the confirmed row until
+    /// it syncs. Always a real server id — books are never created offline.
+    ///
+    /// `current` is the last-known book the caller already holds; the seam
+    /// field-flips it (rather than synthesizing a stub) so the provisional row
+    /// keeps the book's title, author, and progress instead of blanking them.
+    pub async fn update_book(
+        &self,
+        id: i64,
+        body: &BookUpdate,
+        current: &Book,
+    ) -> Result<WriteOutcome<Book>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.update_book(id, body).await {
+            Ok(b) => Ok(WriteOutcome::Confirmed(b)),
+            Err(ApiError::Transport(_)) => {
+                self.store
+                    .enqueue(IntentKind::BookUpdate {
+                        id,
+                        body: body.clone(),
+                    })
+                    .map_err(|e| {
+                        ApiError::Transport(format!("offline, and queueing the write failed: {e}"))
+                    })?;
+                let mut flipped = current.clone();
+                if let Some(s) = body.status {
+                    flipped.status = s;
+                }
+                if let Some(p) = body.current_page {
+                    flipped.current_page = Some(p);
+                }
+                if let Some(c) = body.current_chapter_id {
+                    flipped.current_chapter_id = Some(c);
+                }
+                Ok(WriteOutcome::Provisional(flipped))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The offline arm the note field-flip verbs share (edit/archive/unarchive/
+    /// unlink) — the [`defer_activity`] twin for [`Note`]: enqueue first (the
+    /// gesture must never be lost), then return the provisional stand-in. No
+    /// cached snapshot is needed — a note write names its own row.
+    ///
+    /// [`defer_activity`]: Self::defer_activity
+    fn defer_note(
+        &self,
+        kind: IntentKind,
+        provisional: Note,
+    ) -> Result<WriteOutcome<Note>, ApiError> {
+        self.store.enqueue(kind).map_err(|e| {
+            ApiError::Transport(format!("offline, and queueing the write failed: {e}"))
+        })?;
+        Ok(WriteOutcome::Provisional(provisional))
     }
 
     /// The offline arm the target-write verbs share — the [`defer_activity`]
@@ -1588,5 +1740,263 @@ mod tests {
         let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
         assert_eq!(intents[0].kind.word(), "retire");
         assert_eq!(intents[0].stream, "target:42");
+    }
+
+    // --- note writes (#111): edit / archive / unarchive / unlink through the seam ---
+
+    #[tokio::test]
+    async fn live_note_update_is_confirmed_and_queues_nothing() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/notes/7"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 7, "title": "revised", "citations": []
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let dir = tmp_dir("live-note-update");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let body = NoteInput {
+            title: "revised".into(),
+            ..Default::default()
+        };
+        let out = queued.update_note(7, &body).await.unwrap();
+        assert!(!out.is_provisional());
+        assert_eq!(out.value().id, 7);
+        assert_eq!(queued.queue_summary().depth, 0);
+    }
+
+    #[tokio::test]
+    async fn offline_note_update_enqueues_and_echoes_the_body_verbatim() {
+        use crate::api::Anchor;
+        let api = dead_api();
+        let dir = tmp_dir("offline-note-update");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let body = NoteInput {
+            title: "MVCC".into(),
+            book_id: Some(11),
+            anchors: Some(vec![Anchor {
+                chapter_id: Some(3),
+                section_id: Some(32),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let out = queued.update_note(7, &body).await.unwrap();
+        assert!(out.is_provisional());
+        assert_eq!(out.value().id, 7);
+        assert_eq!(out.value().title, "MVCC");
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].kind.word(), "edit");
+        assert_eq!(intents[0].stream, "note:7");
+        // The intent carries the body verbatim — anchors and all — so the
+        // omit-vs-replace contract rides the queue untouched.
+        match &intents[0].kind {
+            IntentKind::NoteUpdate { body, .. } => {
+                assert_eq!(body.book_id, Some(11));
+                let anchors = body.anchors.as_ref().expect("the anchor is kept");
+                assert_eq!(anchors[0].chapter_id, Some(3));
+                assert_eq!(anchors[0].section_id, Some(32));
+            }
+            other => panic!("expected a NoteUpdate intent, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn offline_note_update_holds_the_anchors_omit_contract() {
+        // An edit that never touched the anchor omits `anchors` — that omission
+        // must survive the queue so the replay leaves the citations untouched.
+        let api = dead_api();
+        let dir = tmp_dir("offline-note-update-omit");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let body = NoteInput {
+            title: "kept".into(),
+            book_id: Some(3),
+            anchors: None,
+            ..Default::default()
+        };
+        queued.update_note(9, &body).await.unwrap();
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        match &intents[0].kind {
+            IntentKind::NoteUpdate { body, .. } => {
+                assert!(body.anchors.is_none(), "an omitted anchor stays omitted");
+                assert_eq!(body.book_id, Some(3), "the book link still rides along");
+            }
+            other => panic!("expected a NoteUpdate intent, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn offline_note_archive_and_unarchive_flip_the_row() {
+        let api = dead_api();
+        let dir = tmp_dir("offline-note-archive");
+        let store = QueueStore::at(dir.join("queue.json"));
+        let queued = QueuedClient::with_paths(&api, store, dir.join("timer-cache.json"));
+
+        let out = queued.archive_note(5).await.unwrap();
+        assert!(out.is_provisional());
+        assert!(out.value().archived_at.is_some(), "field-flip: archived");
+
+        let out = queued.unarchive_note(6).await.unwrap();
+        assert!(out.is_provisional());
+        assert!(out.value().archived_at.is_none(), "field-flip: active");
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents[0].kind.word(), "archive");
+        assert_eq!(intents[0].stream, "note:5");
+        assert_eq!(intents[1].kind.word(), "unarchive");
+        assert_eq!(intents[1].stream, "note:6");
+    }
+
+    #[tokio::test]
+    async fn offline_note_unlink_flips_the_row_loose() {
+        let api = dead_api();
+        let dir = tmp_dir("offline-note-unlink");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let out = queued.unlink_note(4).await.unwrap();
+        assert!(out.is_provisional());
+        assert!(out.value().book_id.is_none(), "field-flip: detached");
+        assert!(!out.value().book_linked);
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents[0].kind.word(), "unlink");
+        assert_eq!(intents[0].stream, "note:4");
+    }
+
+    // --- book writes (#111): status / page / chapter through the seam ---
+
+    #[tokio::test]
+    async fn live_book_update_is_confirmed_and_queues_nothing() {
+        use crate::api::BookStatus;
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/books/7"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 7, "title": "SICP", "status": "completed"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let dir = tmp_dir("live-book-update");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let current: Book = serde_json::from_value(serde_json::json!({
+            "id": 7, "title": "SICP", "status": "reading"
+        }))
+        .unwrap();
+        let body = BookUpdate {
+            status: Some(BookStatus::Completed),
+            ..Default::default()
+        };
+        let out = queued.update_book(7, &body, &current).await.unwrap();
+        assert!(!out.is_provisional());
+        assert_eq!(out.value().status, BookStatus::Completed);
+        assert_eq!(queued.queue_summary().depth, 0);
+    }
+
+    #[tokio::test]
+    async fn offline_book_update_enqueues_and_field_flips_the_current_book() {
+        use crate::api::BookStatus;
+        let api = dead_api();
+        let dir = tmp_dir("offline-book-update");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        // A full current book: the flip must keep title/author, not blank them.
+        let current: Book = serde_json::from_value(serde_json::json!({
+            "id": 7, "title": "SICP", "author": "Abelson & Sussman",
+            "status": "reading", "current_page": 100
+        }))
+        .unwrap();
+        let body = BookUpdate {
+            status: Some(BookStatus::OnHold),
+            ..Default::default()
+        };
+        let out = queued.update_book(7, &body, &current).await.unwrap();
+        assert!(out.is_provisional());
+        assert_eq!(out.value().status, BookStatus::OnHold, "field-flip");
+        assert_eq!(out.value().title, "SICP", "the flip keeps the other fields");
+        assert_eq!(out.value().author.as_deref(), Some("Abelson & Sussman"));
+        assert_eq!(out.value().current_page, Some(100));
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].kind.word(), "book");
+        assert_eq!(intents[0].stream, "book:7");
+        match &intents[0].kind {
+            IntentKind::BookUpdate { id, body } => {
+                assert_eq!(*id, 7);
+                assert_eq!(body.status, Some(BookStatus::OnHold));
+            }
+            other => panic!("expected a BookUpdate intent, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn offline_book_page_set_flips_the_page_and_queues_it() {
+        let api = dead_api();
+        let dir = tmp_dir("offline-book-page");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let current: Book = serde_json::from_value(serde_json::json!({
+            "id": 7, "title": "SICP", "status": "reading", "current_page": 100
+        }))
+        .unwrap();
+        let body = BookUpdate {
+            current_page: Some(142),
+            ..Default::default()
+        };
+        let out = queued.update_book(7, &body, &current).await.unwrap();
+        assert!(out.is_provisional());
+        assert_eq!(out.value().current_page, Some(142), "the page flipped");
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents[0].stream, "book:7");
+        match &intents[0].kind {
+            IntentKind::BookUpdate { body, .. } => {
+                assert_eq!(body.current_page, Some(142));
+                assert!(body.status.is_none(), "only the page rode the intent");
+            }
+            other => panic!("expected a BookUpdate intent, got {other:?}"),
+        }
     }
 }

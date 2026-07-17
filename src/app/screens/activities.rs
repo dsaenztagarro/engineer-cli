@@ -454,18 +454,32 @@ impl Activities {
                     Err(warn) => return Some(warn),
                 } {
                     let (api, tx) = (api.clone(), tx.clone());
+                    let paths = self.queue_paths.clone();
                     let title = a.title.clone();
                     tokio::spawn(async move {
+                        let queued = match open_queued(&api, &paths) {
+                            Ok(q) => q,
+                            Err(e) => return notify_seam_error(&tx, "timer start failed", e),
+                        };
                         // Start (switching away from any running timer) bound to
                         // this activity, so the segment lands on the right work.
-                        match api.start_timer(Some(a.id), true).await {
-                            Ok(_) => {
+                        match queued.start_timer(Some(a.id), true).await {
+                            Ok(WriteOutcome::Confirmed(t)) => {
                                 let _ = tx.send(Action::Notify {
                                     level: Level::Success,
                                     text: format!("timer started · {title}"),
                                 });
                                 // Refresh the app-owned header cell snapshot.
-                                let _ = tx.send(Action::RefreshTimer);
+                                let _ = tx.send(Action::TimerLoaded(Box::new(t)));
+                            }
+                            Ok(WriteOutcome::Provisional(t)) => {
+                                let _ = tx.send(Action::Notify {
+                                    level: Level::Info,
+                                    text: format!(
+                                        "timer started · {title} · queued (offline) — will sync"
+                                    ),
+                                });
+                                let _ = tx.send(Action::TimerProvisional(Box::new(t)));
                             }
                             Err(e) => {
                                 let _ = tx.send(Action::Notify {
@@ -1108,11 +1122,15 @@ mod tests {
 
         let api = srv_client(&server);
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut s = Activities::default();
+        let (queue_path, _) = scratch_queue();
+        let mut s = Activities {
+            queue_paths: Some((queue_path, std::path::PathBuf::new())),
+            ..Activities::default()
+        };
         s.handle(loaded(three(), 1, 25, 3), &api, &tx).await;
         s.state.select(Some(0));
         s.handle(Action::ActivitiesStartTimer, &api, &tx).await;
-        assert!(recv_matching(&mut rx, |a| matches!(a, Action::RefreshTimer)).await);
+        assert!(recv_matching(&mut rx, |a| matches!(a, Action::TimerLoaded(_))).await);
     }
 
     // ---- provisional rows in the read (#109, §Segment audit · mixed) ----

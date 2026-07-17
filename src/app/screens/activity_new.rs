@@ -9,7 +9,7 @@ use tui_input::Input;
 
 use crate::api::{ActivityCreate, ApiClient, FieldError};
 use crate::app::action::Action;
-use crate::app::screens::{ScreenKind, ScreenMode};
+use crate::app::screens::{notify_seam_error, open_queued, QueuePaths, ScreenKind, ScreenMode};
 use crate::ui::notify::Level;
 use crate::ui::{layout::bordered, theme, widgets};
 
@@ -24,6 +24,7 @@ pub struct ActivityNew {
     mode: ScreenMode,
     errors: Vec<FieldError>,
     pending: bool,
+    queue_paths: QueuePaths,
 }
 
 impl Default for ActivityNew {
@@ -37,6 +38,7 @@ impl Default for ActivityNew {
             mode: ScreenMode::Normal,
             errors: vec![],
             pending: false,
+            queue_paths: None,
         }
     }
 }
@@ -109,14 +111,30 @@ impl ActivityNew {
                 self.pending = true;
                 let api = api.clone();
                 let tx = tx.clone();
+                let paths = self.queue_paths.clone();
                 tokio::spawn(async move {
-                    match api.create_activity(&body).await {
-                        Ok(_) => {
-                            let _ = tx.send(Action::ActivityCreated);
-                            let _ = tx.send(Action::Notify {
-                                level: Level::Success,
-                                text: "activity logged".into(),
+                    let queued = match open_queued(&api, &paths) {
+                        Ok(q) => q,
+                        Err(e) => {
+                            let _ = tx.send(Action::ActivityFailed {
+                                errors: vec![],
+                                detail: e.to_string(),
                             });
+                            return notify_seam_error(&tx, "log failed", e);
+                        }
+                    };
+                    match queued.create_activity(&body).await {
+                        Ok(out) => {
+                            let (level, text) = if out.is_provisional() {
+                                (
+                                    Level::Info,
+                                    "activity logged · queued (offline) — will sync".to_string(),
+                                )
+                            } else {
+                                (Level::Success, "activity logged".to_string())
+                            };
+                            let _ = tx.send(Action::ActivityCreated);
+                            let _ = tx.send(Action::Notify { level, text });
                             let _ = tx.send(Action::Goto(ScreenKind::Home));
                         }
                         Err(e) => {

@@ -58,13 +58,19 @@ pub struct BookChapter {
     pub skipped: bool,
 }
 
-#[derive(Debug, Default, Serialize)]
+// `Clone`/`PartialEq`/`Deserialize` beyond the base `Serialize` so a queued
+// book write can ride an `IntentKind::BookUpdate { id, body: BookUpdate }` and
+// replay it verbatim (mirrors `NoteInput` on a `NoteUpdate`). The
+// `skip_serializing_if` attributes are Serialize-only; on the way back the
+// `Option` fields default to `None` naturally — an omitted field stays omitted
+// through the queue.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BookUpdate {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<BookStatus>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_page: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_chapter_id: Option<i64>,
 }
 

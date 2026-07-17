@@ -224,9 +224,20 @@ impl Review {
                     let _ = tx.send(Action::ReviewRated(Box::new(res)));
                 }
                 Err(e) => {
+                    // A rating is deliberately live-only (recorded on #111): the
+                    // server computes the next-due interval a rating sets, so an
+                    // offline synthesis would lie about the schedule — the same
+                    // honesty tension as inbox accept. Offline, refuse with the
+                    // way forward rather than queue a fabricated outcome.
+                    let text = match e {
+                        crate::api::ApiError::Transport(_) => {
+                            "offline — a rating needs the server to schedule the next review; retry online".into()
+                        }
+                        other => format!("rate failed: {other}"),
+                    };
                     let _ = tx.send(Action::Notify {
                         level: Level::Error,
-                        text: format!("rate failed: {e}"),
+                        text,
                     });
                     // Release the guard so the topic can be re-rated.
                     let _ = tx.send(Action::ReviewRateFailed);

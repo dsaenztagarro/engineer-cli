@@ -18,6 +18,7 @@ use color_eyre::eyre::Result;
 use crate::api::{ApiClient, ApiError, TargetCreate, TargetRef, TargetScope, TargetState};
 use crate::auth::TokenProvider;
 use crate::config::Config;
+use crate::queue::QueuedClient;
 
 #[derive(Args)]
 pub struct TargetArgs {
@@ -68,7 +69,8 @@ pub async fn run(cfg: &Config, args: TargetArgs) -> Result<i32> {
     let api = ApiClient::with_token(cfg.api_url.clone(), token);
     let colored = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
 
-    let outcome = dispatch(&api, args.cmd, args.json, colored).await?;
+    let queued = QueuedClient::new(&api).map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
+    let outcome = dispatch(&api, &queued, args.cmd, args.json, colored).await?;
     for line in &outcome.out {
         println!("{line}");
     }
@@ -112,6 +114,7 @@ impl Outcome {
 
 async fn dispatch(
     api: &ApiClient,
+    queued: &QueuedClient,
     cmd: Option<TargetCmd>,
     json: bool,
     colored: bool,
@@ -133,9 +136,9 @@ async fn dispatch(
             kind,
             intent,
             hours,
-        }) => declare(api, domain, kind, intent, hours, json, colored).await,
-        Some(TargetCmd::Adjust { id, hours }) => adjust(api, id, hours, json, colored).await,
-        Some(TargetCmd::Retire { id }) => retire(api, id, json, colored).await,
+        }) => declare(queued, domain, kind, intent, hours, json, colored).await,
+        Some(TargetCmd::Adjust { id, hours }) => adjust(queued, id, hours, json, colored).await,
+        Some(TargetCmd::Retire { id }) => retire(queued, id, json, colored).await,
     }
 }
 
@@ -165,7 +168,7 @@ async fn list(
 }
 
 async fn declare(
-    api: &ApiClient,
+    queued: &QueuedClient,
     domain: Option<i64>,
     kind: Option<String>,
     intent: Option<String>,
@@ -180,31 +183,46 @@ async fn declare(
     if hours <= 0.0 {
         return Ok(Outcome::refuse("--hours must be greater than 0"));
     }
-    match api
+    match queued
         .create_target(&TargetCreate {
             scope,
             hours_per_week: hours,
         })
         .await
     {
-        Ok(t) => {
+        Ok(out) => {
+            let t = out.value();
             if json {
-                return Ok(Outcome::ok(json_target(&t).to_string()));
+                let mut v = json_target(t);
+                if out.is_provisional() {
+                    v["queued"] = true.into();
+                }
+                return Ok(Outcome::ok(v.to_string()));
             }
-            Ok(Outcome::ok(format!(
+            let mut line = format!(
                 "{} declared {} · {}h/wk  (target {})",
                 paint("●", COLOR_OK, colored),
                 t.scope.name(),
                 fmt_hours(t.hours_per_week),
                 t.id,
-            )))
+            );
+            if out.is_provisional() {
+                line.push_str(&queued_suffix(colored));
+            }
+            Ok(Outcome::ok(line))
         }
         Err(e) => Ok(refuse_problem(e)),
     }
 }
 
+/// `· queued (offline)` — the provisional tail on a write that landed in the
+/// queue instead of on the server (the `engineer timer` idiom).
+fn queued_suffix(colored: bool) -> String {
+    paint("  · queued (offline)", COLOR_MUTED, colored)
+}
+
 async fn adjust(
-    api: &ApiClient,
+    queued: &QueuedClient,
     id: i64,
     hours: f64,
     json: bool,
@@ -213,10 +231,15 @@ async fn adjust(
     if hours <= 0.0 {
         return Ok(Outcome::refuse("--hours must be greater than 0"));
     }
-    match api.update_target(id, hours).await {
-        Ok(t) => {
+    match queued.adjust_target(id, hours).await {
+        Ok(out) => {
+            let t = out.value();
             if json {
-                return Ok(Outcome::ok(json_target(&t).to_string()));
+                let mut v = json_target(t);
+                if out.is_provisional() {
+                    v["queued"] = true.into();
+                }
+                return Ok(Outcome::ok(v.to_string()));
             }
             // The adjust may have minted a successor version with a new id.
             let moved = if t.id != id {
@@ -224,30 +247,48 @@ async fn adjust(
             } else {
                 String::new()
             };
-            Ok(Outcome::ok(format!(
+            let mut line = format!(
                 "{} adjusted {} → {}h/wk  (target {}){moved}",
                 paint("●", COLOR_ACCENT, colored),
                 t.scope.name(),
                 fmt_hours(t.hours_per_week),
                 t.id,
-            )))
+            );
+            if out.is_provisional() {
+                line.push_str(&queued_suffix(colored));
+            }
+            Ok(Outcome::ok(line))
         }
         Err(e) => Ok(refuse_problem(e)),
     }
 }
 
-async fn retire(api: &ApiClient, id: i64, json: bool, colored: bool) -> Result<Outcome, ApiError> {
-    match api.retire_target(id).await {
-        Ok(t) => {
+async fn retire(
+    queued: &QueuedClient,
+    id: i64,
+    json: bool,
+    colored: bool,
+) -> Result<Outcome, ApiError> {
+    match queued.retire_target(id).await {
+        Ok(out) => {
+            let t = out.value();
             if json {
-                return Ok(Outcome::ok(json_target(&t).to_string()));
+                let mut v = json_target(t);
+                if out.is_provisional() {
+                    v["queued"] = true.into();
+                }
+                return Ok(Outcome::ok(v.to_string()));
             }
-            Ok(Outcome::ok(format!(
+            let mut line = format!(
                 "{} retired {} — history kept  (target {})",
                 paint("■", COLOR_MUTED, colored),
                 t.scope.name(),
                 t.id,
-            )))
+            );
+            if out.is_provisional() {
+                line.push_str(&queued_suffix(colored));
+            }
+            Ok(Outcome::ok(line))
         }
         Err(e) => Ok(refuse_problem(e)),
     }
@@ -370,6 +411,44 @@ mod tests {
         ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into())
     }
 
+    /// A per-test scratch dir so the queue and read cache never touch the
+    /// shared XDG state (the `timer_cli` test idiom).
+    fn scratch() -> std::path::PathBuf {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "engineer-target-cli-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn queued_at(api: &ApiClient, dir: &std::path::Path) -> QueuedClient {
+        QueuedClient::with_paths(
+            api,
+            crate::queue::QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        )
+    }
+
+    /// `dispatch` with an isolated, empty queue — what most tests need.
+    async fn run_dispatch(
+        api: &ApiClient,
+        cmd: Option<TargetCmd>,
+        json: bool,
+        colored: bool,
+    ) -> Result<Outcome, ApiError> {
+        let dir = scratch();
+        let queued = queued_at(api, &dir);
+        dispatch(api, &queued, cmd, json, colored).await
+    }
+
+    fn dead_api() -> ApiClient {
+        ApiClient::with_token(Url::parse("http://127.0.0.1:1/").unwrap(), "tok".into())
+    }
+
     fn target_json(id: i64) -> serde_json::Value {
         serde_json::json!({
             "id": id, "axis": "domain",
@@ -405,7 +484,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let out = dispatch(
+        let out = run_dispatch(
             &client(&server),
             Some(TargetCmd::Declare {
                 domain: Some(7),
@@ -432,7 +511,7 @@ mod tests {
     async fn declare_without_scope_refuses_without_calling_api() {
         // No mock mounted — a refusal must short-circuit before any HTTP call.
         let server = MockServer::start().await;
-        let out = dispatch(
+        let out = run_dispatch(
             &client(&server),
             Some(TargetCmd::Declare {
                 domain: None,
@@ -462,7 +541,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let out = dispatch(&client(&server), None, true, false).await.unwrap();
+        let out = run_dispatch(&client(&server), None, true, false)
+            .await
+            .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&out.out[0]).unwrap();
         assert!(parsed.is_array());
         assert_eq!(parsed[0]["id"], 42);
@@ -483,7 +564,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let out = dispatch(
+        let out = run_dispatch(
             &client(&server),
             Some(TargetCmd::Adjust { id: 42, hours: 8.0 }),
             false,
@@ -514,7 +595,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let out = dispatch(
+        let out = run_dispatch(
             &client(&server),
             Some(TargetCmd::Adjust { id: 42, hours: 8.0 }),
             false,
@@ -524,5 +605,76 @@ mod tests {
         .unwrap();
         assert_eq!(out.code, 1);
         assert!(out.err[0].contains("Fetch the live target"));
+    }
+
+    // ------------------------------------------------- offline writes (#111)
+
+    #[tokio::test]
+    async fn offline_declare_queues_and_says_so() {
+        let api = dead_api();
+        let dir = scratch();
+        let queued = queued_at(&api, &dir);
+
+        let out = dispatch(
+            &api,
+            &queued,
+            Some(TargetCmd::Declare {
+                domain: Some(7),
+                kind: None,
+                intent: None,
+                hours: 6.0,
+            }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.code, 0, "a queued declare is a success");
+        assert!(out.out[0].contains("queued (offline)"), "{}", out.out[0]);
+
+        let intents = crate::queue::QueueStore::at(dir.join("queue.json"))
+            .pending()
+            .unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].kind.word(), "declare");
+    }
+
+    #[tokio::test]
+    async fn offline_adjust_and_retire_queue_with_json_flag() {
+        let api = dead_api();
+        let dir = scratch();
+        let queued = queued_at(&api, &dir);
+
+        let adjusted = dispatch(
+            &api,
+            &queued,
+            Some(TargetCmd::Adjust { id: 9, hours: 4.0 }),
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&adjusted.out[0]).unwrap();
+        assert_eq!(v["queued"], true);
+        assert_eq!(v["hours_per_week"], 4.0);
+
+        let retired = dispatch(
+            &api,
+            &queued,
+            Some(TargetCmd::Retire { id: 9 }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(retired.code, 0);
+        assert!(
+            retired.out[0].contains("queued (offline)"),
+            "{}",
+            retired.out[0]
+        );
+
+        let store = crate::queue::QueueStore::at(dir.join("queue.json"));
+        assert_eq!(store.pending().unwrap().len(), 2);
     }
 }
