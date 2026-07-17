@@ -4,7 +4,7 @@
 **Produces:** the terminal Activities table and its row-action grammar, the new-activity form, the segment audit, *and* their headless twin — the one open piece being the `engineer log …` quick-capture verb. Extend `../../design-system.dc.html` (the style anchor); an `activities.dc.html` board is the natural home for the mock, mirroring `timer.dc.html`.
 **Status:** **shipped.** The table (`src/app/screens/activities.rs`), the new-activity form (`src/app/screens/activity_new.rs`), and the segment audit (`src/app/screens/audit.rs`) are live, with the activities and segments API clients wired (epic #7 daily-loop). This brief is kept as the module record; §8 is the one residual gap — the headless `engineer log …` capture verb.
 
-> **Module note.** This brief is one of the per-module briefs the terminal client decomposes into (see `../README.md`). It carries two jobs of the retired omnibus (`proposed/terminal-client.brief.md` jobs 3 and 4) — *work the activities table* and *log after the fact, fast* — reconciled against the shipped CLI and the `engineer` API. The shared house format — workflow → jobs → principles → orientation → the API it consumes → visual language → phasing — is common to every module brief.
+> **Module note.** This brief is one of the per-module briefs the terminal client decomposes into (see `../README.md`). It carries two jobs of the retired omnibus (`terminal-client.brief.md` jobs 3 and 4) — *work the activities table* and *log after the fact, fast* — reconciled against the shipped CLI and the `engineer` API. The shared house format — workflow → jobs → principles → orientation → the API it consumes → visual language → phasing — is common to every module brief.
 
 ---
 
