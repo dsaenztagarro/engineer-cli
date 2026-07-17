@@ -177,12 +177,22 @@ fn json_progress(progress: &Progress) -> serde_json::Value {
     });
 
     // The "where did the time go" rollup, for scripted slicing — the machine
-    // twin of the on-screen kind-mix line (the time-went glance stays a glance).
+    // twin of the on-screen fold (§Where it went; the time-went glance stays a
+    // glance). Only `by_kind` is in the pace read today: the payload carries a
+    // kind time-mix but no by-domain / by-intent split, so those two surface as
+    // null rather than a client-derived second ledger (the backend-gap rule;
+    // #122). The top-level `kind_mix` stays put — the `rollup` object is purely
+    // additive, so existing scripted consumers are byte-stable.
     let kind_mix: Vec<serde_json::Value> = progress
         .kind_mix
         .iter()
         .map(|k| serde_json::json!({ "kind": k.kind, "minutes": k.minutes }))
         .collect();
+    let rollup = serde_json::json!({
+        "by_kind": kind_mix.clone(),
+        "by_domain": serde_json::Value::Null,
+        "by_intent": serde_json::Value::Null,
+    });
 
     serde_json::json!({
         "week": {
@@ -194,6 +204,7 @@ fn json_progress(progress: &Progress) -> serde_json::Value {
         "targets": targets,
         "behind": behind_json,
         "kind_mix": kind_mix,
+        "rollup": rollup,
         "totals": {
             "actual_minutes": progress.totals.actual_minutes,
             "activity_count": progress.totals.activity_count,
@@ -343,5 +354,41 @@ mod tests {
         assert_eq!(v["kind_mix"][0]["kind"], "coding");
         assert_eq!(v["kind_mix"][0]["minutes"], 180);
         assert_eq!(v["totals"]["activity_count"], 3);
+    }
+
+    #[tokio::test]
+    async fn json_rollup_carries_by_kind_and_marks_absent_facets() {
+        let server = serve(body(&[("Coding", "met", 4.0, 240, 60)])).await;
+        let p = fetch(&server).await;
+        let v = json_progress(&p);
+        // The new rollup object: `by_kind` is what the pace read supports.
+        assert_eq!(v["rollup"]["by_kind"][0]["kind"], "coding");
+        assert_eq!(v["rollup"]["by_kind"][0]["minutes"], 180);
+        // The payload carries no by-domain / by-intent rollup — absent, not
+        // derived client-side (the backend-gap rule).
+        assert!(v["rollup"]["by_domain"].is_null());
+        assert!(v["rollup"]["by_intent"].is_null());
+        // Additive: the shipped top-level `kind_mix` stays byte-stable.
+        assert_eq!(v["kind_mix"][0]["kind"], "coding");
+        assert_eq!(v["kind_mix"][0]["minutes"], 180);
+    }
+
+    #[tokio::test]
+    async fn piped_plain_form_is_byte_stable() {
+        // The fold + rollup are the `--json` / on-screen glance; the bare
+        // greppable twin must not gain a line. Pin it exactly.
+        let server = serve(body(&[("Coding", "met", 4.0, 240, 60)])).await;
+        let p = fetch(&server).await;
+        let lines = human_lines(&p, false);
+        assert_eq!(
+            lines,
+            vec![
+                "2026-W29  ·  now 28%".to_string(),
+                "coding  4.0/4h  met".to_string(),
+                "all targets on pace ✓".to_string(),
+            ]
+        );
+        assert!(lines.iter().all(|l| !l.contains("where it went")));
+        assert!(lines.iter().all(|l| !l.contains("rollup")));
     }
 }

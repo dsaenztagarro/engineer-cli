@@ -101,6 +101,9 @@ pub enum Action {
     ProgressWeekStep(i32),
     ProgressWeekReset,
     RefreshProgress,
+    // `Tab` cycles the "where it went" fold through its facets (by kind → by
+    // domain → by intent) — a muted glance, not a pivot grid (#122).
+    ProgressFoldCycle,
     // Target editing on the Progress screen. `e` edits the selected target's
     // weekly hours inline; `x` retires it (armed, confirmed on a second press).
     // Every target write (declare/adjust/retire) routes through `QueuedClient`,
