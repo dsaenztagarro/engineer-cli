@@ -46,12 +46,22 @@ engineer timer bind <query>        # name a running unnamed timer
 engineer timer discard [--force]   # throw the timer away; past ~2 minutes requires --force
 engineer timer settings [--json]   # the per-user timer knobs, read-only (edit on the web)
 
+engineer note capture "<text>"     # five-second capture; also `-`/piped stdin, or $EDITOR when no text on a TTY
+engineer note capture <t> --book <q> --page N  # anchor to a book + page (offline refuses to resolve a book)
+engineer note list [--book <q>] [--archived all|only]  # browse notes — the one-line address_label anchor read-back
+engineer note search <q>           # search your notes by text (the server's q=)
+engineer note show <id>            # one note in full — content + citations
+
 engineer queue                     # the offline write queue — one row per unsynced intent (--json for machines)
 engineer queue sync                # replay the queue now: pending intents re-send in order
 ```
 
 Timer exit codes answer "is the clock counting?": `0` counting (running / focus work) · `1` nothing running (and verb refusals) · `3` idle, reclaim pending · `4` not counting (paused / focus break).
 Output is plain when piped — ANSI colour only on a TTY, and never when `NO_COLOR` is set.
+
+`engineer note` is the notes module's headless twin — `--json` beside piped-plain rows, TTY-gated colour, `0` on success / `1` on refusal.
+`note capture` is queue-aware like every write: a loose thought captured offline queues and prints `· queued (offline)`, replaying when the wire returns.
+The reads (`list`/`search`/`show`) are deliberately live-only — there is no note read-cache, so offline they refuse honestly (`offline — notes reads need the server`) rather than serve a stale answer.
 
 Offline, `timer pause`/`resume` still take the keystroke:
 the write lands in a local queue and replays in order when the wire returns —

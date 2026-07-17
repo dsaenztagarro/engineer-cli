@@ -41,6 +41,10 @@ pub use error::{codes, ApiError, ConflictInfo, FieldError};
 #[allow(unused_imports)]
 pub use error::ConflictTimer;
 pub use notes::{Anchor, Note, NoteFilters, NoteInput};
+// The content-first title rule lives in the notes domain; both note surfaces
+// (the TUI capture overlay and the headless `engineer note`) reuse this one
+// spelling rather than each re-deriving it.
+pub(crate) use notes::derive_title_content;
 pub use progress::{DayMinutes, PaceState, Progress, ProgressReading, TargetRef};
 pub use review::{Dashboard, RateResult, Topic, TopicFilters};
 pub use segments::SegmentUpdate;

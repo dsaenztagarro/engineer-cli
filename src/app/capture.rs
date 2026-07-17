@@ -25,14 +25,10 @@ use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 use tui_textarea::{CursorMove, TextArea};
 
-use crate::api::{Anchor, ApiClient, Book, Note, NoteInput};
+use crate::api::{derive_title_content, Anchor, ApiClient, Book, Note, NoteInput};
 use crate::app::action::Action;
 use crate::ui::notify::Level;
 use crate::ui::{layout::bordered, theme, widgets};
-
-/// Longest first-line slice we lift into a note's title. The full text always
-/// lands in `content`, so truncating the title never loses input.
-const TITLE_MAX: usize = 120;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Field {
@@ -488,24 +484,6 @@ fn make_textarea(text: &str) -> TextArea<'static> {
     ta
 }
 
-/// Split a captured thought into `(title, content)`: the title is the first
-/// non-empty line (clipped to `TITLE_MAX`), and the full text is kept verbatim
-/// in `content` so nothing is lost. The server's note model requires a title;
-/// quick-capture is content-first, so we derive one.
-pub(crate) fn derive_title_content(text: &str) -> (String, Option<String>) {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return (String::new(), None);
-    }
-    let first = trimmed
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("");
-    let title: String = first.chars().take(TITLE_MAX).collect();
-    (title, Some(trimmed.to_string()))
-}
-
 /// A centered rectangle `pct`% as wide as `area` (capped at `area`), `max_h`
 /// tall, so the overlay stays readable at 100×30 and degrades to 80×24.
 fn centered(area: Rect, pct: u16, max_h: u16) -> Rect {
@@ -650,23 +628,6 @@ mod tests {
         type_content(&mut s, &api, &tx, "a real thought").await;
         s.handle(Action::CaptureSave, &api, &tx).await;
         assert!(s.pending);
-    }
-
-    #[test]
-    fn derive_title_content_lifts_first_line_and_keeps_full_text() {
-        let (title, content) = derive_title_content("closures are objects\n\nthe env model\n");
-        assert_eq!(title, "closures are objects");
-        assert_eq!(
-            content.as_deref(),
-            Some("closures are objects\n\nthe env model")
-        );
-    }
-
-    #[test]
-    fn derive_title_content_empty_is_empty() {
-        let (title, content) = derive_title_content("   \n  ");
-        assert!(title.is_empty());
-        assert!(content.is_none());
     }
 
     #[test]

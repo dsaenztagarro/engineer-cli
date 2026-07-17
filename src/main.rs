@@ -8,6 +8,7 @@ mod config;
 mod editor;
 mod inbox_cli;
 mod log_cli;
+mod note_cli;
 mod progress_cli;
 mod queue;
 mod queue_cli;
@@ -67,6 +68,9 @@ enum Cmd {
     Plan(week_cli::PlanArgs),
     /// Triage the assisted-capture draft inbox (list/accept/reject/ack/show).
     Inbox(inbox_cli::InboxArgs),
+    /// Capture and browse study notes headlessly (capture/list/search/show);
+    /// exit 0 on success · 1 on refusal.
+    Note(note_cli::NoteArgs),
     /// Inspect the offline write queue, or `sync` to replay it now;
     /// exit codes: 0 drained/empty · 3 queued offline · 4 diverged · 5 replay failed.
     Queue(queue_cli::QueueArgs),
@@ -105,6 +109,7 @@ fn main() -> Result<()> {
             Cmd::Week(args) => week_cli::run_week(&cfg, args).await,
             Cmd::Plan(args) => week_cli::run_plan(&cfg, args).await,
             Cmd::Inbox(args) => inbox_cli::run(&cfg, args).await,
+            Cmd::Note(args) => note_cli::run(&cfg, args).await,
             Cmd::Queue(args) => queue_cli::run(&cfg, args).await,
             Cmd::Tui => app::run(cfg).await.map(|()| 0),
         }
