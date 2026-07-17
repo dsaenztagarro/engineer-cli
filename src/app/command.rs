@@ -144,6 +144,17 @@ pub const ENTRIES: &[Entry] = &[
         target: Target::Nav(ScreenKind::Inbox),
     },
     Entry {
+        // Full word only — no `q`-prefixed alias: `:q` is the exact `quit`
+        // alias (exact beats prefix), so `:q` still quits, `:que` reaches the
+        // queue, `:qui` the quit; `:qu` lists both like any ambiguous prefix.
+        verb: "queue",
+        aliases: &[],
+        kind: Kind::Nav,
+        arg: Arg::None,
+        help: "the offline write queue — inspect, retry, drop, reconcile",
+        target: Target::Nav(ScreenKind::Queue),
+    },
+    Entry {
         verb: "settings",
         aliases: &[],
         kind: Kind::Nav,
@@ -250,6 +261,7 @@ const NAV_VERBS: &[&str] = &[
     "progress",
     "week",
     "inbox",
+    "queue",
     "timer",
 ];
 
@@ -596,6 +608,19 @@ mod tests {
         assert_eq!(cmd("progress"), Command::Nav(ScreenKind::Progress));
         assert_eq!(cmd("week"), Command::Nav(ScreenKind::Week));
         assert_eq!(cmd("timer"), Command::Nav(ScreenKind::Timer));
+        assert_eq!(cmd("queue"), Command::Nav(ScreenKind::Queue));
+    }
+
+    #[test]
+    fn queue_resolves_by_prefix_and_leaves_the_quit_alias_alone() {
+        // `:q` is the exact quit alias — exact beats prefix, so it never
+        // resolves as a prefix of queue.
+        assert_eq!(cmd("q"), Command::Quit);
+        // `:qu` is an ambiguous prefix of both queue and quit.
+        assert_eq!(parse("qu"), Parse::Ambiguous(vec!["queue", "quit"]));
+        // Past the branch point each side resolves.
+        assert_eq!(cmd("que"), Command::Nav(ScreenKind::Queue));
+        assert_eq!(cmd("qui"), Command::Quit);
     }
 
     #[test]

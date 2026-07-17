@@ -72,7 +72,16 @@ pub fn translate(app: &mut App, ev: Event) -> Option<Action> {
             app.command_buffer = Some(String::new());
             Some(Action::CommandBegin)
         }
-        (KeyCode::Char('q'), KeyModifiers::NONE) => Some(Action::Quit),
+        // `q` quits the app everywhere — except on the Queue inspector, where
+        // the design's `q close` returns to Home (it is a reached sub-surface,
+        // like Audit's/Connect's `h` back-to-parent, not a quit context).
+        (KeyCode::Char('q'), KeyModifiers::NONE) => {
+            if app.current.kind() == ScreenKind::Queue {
+                Some(Action::Goto(ScreenKind::Home))
+            } else {
+                Some(Action::Quit)
+            }
+        }
         (KeyCode::Char('?'), _) => Some(Action::Notify {
             level: crate::ui::notify::Level::Info,
             text: "help: j/k move · gg/G top/bottom · g t/p/r goto · / search · : command · <Space> leader · q quit".into(),
@@ -118,6 +127,7 @@ fn goto(app: &App, key: crossterm::event::KeyEvent) -> Option<Action> {
         KeyCode::Char('w') => Some(Action::Goto(Week)),
         KeyCode::Char('r') => Some(Action::Goto(Review)),
         KeyCode::Char('i') => Some(Action::Goto(Inbox)),
+        KeyCode::Char('q') => Some(Action::Goto(Queue)),
         KeyCode::Char('h') => Some(Action::Goto(Home)),
         KeyCode::Char('b') => Some(Action::Goto(Books)),
         KeyCode::Char('n') => Some(Action::Goto(Notes)),
@@ -177,6 +187,7 @@ fn screen_key(app: &mut App, key: crossterm::event::KeyEvent) -> Option<Action> 
         Review => review_key(app, key),
         Inbox => inbox_key(app, key),
         Connect => connect_key(key),
+        Queue => queue_key(key),
         Settings => match key.code {
             KeyCode::Char('h') | KeyCode::Esc => Some(Action::Goto(Home)),
             _ => None,
@@ -239,6 +250,22 @@ fn connect_key(key: crossterm::event::KeyEvent) -> Option<Action> {
         KeyCode::Char('d') => Some(Action::ConnectDisconnectBegin),
         KeyCode::Char('s') => Some(Action::ConnectSync),
         KeyCode::Char('h') | KeyCode::Esc => Some(Action::Goto(ScreenKind::Inbox)),
+        _ => None,
+    }
+}
+
+/// Queue-inspector keys (§Queue inspector). `j`/`k` move the full-row cursor;
+/// `x` drops the selected diverged write (armed → confirmed in the reducer);
+/// `⏎` opens a diverged intent's reconcile flow (routed to the shipped Timer
+/// panel). `r` retry-now and `q`/Esc close are handled globally — `r` maps to
+/// `QueueRetry` via `refresh_for`, and `q`/Esc/`h` step back to Home.
+fn queue_key(key: crossterm::event::KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Some(Action::QueueSelectMove(1)),
+        KeyCode::Char('k') | KeyCode::Up => Some(Action::QueueSelectMove(-1)),
+        KeyCode::Char('x') => Some(Action::QueueDropSelected),
+        KeyCode::Enter | KeyCode::Char('l') => Some(Action::QueueOpenReconcile),
+        KeyCode::Char('h') | KeyCode::Esc => Some(Action::Goto(ScreenKind::Home)),
         _ => None,
     }
 }
@@ -499,6 +526,9 @@ fn refresh_for(kind: ScreenKind) -> Action {
         ScreenKind::Connect => Action::RefreshConnect,
         ScreenKind::Settings => Action::SettingsReload,
         ScreenKind::Audit => Action::AuditReload,
+        // On the Queue inspector `r` means "retry now" — a reconnect drain, not
+        // a plain reread (which the retry does after it too).
+        ScreenKind::Queue => Action::QueueRetry,
         _ => Action::RefreshHome,
     }
 }

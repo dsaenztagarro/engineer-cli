@@ -13,6 +13,7 @@ mod intent;
 mod replay;
 mod resolve;
 mod store;
+pub mod view;
 
 #[allow(unused_imports)]
 pub use client::{QueuedClient, WriteOutcome};
