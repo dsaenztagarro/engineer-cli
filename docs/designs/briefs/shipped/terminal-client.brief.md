@@ -6,6 +6,8 @@ This was the **omnibus** brief — it scoped the whole terminal client at once (
 
 It has been **decomposed into one brief per engineer-cli module** — see the [briefs index](../README.md). Each module brief carries the omnibus's workflow and jobs for that surface, grounded in the API the module actually consumes (verified against `engineer/config/routes.rb`), and states the *shipped reality* rather than the pre-implementation snapshot the omnibus froze.
 
+**Every one of those module briefs has now graduated to `shipped/`** — the omnibus's entire scope is live across epics #7 (daily-loop), #26 (timer v2), #61 (home), #82 (the design roadmap), #98 (offline write), #113 (week-planning), #118 (assisted-capture), #119 (progress), and #120 (notes). Nothing it scoped remains proposed; this tombstone is the last of the roadmap's briefs to move.
+
 ## Why it was retired (the decision)
 
 The omnibus went **stale in both directions** faster than a single document could track:

@@ -6,7 +6,7 @@ Read [`../README.md`](../README.md) first — it is the terminal **design kit** 
 
 Briefs are organised **one per engineer-cli module** (timer, progress, home, …), so a brief maps to the surface a reader is working on. Each module brief carries the same house format — workflow → jobs → binding principles → orientation (shipped reality) → the API it consumes (verified routes) → visual-language pointer → phasing — and folds in any earlier focused brief for that module (e.g. the timer brief absorbed the standalone timer gap analysis). This replaces the earlier single omnibus brief, which scoped the whole client at once and went stale in both directions as the CLI and the `engineer` API each shipped ahead of it.
 
-Every module brief is measured against one **governing principle — sterling, not a replica**: the terminal owns the study loop's high-frequency core as *glances and gestures* (the shipped timer is the exemplar), not a port of the `engineer` web UI. Depth stays on the web. It is the lead section of [`proposed/cross-cutting.brief.md`](proposed/cross-cutting.brief.md) — read it before designing or growing any surface.
+Every module brief is measured against one **governing principle — sterling, not a replica**: the terminal owns the study loop's high-frequency core as *glances and gestures* (the shipped timer is the exemplar), not a port of the `engineer` web UI. Depth stays on the web. It is the lead section of [`shipped/cross-cutting.brief.md`](shipped/cross-cutting.brief.md) — read it before designing or growing any surface.
 
 ## Lifecycle — where a brief lives tells you its status
 
@@ -25,10 +25,7 @@ One brief per module. Folder tells status: `proposed/` = has open design/impleme
 
 ### Proposed
 
-| Module brief | What it covers | Open work |
-|---|---|---|
-| [`proposed/offline-write.brief.md`](proposed/offline-write.brief.md) | The **write** half of offline-tolerance: the timer as a controlling local clock + a persisted optimistic write queue every mutation rides, reconciled on reconnect with divergence surfaced. (Read half shipped in #91.) | the whole mechanism (Phase A timer first) |
-| [`proposed/cross-cutting.brief.md`](proposed/cross-cutting.brief.md) | Concerns every module inherits: the governing sterling-not-a-replica principle, offline-tolerance's shared principle (write detail lives in `offline-write`), fuzzy pickers, the TUI↔headless contract, the pending accent-hue decision. | broaden fuzzy; ratify accent hue |
+*Nothing proposed — every module brief has shipped. The roadmap (EPIC #126) is closed and `proposed/` is empty. New work starts here: write the brief, drop it in `proposed/`, add its row, and `git mv` it to `shipped/` when it lands — the move is the status signal.*
 
 ### Shipped
 
@@ -43,8 +40,11 @@ One brief per module. Folder tells status: `proposed/` = has open design/impleme
 | [`shipped/week-planning.brief.md`](shipped/week-planning.brief.md) | Plan the week + the retro (planned-vs-done) via `GET /api/v1/weeks/:iso_week`; planning writes go through the activities API, the reflection through the v1 week-note route. | epic #113 (v0.9.0) |
 | [`shipped/assisted-capture.brief.md`](shipped/assisted-capture.brief.md) | The draft-triage inbox over `/api/v1/automations/tasks` + a terminal-native git-source connect flow over the `/api/v1/capture/sources` contract (ADR 0035); both with headless twins. | headless inbox #90 (v0.7.0); epic #118 (v0.9.0) |
 | [`shipped/notes.brief.md`](shipped/notes.brief.md) | Five-second capture + the notes browser + one-line anchor read-back, the `$EDITOR`-for-prose long-form path, the headless `engineer note` twin, and the deliberate delete / unlink / chapter-section anchor-picker faces. | `$EDITOR` #88 (v0.7.0); headless twin + the deliberate faces epic #120 (v0.9.0) |
+| [`shipped/offline-write.brief.md`](shipped/offline-write.brief.md) | The **write** half of offline-tolerance: the timer as a controlling local clock + a persisted optimistic write queue every mutation rides (`src/queue/`, `src/timer_clock.rs`), reconciled on reconnect with divergence surfaced, plus the Queue inspector. Read half shipped in #91. | EPIC #98 (v0.8.0 + v0.10.0) |
+| [`shipped/cross-cutting.brief.md`](shipped/cross-cutting.brief.md) | Concerns every module inherits: the governing sterling-not-a-replica law (still the permanent standard), offline-tolerance's shared principle, the reusable fuzzy picker, the TUI↔headless contract, the accent-hue decision, and the `$EDITOR` handoff. | ratified across #83/#84/#88/#91/EPIC #98 |
+| [`shipped/terminal-client.brief.md`](shipped/terminal-client.brief.md) | The retired omnibus tombstone — scoped the whole client at once, since decomposed into the per-module briefs above. Kept so inbound links resolve. | retired — superseded by the module briefs |
 
-*(Some of the CLI's earliest screens — Login, Books, Book detail — predate the briefs workflow; see the kit README's screen inventory. The retired omnibus `terminal-client.brief.md` and the pre-lifecycle `daily-loop.brief.md` were decomposed into the module set above.)*
+*(Some of the CLI's earliest screens — Login, Books, Book detail — predate the briefs workflow; see the kit README's screen inventory. The retired omnibus — `terminal-client.brief.md`, now the shipped tombstone row above — and the pre-lifecycle `daily-loop.brief.md` were decomposed into the module set above.)*
 
 ## Writing a brief
 

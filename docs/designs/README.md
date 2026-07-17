@@ -3,7 +3,7 @@
 Design references for the **terminal** client, organized by app area (mirroring `engineer/docs/designs/`).
 Mockups are Claude Design **canvas docs** (`*.dc.html`, rendered by the bundled `support.js` runtime): each is a board of [ratatui](https://ratatui.rs)-faithful screens for one app area.
 `design-system.dc.html` is the shared palette and component legend they all follow;
-`briefs/shipped/timer-gaps.brief.md` is the timer gap analysis (mockups vs the timer engineer has shipped) that drove `timer.dc.html`'s design passes.
+the timer gap analysis (mockups vs the timer engineer shipped) that drove `timer.dc.html`'s design passes is now absorbed into `briefs/shipped/timer.brief.md`.
 
 This directory is also the **reference kit** to seed a *new* Claude Design project for the terminal app. The terminal is a sibling surface to the web app — it shares the brand and the domain, but **not** the visual medium. A TUI is a character grid: one monospace font, no shadows/radii/web-fonts, an ANSI/256-colour palette, keyboard-driven, dark-first. So we design it in its own project, fed the *transferable* slice of the web design system (information architecture, colour semantics, brand) rather than its pixel/CSS chrome.
 
@@ -25,13 +25,13 @@ Web tokens (`engineer/docs/designs/tokens.css`) mapped to terminal values, cross
 | foreground | `neutral-900 #0F172A` | terminal default | **`#E6EBF2`** | inverted |
 | muted fg | `neutral-600 #475569` | `244 / #808080` | `244 / #808080` | matches — keep |
 | border | `neutral-200 #E2E8F0` | `240 / #585858` | `240 / #585858` | matches — keep |
-| **accent** | `accent-600 #3B40CC` (indigo) | `75 / #5FAFFF` (**sky blue**) | **`105 / #8787FF`** (indigo-light) | shipped value drifts off the indigo *hue*; see below |
-| selection bg | (web uses `accent-200`) | `67 / #5F87AF` (steel) | **`61 / #5F5FAF`** (indigo dim) | match accent hue |
+| **accent** | `accent-600 #3B40CC` (indigo) | `105 / #8787FF` (periwinkle) | `105 / #8787FF` (indigo-light) | ratified to the indigo hue (#83 → v0.7.0); shipped now matches the recommendation — see below |
+| selection bg | (web uses `accent-200`) | `61 / #5F5FAF` (indigo dim) | `61 / #5F5FAF` (indigo dim) | ratified with the accent (#83) |
 | success | `#10B981` | `108 / #87AF87` | `108 / #87AF87` | matches — keep |
 | warning | `#F59E0B` | `179 / #D7AF5F` | `179 / #D7AF5F` | matches — keep |
 | danger | `#EF4444` | `167 / #D75F5F` | `167 / #D75F5F` | matches — keep |
 
-**The accent decision (the one real divergence).** The web brand is indigo (`#3B40CC`, a blue-violet). `#3B40CC` is too dark to read on a dark terminal, so it must be lightened — but the shipped `theme.rs` lightens it all the way to a *sky blue* (`256 #75 = #5FAFFF`), which is a different **hue** (~210°/cyan vs indigo's ~237°/violet). It reads as a different brand colour than the web. The recommendation is to lighten *along the indigo hue* instead — `256 #105 = #8787FF` (periwinkle) keeps the brand identity while staying bright on dark. The mockups use the recommended value. Adopting it is a one-line change in `theme.rs` (`ACCENT`/`ACCENT_DIM`), deliberately **not** applied here — it's a design decision to ratify, not a silent code edit.
+**The accent decision — ratified (#83 → v0.7.0).** The web brand is indigo (`#3B40CC`, a blue-violet), too dark to read on a dark terminal, so it must be lightened. The shipped `theme.rs` originally lightened it all the way to a *sky blue* (`256 #75 = #5FAFFF`), a different **hue** (~210°/cyan vs indigo's ~237°/violet) that read as a different brand colour than the web. The kit recommended lightening *along the indigo hue* instead — `256 #105 = #8787FF` (periwinkle), which keeps the brand identity while staying bright on dark — and that recommendation was **ratified and shipped**: `theme.rs` now sets `ACCENT` to `105` and `ACCENT_DIM` to `61`, matching the mockups. The one-line change is landed, not pending (`briefs/shipped/cross-cutting.brief.md` §D).
 
 The semantic colours (success/warn/danger), border, and muted already track the web hues well — no change.
 
@@ -47,19 +47,20 @@ What transfers from the web app is the **information architecture** (which scree
 | Log activity (form) | `Activities.html` + `Forms v2.html` | built (`screens/activity_new.rs`) |
 | Sign in | identity / auth | built (`screens/login.rs`) |
 | Activities table | `Activities.html` | built (`screens/activities.rs`) |
-| Timer + header cell | `navigation-bar.html` §M + `timer-hygiene.html` | built v1 (`screens/timer.rs`) — redesign specified in `timer.dc.html`, gaps in `briefs/shipped/timer-gaps.brief.md` |
+| Timer + header cell | `navigation-bar.html` §M + `timer-hygiene.html` | built (`screens/timer.rs`) — v2 redesign shipped (`timer.dc.html`; gap analysis absorbed into `briefs/shipped/timer.brief.md`), now a local clock offline (`offline-write.dc.html`) |
 | Notes capture + browser + `$EDITOR`/headless/faces | `notes.dc.html` (from `notes.html`) | built — capture (`app/capture.rs`), browser + delete/unlink faces (`screens/notes.rs`), `$EDITOR` (`editor.rs`), headless twin (`note_cli.rs`); epic #120 |
 | Review (dashboard / browse / sitting) | `review.html` | built (`screens/review.rs`) |
 | Progress (pace meters) | `progress.html` | built (`screens/progress.rs`) |
 | Week planning + retro | `week-planning.dc.html` | built (`screens/week.rs`) |
 | Inbox (draft triage) + Connect (sources) | `assisted-capture.dc.html` | built (`screens/inbox.rs`, `screens/connect.rs`) |
 | Command palette (`:`) | `Command Palette v2.html` | built — `:` grammar (`src/app/command.rs`) |
+| Queue inspector (offline write queue) | `offline-write.dc.html` | built (`screens/queue.rs`) |
 | Roadmaps + book progress | `Roadmaps and Book Progress v2.html` | next |
 | Shard / environment indicator | `Tenancy, Shard & Environment Indicators v3.html` | next — belongs in the header chrome |
 
 ## Translate / don't-translate
 
-**Governing principle — sterling, not a replica.** A full terminal replica of the `engineer` web UI is a non-goal. The terminal is an *Apple Watch for the study loop*: it owns the high-frequency, high-value core, distilled into **glances (complications) and gestures (one-keystroke verbs)** — quiet, honest, and composable (every read pipes, every action is a headless verb). Depth — rich filtering, bulk edit, dashboards, planning canvases, settings forms — stays on the web. The shipped **timer** is the exemplar of the bar; the full **glance-or-gesture test**, and where each module sits against it, is the governing section of [`briefs/proposed/cross-cutting.brief.md`](briefs/proposed/cross-cutting.brief.md). Every brief is measured against it before it is designed.
+**Governing principle — sterling, not a replica.** A full terminal replica of the `engineer` web UI is a non-goal. The terminal is an *Apple Watch for the study loop*: it owns the high-frequency, high-value core, distilled into **glances (complications) and gestures (one-keystroke verbs)** — quiet, honest, and composable (every read pipes, every action is a headless verb). Depth — rich filtering, bulk edit, dashboards, planning canvases, settings forms — stays on the web. The shipped **timer** is the exemplar of the bar; the full **glance-or-gesture test**, and where each module sits against it, is the governing section of [`briefs/shipped/cross-cutting.brief.md`](briefs/shipped/cross-cutting.brief.md). Every brief is measured against it before it is designed.
 
 - **Drop entirely** (no terminal equivalent): shadows, border-radius, Inter/web-fonts, gradients, pixel spacing, hover states, responsive breakpoints.
 - **Replace with a terminal idiom:**
