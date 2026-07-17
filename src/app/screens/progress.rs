@@ -1,7 +1,8 @@
 //! Progress screen — weekly targets rendered as `engineer pace` meters
 //! (progress.html §F). Read-only: one meter row per target (behind-first), the
-//! week header line, a behind-total footer, and a compact kind-mix line. Step
-//! weeks with `[` / `]`; `t` returns to the current week.
+//! week header line, a behind-total footer, and the "where it went" fold — a
+//! muted glance `Tab`-cycles through by kind → by domain → by intent (§Where it
+//! went). Step weeks with `[` / `]`; `t` returns to the current week.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jiff::ToSpan;
@@ -46,6 +47,38 @@ const KINDS: &[&str] = &[
 ];
 const INTENTS: &[&str] = &["implement", "challenge", "follow", "study"];
 
+/// The "where it went" fold's facet (§Where it went) — the shipped kind-mix line
+/// grown into a `Tab`-cycled glance. Only `Kind` has data in the pace read; the
+/// server carries no by-domain / by-intent rollup, so those two render as absent
+/// (the backend-gap rule — no client-derived second ledger; see #122).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Facet {
+    #[default]
+    Kind,
+    Domain,
+    Intent,
+}
+
+impl Facet {
+    /// Advance the fold one step: kind → domain → intent → kind.
+    fn next(self) -> Self {
+        match self {
+            Self::Kind => Self::Domain,
+            Self::Domain => Self::Intent,
+            Self::Intent => Self::Kind,
+        }
+    }
+
+    /// The active-facet label, mirroring the panel's axis tabs.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Kind => "by kind",
+            Self::Domain => "by domain",
+            Self::Intent => "by intent",
+        }
+    }
+}
+
 /// The `n`-to-declare flow: fetch domains, fuzzy-pick any scope, then hours.
 enum Declare {
     /// Fetching domains before the scope picker can open.
@@ -78,6 +111,9 @@ pub struct Progress {
     retire_armed: Option<i64>,
     /// `Some` while the `n`-declare flow (scope pick → hours) is open.
     declare: Option<Declare>,
+    /// Which facet the "where it went" fold shows, cycled by `Tab`. Derived
+    /// presentation only — the rollup is recomputed from the read, never stored.
+    fold: Facet,
     /// Targets declared offline this session — rendered as provisional `◔ …
     /// queued` lines under the meters until the create replays and a live
     /// refetch returns the real reading. Only the render of what's pending
@@ -206,6 +242,7 @@ impl Progress {
                 self.loading = true;
                 self.fetch(api, tx);
             }
+            Action::ProgressFoldCycle => self.fold = self.fold.next(),
             Action::ProgressSelectMove(delta) => {
                 if let Some(data) = &self.data {
                     let n = data.targets.len() as i32;
@@ -456,8 +493,11 @@ impl Progress {
         lines.push(Line::from(""));
         lines.push(behind_footer(data));
 
-        if !data.kind_mix.is_empty() {
-            lines.push(kind_mix_line(data));
+        // The "where it went" fold sits with the meters: shown whenever the week
+        // has targets or logged time, cycled by `Tab`. A truly empty week keeps
+        // its teaching state uncluttered.
+        if !data.targets.is_empty() || !data.kind_mix.is_empty() {
+            lines.push(fold_line(data, self.fold));
         }
         if data.totals.thin {
             lines.push(Line::from(Span::styled(
@@ -508,6 +548,7 @@ impl Progress {
             ("n", "new"),
             ("e", "adjust"),
             ("x", "retire"),
+            ("⇥", "where it went"),
             ("[", "prev wk"),
             ("]", "next wk"),
             ("t", "this wk"),
@@ -751,17 +792,40 @@ fn behind_footer(data: &ProgressData) -> Line<'static> {
     ))
 }
 
-/// `kind mix  coding 3.0h · reading 2.5h` — the week's time-by-kind split.
-fn kind_mix_line(data: &ProgressData) -> Line<'static> {
-    let parts: Vec<String> = data
-        .kind_mix
-        .iter()
-        .map(|k| format!("{} {:.1}h", k.kind, k.minutes as f64 / 60.0))
-        .collect();
-    Line::from(Span::styled(
-        format!("kind mix  {}", parts.join(" · ")),
-        theme::muted(),
-    ))
+/// The "where it went" fold (§Where it went): one muted line whose active facet
+/// (`Tab`-cycled) reads `where it went · by kind   coding 3.0h · reading 2.5h`.
+/// Only the kind facet has data in the pace read — the server carries no
+/// by-domain / by-intent rollup, so those render as an honest absent note rather
+/// than a client-derived second ledger (the backend-gap rule; #122).
+fn fold_line(data: &ProgressData, facet: Facet) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled("where it went · ", theme::muted()),
+        Span::styled(facet.label(), Style::default().fg(theme::ACCENT)),
+        Span::raw("  "),
+    ];
+    let body: Span<'static> = match facet {
+        Facet::Kind if data.kind_mix.is_empty() => {
+            Span::styled("nothing logged yet", theme::muted())
+        }
+        Facet::Kind => {
+            let parts: Vec<String> = data
+                .kind_mix
+                .iter()
+                .map(|k| format!("{} {:.1}h", k.kind, k.minutes as f64 / 60.0))
+                .collect();
+            Span::styled(parts.join(" · "), theme::muted())
+        }
+        Facet::Domain => Span::styled(
+            "the pace read doesn't roll up by domain yet",
+            theme::muted(),
+        ),
+        Facet::Intent => Span::styled(
+            "the pace read doesn't roll up by intent yet",
+            theme::muted(),
+        ),
+    };
+    spans.push(body);
+    Line::from(spans)
 }
 
 fn state_color(state: PaceState) -> Color {
@@ -873,6 +937,56 @@ mod tests {
         let data = sample();
         assert!(spans_text(&meter_line(&data.targets[0], 18, true)).starts_with('▌'));
         assert!(!spans_text(&meter_line(&data.targets[0], 18, false)).starts_with('▌'));
+    }
+
+    #[tokio::test]
+    async fn fold_cycles_kind_domain_intent_and_wraps() {
+        let (api, tx) = ctx();
+        let mut p = loaded();
+        assert_eq!(p.fold, Facet::Kind, "the fold opens on kind");
+        p.handle(Action::ProgressFoldCycle, &api, &tx).await;
+        assert_eq!(p.fold, Facet::Domain);
+        p.handle(Action::ProgressFoldCycle, &api, &tx).await;
+        assert_eq!(p.fold, Facet::Intent);
+        p.handle(Action::ProgressFoldCycle, &api, &tx).await;
+        assert_eq!(p.fold, Facet::Kind, "the fold wraps back to kind");
+    }
+
+    #[test]
+    fn fold_line_shows_kind_data_and_absent_domain_intent() {
+        let data = sample();
+        let kind = spans_text(&fold_line(&data, Facet::Kind));
+        assert!(kind.contains("where it went · by kind"), "{kind}");
+        assert!(kind.contains("coding 2.0h"), "{kind}");
+        // The pace read carries no by-domain / by-intent rollup — the fold says
+        // so rather than deriving a second ledger (the backend-gap rule).
+        let domain = spans_text(&fold_line(&data, Facet::Domain));
+        assert!(domain.contains("by domain"), "{domain}");
+        assert!(domain.contains("doesn't roll up by domain"), "{domain}");
+        let intent = spans_text(&fold_line(&data, Facet::Intent));
+        assert!(intent.contains("by intent"), "{intent}");
+        assert!(intent.contains("doesn't roll up by intent"), "{intent}");
+    }
+
+    #[test]
+    fn fold_kind_facet_is_calm_when_nothing_logged() {
+        let mut data = sample();
+        data.kind_mix.clear();
+        let text = spans_text(&fold_line(&data, Facet::Kind));
+        assert!(text.contains("nothing logged yet"), "{text}");
+    }
+
+    #[test]
+    fn fold_renders_on_screen_and_the_toggle_is_advertised() {
+        let mut p = loaded();
+        let text = render_text(&mut p);
+        assert!(text.contains("where it went"), "the fold renders: {text}");
+        // The footer advertises the toggle so it's discoverable (quiet, not loud).
+        let hint = spans_text(&p.hints());
+        assert!(
+            hint.contains("where it went"),
+            "footer advertises it: {hint}"
+        );
     }
 
     fn key(code: KeyCode) -> KeyEvent {

@@ -375,6 +375,10 @@ fn progress_key(key: crossterm::event::KeyEvent) -> Option<Action> {
         (KeyCode::Char('['), _) => Some(Action::ProgressWeekStep(-1)),
         (KeyCode::Char(']'), _) => Some(Action::ProgressWeekStep(1)),
         (KeyCode::Char('t'), _) => Some(Action::ProgressWeekReset),
+        // `Tab` cycles the "where it went" fold (the design's `tab cycle axis`;
+        // the panel also drew `g fold/unfold`, but `g` is the global goto prefix
+        // and the distilled fold is one always-visible glance, not a collapse).
+        (KeyCode::Tab, _) => Some(Action::ProgressFoldCycle),
         (KeyCode::Char('h'), _) | (KeyCode::Esc, _) => Some(Action::Goto(ScreenKind::Home)),
         _ => None,
     }
