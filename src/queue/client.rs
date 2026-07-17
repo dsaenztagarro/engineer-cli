@@ -433,6 +433,82 @@ impl QueuedClient {
         }
     }
 
+    /// Mark an activity done — the Activities table's `c` (`POST
+    /// /api/v1/activities/:id/complete`). Drain-before-live, then the live POST;
+    /// offline it enqueues an [`IntentKind::ActivityComplete`] and returns the
+    /// row field-flipped to `completed`. Always a real id — the table refuses the
+    /// gesture on a still-queued provisional row (#109), so `id` is never
+    /// provisional here.
+    pub async fn complete_activity(&self, id: i64) -> Result<WriteOutcome<Activity>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.complete_activity(id).await {
+            Ok(a) => Ok(WriteOutcome::Confirmed(a)),
+            Err(ApiError::Transport(_)) => self.defer_activity(
+                IntentKind::ActivityComplete { id },
+                Activity {
+                    id,
+                    status: Some("completed".into()),
+                    ..Default::default()
+                },
+            ),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Restore an archived plan item — the Activities table's `a` toggle on an
+    /// archived row (`PATCH /api/v1/activities/:id/unarchive`). Offline enqueues
+    /// an [`IntentKind::ActivityUnarchive`] and returns the row field-flipped back
+    /// to active (`archived_at` cleared — the `Default`).
+    pub async fn unarchive_activity(&self, id: i64) -> Result<WriteOutcome<Activity>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.unarchive_activity(id).await {
+            Ok(a) => Ok(WriteOutcome::Confirmed(a)),
+            Err(ApiError::Transport(_)) => self.defer_activity(
+                IntentKind::ActivityUnarchive { id },
+                // Field-flip: not archived — the cleared `archived_at` is the
+                // `Default`, so the synthesized row already reads as active.
+                Activity {
+                    id,
+                    ..Default::default()
+                },
+            ),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// "Do this again" — the Activities table's `d` (`POST
+    /// /api/v1/activities/:id/duplicate`). The server mints a fresh `planned`
+    /// copy; offline it enqueues an [`IntentKind::ActivityDuplicate`] and
+    /// synthesizes a provisional negative-id copy the caller renders as queued.
+    /// Duplicate is not in the server's `Idempotency-Key` opt-in set (ADR 0036),
+    /// so the replay re-fires plain: a lost ack that re-sends mints a *second*
+    /// visible, archivable copy — the accepted #110 risk (a duplicate beats a
+    /// silently-dropped gesture, and a planned copy is never double-*counted*).
+    pub async fn duplicate_activity(&self, id: i64) -> Result<WriteOutcome<Activity>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.duplicate_activity(id).await {
+            Ok(a) => Ok(WriteOutcome::Confirmed(a)),
+            Err(ApiError::Transport(_)) => {
+                // A duplicate mints a new row — synthesize a provisional
+                // negative-id copy like a create does, seeded from the enqueued
+                // intent's id. The caller draws its `queued` line from its own
+                // label; this stand-in only needs to read as a fresh planned row.
+                let intent = self
+                    .store
+                    .enqueue(IntentKind::ActivityDuplicate { id })
+                    .map_err(|e| {
+                        ApiError::Transport(format!("offline, and queueing the write failed: {e}"))
+                    })?;
+                Ok(WriteOutcome::Provisional(Activity {
+                    id: provisional_id(intent.id),
+                    status: Some("planned".into()),
+                    ..Default::default()
+                }))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Append a manual segment to an existing activity — the `engineer log
     /// --activity` write (after-the-fact time on work already recorded).
     /// Drain-before-live, then the live POST; offline it enqueues an
@@ -1107,6 +1183,109 @@ mod tests {
         let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
         assert_eq!(intents[0].kind.word(), "drop");
         assert_eq!(intents[0].stream, "activity:42");
+    }
+
+    // --- activity lifecycle verbs (#110): complete / unarchive / duplicate ---
+
+    #[tokio::test]
+    async fn live_complete_is_confirmed_and_queues_nothing() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/activities/7/complete"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 7, "title": "T", "status": "completed"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let dir = tmp_dir("live-complete");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let out = queued.complete_activity(7).await.unwrap();
+        assert!(!out.is_provisional());
+        assert_eq!(out.value().status.as_deref(), Some("completed"));
+        assert_eq!(queued.queue_summary().depth, 0);
+    }
+
+    #[tokio::test]
+    async fn offline_complete_enqueues_and_marks_completed() {
+        let api = dead_api();
+        let dir = tmp_dir("offline-complete");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let out = queued.complete_activity(42).await.unwrap();
+        assert!(out.is_provisional());
+        assert_eq!(out.value().id, 42);
+        assert_eq!(
+            out.value().status.as_deref(),
+            Some("completed"),
+            "field-flip synthesis"
+        );
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents[0].kind.word(), "complete");
+        assert_eq!(intents[0].stream, "activity:42");
+    }
+
+    #[tokio::test]
+    async fn offline_unarchive_enqueues_and_marks_active() {
+        let api = dead_api();
+        let dir = tmp_dir("offline-unarchive");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let out = queued.unarchive_activity(42).await.unwrap();
+        assert!(out.is_provisional());
+        assert!(!out.value().is_archived(), "field-flip: restored to active");
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents[0].kind.word(), "unarchive");
+        assert_eq!(intents[0].stream, "activity:42");
+    }
+
+    #[tokio::test]
+    async fn offline_duplicate_enqueues_and_synthesizes_a_provisional_copy() {
+        let api = dead_api();
+        let dir = tmp_dir("offline-duplicate");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let out = queued.duplicate_activity(3).await.unwrap();
+        assert!(out.is_provisional());
+        assert!(
+            out.value().id < 0,
+            "a queued duplicate has no server id yet"
+        );
+        assert_eq!(out.value().status.as_deref(), Some("planned"));
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].kind.word(), "duplicate");
+        assert_eq!(
+            intents[0].stream, "activity:3",
+            "keyed on the source row it copies"
+        );
+        assert_eq!(
+            out.value().id,
+            -(intents[0].id as i64),
+            "the provisional id is -(intent.id)"
+        );
     }
 
     // --- segment append (#108): create_segment through the seam ---

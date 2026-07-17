@@ -99,6 +99,9 @@ pub fn fold_timer(
                 IntentKind::ActivityCreate { .. }
                 | IntentKind::ActivityUpdate { .. }
                 | IntentKind::ActivityArchive { .. }
+                | IntentKind::ActivityComplete { .. }
+                | IntentKind::ActivityDuplicate { .. }
+                | IntentKind::ActivityUnarchive { .. }
                 | IntentKind::SegmentCreate { .. }
                 | IntentKind::WeekNoteWrite { .. }
                 | IntentKind::TargetCreate { .. }

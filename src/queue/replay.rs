@@ -355,6 +355,24 @@ async fn send_intent(
             .archive_activity(resolve_activity(id_map, *id))
             .await
             .map(|_| Ack::plain(false)),
+        // The lifecycle verbs replay as plain calls against their real id (the
+        // table refuses them on a provisional row, so no id-map resolve is
+        // needed). Complete/unarchive are naturally idempotent server-side (a
+        // second complete/unarchive finds the state already set), so a lost-ack
+        // re-fire is harmless. Duplicate is the exception: it is not in the
+        // opt-in set (ADR 0036), so a re-fire mints a *second* planned copy — the
+        // accepted #110 risk (a visible, archivable duplicate, never
+        // double-counted). A stored replay is indistinguishable from a first ack
+        // on all three, so report `false`.
+        IntentKind::ActivityComplete { id } => {
+            api.complete_activity(*id).await.map(|_| Ack::plain(false))
+        }
+        IntentKind::ActivityUnarchive { id } => {
+            api.unarchive_activity(*id).await.map(|_| Ack::plain(false))
+        }
+        IntentKind::ActivityDuplicate { id } => {
+            api.duplicate_activity(*id).await.map(|_| Ack::plain(false))
+        }
         // The note write replays as a plain PATCH: the route upserts the single
         // note row, so re-sending the same body is naturally idempotent and needs
         // no key. A stored replay is indistinguishable from a first ack here, so
@@ -998,6 +1016,57 @@ mod tests {
         assert_eq!(report.replayed, 2);
         assert_eq!(report.deduped, 0, "plain calls are never a stored replay");
         assert_eq!(report.remaining, 0);
+    }
+
+    // --- activity lifecycle verbs (#110): complete / unarchive / duplicate
+    // replay as plain calls against their real id ---
+
+    #[tokio::test]
+    async fn activity_lifecycle_verbs_replay_as_plain_calls() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/activities/5/complete"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 5, "title": "T", "status": "completed"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/activities/5/unarchive"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 5, "title": "T", "status": "planned"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // The duplicate mints a fresh copy — a plain POST, no Idempotency-Key
+        // matcher (it is not in the opt-in set, ADR 0036).
+        Mock::given(method("POST"))
+            .and(path("/api/v1/activities/5/duplicate"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 88, "title": "T", "status": "planned"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("activity-lifecycle");
+        store
+            .enqueue(IntentKind::ActivityComplete { id: 5 })
+            .unwrap();
+        store
+            .enqueue(IntentKind::ActivityUnarchive { id: 5 })
+            .unwrap();
+        store
+            .enqueue(IntentKind::ActivityDuplicate { id: 5 })
+            .unwrap();
+
+        let report = drain(&client(&server), &store).await.unwrap();
+        assert_eq!(report.replayed, 3);
+        assert_eq!(report.deduped, 0, "plain calls are never a stored replay");
+        assert_eq!(report.remaining, 0);
+        assert!(store.intents().unwrap().is_empty(), "all three synced");
     }
 
     // --- reflection (#117): the week note replays as a plain PATCH ---

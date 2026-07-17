@@ -624,6 +624,9 @@ fn compose_local_session(
             IntentKind::ActivityCreate { .. }
             | IntentKind::ActivityUpdate { .. }
             | IntentKind::ActivityArchive { .. }
+            | IntentKind::ActivityComplete { .. }
+            | IntentKind::ActivityDuplicate { .. }
+            | IntentKind::ActivityUnarchive { .. }
             | IntentKind::SegmentCreate { .. }
             | IntentKind::WeekNoteWrite { .. }
             | IntentKind::TargetCreate { .. }

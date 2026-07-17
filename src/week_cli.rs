@@ -215,6 +215,7 @@ pub async fn run_plan(cfg: &Config, args: PlanArgs) -> Result<i32> {
         },
         None => Zoned::now().date(),
     };
+    let queued = QueuedClient::new(&api).map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
     let create = ActivityCreate {
         title: args.title.clone(),
         planned_on: Some(on),
@@ -223,26 +224,54 @@ pub async fn run_plan(cfg: &Config, args: PlanArgs) -> Result<i32> {
         domain_id: args.domain,
         ..Default::default()
     };
-    match api.create_activity(&create).await {
-        Ok(a) => {
-            if args.json {
-                println!(
-                    "{}",
-                    serde_json::json!({ "id": a.id, "title": a.title, "planned_on": on.to_string() })
-                );
-            } else {
-                println!(
-                    "{} planned \"{}\" on {on}",
-                    paint("●", COLOR_OK, colored),
-                    a.title
+    let outcome = plan_dispatch(&queued, &create, on, args.json, colored).await;
+    for line in &outcome.out {
+        println!("{line}");
+    }
+    for line in &outcome.err {
+        eprintln!("{line}");
+    }
+    Ok(outcome.code)
+}
+
+/// Declare a plan item through the queue seam and render the confirmation. An
+/// offline declare enqueues (a provisional negative-id row) and still exits 0
+/// with the `queued (offline)` tail; `--json` carries `queued` so a script can
+/// tell a synced declare from a deferred one. Testable in isolation with a
+/// scratch `QueuedClient` (a dead address exercises the offline enqueue).
+async fn plan_dispatch(
+    queued: &QueuedClient,
+    create: &ActivityCreate,
+    on: Date,
+    json: bool,
+    colored: bool,
+) -> Outcome {
+    match queued.create_activity(create).await {
+        Ok(outcome) => {
+            let provisional = outcome.is_provisional();
+            let a = outcome.value();
+            if json {
+                return Outcome::ok(
+                    serde_json::json!({
+                        "id": a.id,
+                        "title": a.title,
+                        "planned_on": on.to_string(),
+                        "queued": provisional,
+                    })
+                    .to_string(),
                 );
             }
-            Ok(0)
+            let mut line = format!(
+                "{} planned \"{}\" on {on}",
+                paint("●", COLOR_OK, colored),
+                a.title
+            );
+            if provisional {
+                line.push_str(&paint("  · queued (offline)", COLOR_MUTED, colored));
+            }
+            Outcome::ok(line)
         }
-        Err(e) => {
-            eprintln!("{}", problem_text(e));
-            Ok(1)
-        }
+        Err(e) => Outcome::refuse(problem_text(e)),
     }
 }
 
@@ -525,6 +554,119 @@ mod tests {
             assert_eq!(intents.len(), 1, "the reflection landed in the queue");
             assert_eq!(intents[0].kind.word(), "reflect");
             assert_eq!(intents[0].stream, "week:2026-W29");
+        }
+    }
+
+    // --- plan add (#110): the declare through the queue seam ---
+
+    mod plan {
+        use super::super::plan_dispatch;
+        use crate::api::{ActivityCreate, ApiClient};
+        use crate::queue::{QueueStore, QueuedClient};
+        use url::Url;
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn scratch() -> std::path::PathBuf {
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "engineer-plan-cli-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        }
+
+        fn queued_at(api: &ApiClient, dir: &std::path::Path) -> QueuedClient {
+            QueuedClient::with_paths(
+                api,
+                QueueStore::at(dir.join("queue.json")),
+                dir.join("timer-cache.json"),
+            )
+        }
+
+        fn dead_api() -> ApiClient {
+            ApiClient::with_token(Url::parse("http://127.0.0.1:1/").unwrap(), "t".into())
+        }
+
+        fn create() -> ActivityCreate {
+            ActivityCreate {
+                title: "one systems paper".into(),
+                planned_on: Some("2026-07-13".parse().unwrap()),
+                ..Default::default()
+            }
+        }
+
+        #[tokio::test]
+        async fn a_live_declare_confirms_and_queues_nothing() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api/v1/activities"))
+                .and(body_partial_json(serde_json::json!({
+                    "activity": { "title": "one systems paper", "planned_on": "2026-07-13" }
+                })))
+                .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                    "id": 7, "title": "one systems paper", "status": "planned"
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "t".into());
+            let dir = scratch();
+            let queued = queued_at(&api, &dir);
+            let on = "2026-07-13".parse().unwrap();
+            let out = plan_dispatch(&queued, &create(), on, false, false).await;
+            assert_eq!(out.code, 0);
+            assert!(
+                out.out[0].contains("planned \"one systems paper\" on 2026-07-13"),
+                "{:?}",
+                out.out
+            );
+            assert!(
+                !out.out[0].contains("queued"),
+                "a live declare isn't queued"
+            );
+            assert!(QueueStore::at(dir.join("queue.json"))
+                .pending()
+                .unwrap()
+                .is_empty());
+        }
+
+        #[tokio::test]
+        async fn a_dead_address_enqueues_the_declare() {
+            // Offline: the declare can't bounce — it queues, and the CLI still
+            // exits 0 with the `queued (offline)` tail.
+            let dir = scratch();
+            let queued = queued_at(&dead_api(), &dir);
+            let on = "2026-07-13".parse().unwrap();
+            let out = plan_dispatch(&queued, &create(), on, false, false).await;
+            assert_eq!(out.code, 0);
+            assert!(out.out[0].contains("queued (offline)"), "{:?}", out.out);
+
+            let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+            assert_eq!(intents.len(), 1, "the declare landed in the queue");
+            assert_eq!(intents[0].kind.word(), "plan");
+            assert_eq!(intents[0].stream, "activity");
+        }
+
+        #[tokio::test]
+        async fn json_carries_the_queued_flag_offline() {
+            let dir = scratch();
+            let queued = queued_at(&dead_api(), &dir);
+            let on = "2026-07-13".parse().unwrap();
+            let out = plan_dispatch(&queued, &create(), on, true, false).await;
+            assert_eq!(out.code, 0);
+            let v: serde_json::Value = serde_json::from_str(&out.out[0]).unwrap();
+            assert_eq!(v["title"], "one systems paper");
+            assert_eq!(v["planned_on"], "2026-07-13");
+            assert_eq!(v["queued"], true, "a script can tell a deferred declare");
+            assert!(
+                v["id"].as_i64().unwrap() < 0,
+                "the provisional negative id is honest"
+            );
         }
     }
 }
