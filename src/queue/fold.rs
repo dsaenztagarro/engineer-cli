@@ -94,7 +94,10 @@ pub fn fold_timer(
                 IntentKind::ActivityCreate { .. }
                 | IntentKind::ActivityUpdate { .. }
                 | IntentKind::ActivityArchive { .. }
-                | IntentKind::WeekNoteWrite { .. },
+                | IntentKind::WeekNoteWrite { .. }
+                | IntentKind::TargetCreate { .. }
+                | IntentKind::TargetAdjust { .. }
+                | IntentKind::TargetRetire { .. },
                 _,
             ) => unreachable!("only timer-stream intents reach the timer fold"),
         });

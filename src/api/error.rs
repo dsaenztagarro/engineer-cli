@@ -172,13 +172,25 @@ impl ApiError {
     }
 
     /// The stable conflict code, when this is a coded problem. The queue path
-    /// reads the code from the persisted `IntentState::Diverged` instead;
-    /// this accessor is for callers that hold the live `ApiError` (the
-    /// targets adoption in the progress epic), hence the dead-code allowance.
-    #[allow(dead_code)]
+    /// reads the code from the persisted `IntentState::Diverged` instead; this
+    /// accessor is for callers that hold the live `ApiError` — the Progress
+    /// target writes route a `target-version-closed` (Self::live_target_id) here,
+    /// and the replay re-addresses a diverged adjust by it.
     pub fn code(&self) -> Option<&str> {
         match self {
             Self::Problem { code, .. } => code.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// The live lineage row a `target-version-closed` conflict points at (ADR
+    /// 0026) — the id a replayed adjust re-addresses to, so the gesture (this
+    /// many hours on this lineage) still lands rather than diverging. `None` on
+    /// every other error, and on a closed version whose lineage is fully retired
+    /// (no live row left — a genuine divergence).
+    pub fn live_target_id(&self) -> Option<i64> {
+        match self {
+            Self::Problem { conflict, .. } => conflict.live_target_id,
             _ => None,
         }
     }

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::{ActivityCreate, ConflictInfo, FieldError};
+use crate::api::{ActivityCreate, ConflictInfo, FieldError, TargetCreate};
 
 /// A single deferred write: a mutation the user performed while the wire was
 /// down, persisted until it replays. Stored only until it syncs — the queue is
@@ -100,6 +100,28 @@ pub enum IntentKind {
         iso_week: String,
         body: String,
     },
+    /// Declare a weekly target — the Progress `n` flow, deferred while offline.
+    /// Carries the whole create body so the replay re-sends it verbatim; the
+    /// queued `Idempotency-Key` makes that re-send safe (a lost ack cannot mint
+    /// the target twice). Stream `"target"`: there is no server id yet to order a
+    /// per-target stream on, so a fresh declare joins the shared target stream.
+    TargetCreate {
+        body: TargetCreate,
+    },
+    /// Adjust a target's weekly hours — a deferred `PATCH /api/v1/targets/:id`
+    /// (Progress `e`). Replays plain; a closed-version rejection re-addresses the
+    /// same hours to the lineage's live row (engineer ADR 0026) inside the replay
+    /// rather than diverging. Stream `"target:<id>"`: keyed on the row it edits.
+    TargetAdjust {
+        id: i64,
+        hours: f64,
+    },
+    /// Retire a target — a deferred `PATCH /api/v1/targets/:id/retire` (Progress
+    /// `x`). Closes the lineage while keeping its history (retire ≠ delete);
+    /// replays plain, since a second retire is naturally idempotent server-side.
+    TargetRetire {
+        id: i64,
+    },
 }
 
 impl IntentKind {
@@ -121,6 +143,12 @@ impl IntentKind {
             // One note per week, ordered on its own stream — a later reflection
             // for the same week supersedes the earlier queued one in FIFO order.
             Self::WeekNoteWrite { iso_week, .. } => format!("week:{iso_week}"),
+            // A declare has no server id yet — it orders in the shared target
+            // stream; adjust/retire key on the lineage row they act on.
+            Self::TargetCreate { .. } => "target".into(),
+            Self::TargetAdjust { id, .. } | Self::TargetRetire { id } => {
+                format!("target:{id}")
+            }
         }
     }
 
@@ -137,6 +165,9 @@ impl IntentKind {
             Self::ActivityUpdate { .. } => "adjust",
             Self::ActivityArchive { .. } => "drop",
             Self::WeekNoteWrite { .. } => "reflect",
+            Self::TargetCreate { .. } => "declare",
+            Self::TargetAdjust { .. } => "adjust",
+            Self::TargetRetire { .. } => "retire",
         }
     }
 }
@@ -218,6 +249,31 @@ mod tests {
         );
         let back: IntentKind = serde_json::from_str(&json).unwrap();
         assert_eq!(back, kind);
+    }
+
+    #[test]
+    fn target_intents_roundtrip_and_key_their_streams() {
+        use crate::api::{TargetCreate, TargetScope};
+
+        let declare = IntentKind::TargetCreate {
+            body: TargetCreate {
+                scope: TargetScope::Domain(7),
+                hours_per_week: 6.0,
+            },
+        };
+        assert_eq!(declare.word(), "declare");
+        assert_eq!(declare.stream(), "target", "a fresh declare has no id yet");
+        let json = serde_json::to_string(&declare).unwrap();
+        assert!(json.contains(r#""verb":"target_create""#), "{json}");
+        assert_eq!(serde_json::from_str::<IntentKind>(&json).unwrap(), declare);
+
+        let adjust = IntentKind::TargetAdjust { id: 42, hours: 8.0 };
+        assert_eq!(adjust.word(), "adjust");
+        assert_eq!(adjust.stream(), "target:42", "keyed on the row it edits");
+
+        let retire = IntentKind::TargetRetire { id: 42 };
+        assert_eq!(retire.word(), "retire");
+        assert_eq!(retire.stream(), "target:42");
     }
 
     #[test]
