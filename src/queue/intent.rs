@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::{ActivityCreate, ConflictInfo, FieldError, TargetCreate};
+use crate::api::{ActivityCreate, ConflictInfo, FieldError, NoteInput, TargetCreate};
 
 /// A single deferred write: a mutation the user performed while the wire was
 /// down, persisted until it replays. Stored only until it syncs — the queue is
@@ -122,6 +122,18 @@ pub enum IntentKind {
     TargetRetire {
         id: i64,
     },
+    /// Capture a study note — a deferred `POST /api/v1/notes` (the quick-capture
+    /// overlay's save, and `engineer note capture`). Carries the whole create
+    /// body so the replay re-sends it verbatim. Stream `"note"`: there is no
+    /// server id yet to order a per-note stream on, so a fresh capture joins the
+    /// shared note stream. Unlike the timer / activity creates, notes-create is
+    /// NOT in the server's `Idempotency-Key` opt-in set (ADR 0036 — timer
+    /// start/stop/pause/resume, segment create, activity create), so it replays
+    /// plain: a duplicate on a lost ack is benign (a study note is shelved and
+    /// archivable, never double-counted like a logged segment).
+    NoteCreate {
+        body: NoteInput,
+    },
 }
 
 impl IntentKind {
@@ -149,6 +161,9 @@ impl IntentKind {
             Self::TargetAdjust { id, .. } | Self::TargetRetire { id } => {
                 format!("target:{id}")
             }
+            // A fresh capture has no server id yet — it orders in the shared
+            // note stream, like a plan or target declare.
+            Self::NoteCreate { .. } => "note".into(),
         }
     }
 
@@ -168,6 +183,7 @@ impl IntentKind {
             Self::TargetCreate { .. } => "declare",
             Self::TargetAdjust { .. } => "adjust",
             Self::TargetRetire { .. } => "retire",
+            Self::NoteCreate { .. } => "capture",
         }
     }
 }
@@ -274,6 +290,29 @@ mod tests {
         let retire = IntentKind::TargetRetire { id: 42 };
         assert_eq!(retire.word(), "retire");
         assert_eq!(retire.stream(), "target:42");
+    }
+
+    #[test]
+    fn note_create_intent_roundtrips_and_streams_on_note() {
+        use crate::api::{Anchor, NoteInput};
+
+        let capture = IntentKind::NoteCreate {
+            body: NoteInput {
+                title: "MVCC keeps one version per read-tx".into(),
+                content: Some("MVCC keeps one version per read-tx".into()),
+                book_id: Some(3),
+                anchors: Some(vec![Anchor {
+                    page: Some(142),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+        };
+        assert_eq!(capture.word(), "capture");
+        assert_eq!(capture.stream(), "note", "a fresh capture has no id yet");
+        let json = serde_json::to_string(&capture).unwrap();
+        assert!(json.contains(r#""verb":"note_create""#), "{json}");
+        assert_eq!(serde_json::from_str::<IntentKind>(&json).unwrap(), capture);
     }
 
     #[test]

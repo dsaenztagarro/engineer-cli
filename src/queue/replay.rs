@@ -214,6 +214,13 @@ async fn send_intent(api: &ApiClient, intent: &Intent) -> Result<bool, ApiError>
         // indistinguishable from a first ack on these, so report `false`.
         IntentKind::TargetAdjust { id, hours } => replay_target_adjust(api, *id, *hours).await,
         IntentKind::TargetRetire { id } => api.retire_target(*id).await.map(|_| false),
+        // The note create replays as a plain POST: the notes route is NOT in the
+        // server's `Idempotency-Key` opt-in set (ADR 0036), so the queued key is
+        // ignored and the body re-sends verbatim. A stored replay is
+        // indistinguishable from a first ack here, so report `false` (never a
+        // dedupe). A duplicate on a lost ack is benign — a study note is shelved
+        // and archivable, never double-counted like a logged segment.
+        IntentKind::NoteCreate { body } => api.create_note(body).await.map(|_| false),
     }
 }
 
@@ -821,6 +828,48 @@ mod tests {
         assert_eq!(report.deduped, 0, "a plain PATCH is never a stored replay");
         assert_eq!(report.remaining, 0);
         assert!(store.intents().unwrap().is_empty(), "the reflection synced");
+    }
+
+    // --- note capture (#123): the note create replays as a plain POST ---
+
+    #[tokio::test]
+    async fn note_create_replays_as_a_plain_post() {
+        use crate::api::{Anchor, NoteInput};
+        let server = MockServer::start().await;
+        // No `Idempotency-Key` matcher: notes-create is not in the opt-in set
+        // (ADR 0036), so the body re-sends plain, wrapped in the `note` key.
+        Mock::given(method("POST"))
+            .and(path("/api/v1/notes"))
+            .and(body_json(serde_json::json!({
+                "note": { "title": "MVCC keeps one version", "book_id": 3, "anchors": [{ "page": 142 }] }
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 9, "title": "MVCC keeps one version", "book_id": 3, "citations": []
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("note-create");
+        store
+            .enqueue(IntentKind::NoteCreate {
+                body: NoteInput {
+                    title: "MVCC keeps one version".into(),
+                    book_id: Some(3),
+                    anchors: Some(vec![Anchor {
+                        page: Some(142),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+
+        let report = drain(&client(&server), &store).await.unwrap();
+        assert_eq!(report.replayed, 1);
+        assert_eq!(report.deduped, 0, "a plain POST is never a stored replay");
+        assert_eq!(report.remaining, 0);
+        assert!(store.intents().unwrap().is_empty(), "the capture synced");
     }
 
     // --- target writes (#121): create replays keyed, adjust/retire replay plain,

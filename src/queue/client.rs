@@ -12,8 +12,8 @@
 use std::path::PathBuf;
 
 use crate::api::{
-    Activity, ActivityCreate, ActivityUpdate, ApiClient, ApiError, TargetCreate, TargetRef, Timer,
-    TimerStopped, WeekNote,
+    Activity, ActivityCreate, ActivityUpdate, ApiClient, ApiError, Note, NoteInput, TargetCreate,
+    TargetRef, Timer, TimerStopped, WeekNote,
 };
 use crate::timer_cache;
 use crate::timer_clock;
@@ -39,6 +39,11 @@ pub const PROVISIONAL_ACTIVITY_ID: i64 = -1;
 /// as queued rather than a real target id (the caller draws the queued line from
 /// its own label; this provisional value is discarded).
 pub const PROVISIONAL_TARGET_ID: i64 = -1;
+
+/// A stand-in `id` for a note captured while offline — a negative sentinel like
+/// the others, so a queued capture renders as provisional (the caller draws its
+/// confirmation from the echoed title, not this id).
+pub const PROVISIONAL_NOTE_ID: i64 = -1;
 
 /// How a write landed: on the server, or into the queue with a locally
 /// synthesized stand-in the caller renders as provisional.
@@ -525,6 +530,32 @@ impl QueuedClient {
         }
     }
 
+    /// Capture a study note — `POST /api/v1/notes` (the quick-capture overlay's
+    /// save, and `engineer note capture`). Drain-before-live, then the live POST;
+    /// offline it enqueues an [`IntentKind::NoteCreate`] carrying the whole body
+    /// and echoes a provisional negative-id note the caller renders as queued.
+    /// Like a plan / target declare, an offline capture needs no cached snapshot —
+    /// a fresh note names its own body, always legitimate to synthesize.
+    ///
+    /// Anchored captures (`--book`) never reach the offline arm: the book search
+    /// that resolves the anchor is a live read, so a `--book` capture already
+    /// refused before this call. What queues is always a loose thought.
+    pub async fn create_note(&self, body: &NoteInput) -> Result<WriteOutcome<Note>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.create_note(body).await {
+            Ok(n) => Ok(WriteOutcome::Confirmed(n)),
+            Err(ApiError::Transport(_)) => {
+                self.store
+                    .enqueue(IntentKind::NoteCreate { body: body.clone() })
+                    .map_err(|e| {
+                        ApiError::Transport(format!("offline, and queueing the write failed: {e}"))
+                    })?;
+                Ok(WriteOutcome::Provisional(provisional_note(body)))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// The offline arm the target-write verbs share — the [`defer_activity`]
     /// twin for [`TargetRef`]: enqueue first (the gesture must never be lost),
     /// then return the provisional stand-in. No cached snapshot is needed — a
@@ -588,6 +619,18 @@ impl QueuedClient {
             None => timer_cache::load(),
             Some(path) => timer_cache::load_at(path),
         }
+    }
+}
+
+/// A negative-id stand-in for a queued capture, seeded from the create body —
+/// the caller renders it as queued until the replay mints the real note.
+fn provisional_note(body: &NoteInput) -> Note {
+    Note {
+        id: PROVISIONAL_NOTE_ID,
+        title: body.title.clone(),
+        content: body.content.clone(),
+        book_id: body.book_id,
+        ..Default::default()
     }
 }
 
@@ -1054,6 +1097,75 @@ mod tests {
         assert_eq!(intents.len(), 1);
         assert_eq!(intents[0].kind.word(), "reflect");
         assert_eq!(intents[0].stream, "week:2026-W29");
+    }
+
+    // --- note capture (#123): create through the seam ---
+
+    #[tokio::test]
+    async fn live_capture_is_confirmed_and_queues_nothing() {
+        use crate::api::NoteInput;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/notes"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 9, "title": "MVCC keeps one version", "citations": []
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let dir = tmp_dir("live-capture");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let body = NoteInput {
+            title: "MVCC keeps one version".into(),
+            ..Default::default()
+        };
+        let out = queued.create_note(&body).await.unwrap();
+        assert!(!out.is_provisional());
+        assert_eq!(out.value().id, 9);
+        assert_eq!(queued.queue_summary().depth, 0);
+    }
+
+    #[tokio::test]
+    async fn offline_capture_enqueues_and_echoes_a_provisional_note() {
+        // Like a plan / target declare, a capture needs no cached snapshot — the
+        // note names its own body, always legitimate to synthesize.
+        use crate::api::NoteInput;
+        let api = dead_api();
+        let dir = tmp_dir("offline-capture");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"), // never written
+        );
+
+        let body = NoteInput {
+            title: "teach CAP via a live partition demo".into(),
+            content: Some("teach CAP via a live partition demo".into()),
+            ..Default::default()
+        };
+        let out = queued.create_note(&body).await.unwrap();
+        assert!(out.is_provisional());
+        assert_eq!(out.value().title, "teach CAP via a live partition demo");
+        assert!(out.value().id < 0, "a queued capture has no server id yet");
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].kind.word(), "capture");
+        assert_eq!(intents[0].stream, "note");
+        match &intents[0].kind {
+            IntentKind::NoteCreate { body } => {
+                assert_eq!(body.title, "teach CAP via a live partition demo");
+                assert!(body.book_id.is_none(), "a queued capture is loose");
+            }
+            other => panic!("expected a NoteCreate intent, got {other:?}"),
+        }
     }
 
     // --- target writes (#121): declare / adjust / retire through the seam ---

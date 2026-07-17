@@ -22,7 +22,7 @@ pub struct Citation {
     pub address_label: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Note {
     pub id: i64,
     pub title: String,
@@ -57,7 +57,7 @@ pub struct Note {
 }
 
 /// A book anchor to build citations from. Needs at least one of chapter/section/page.
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Anchor {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chapter_id: Option<i64>,
@@ -69,7 +69,11 @@ pub struct Anchor {
     pub edition_ids: Vec<i64>,
 }
 
-#[derive(Debug, Default, Serialize)]
+// `Clone`/`PartialEq`/`Deserialize` beyond the base `Serialize` so a queued
+// capture can ride an `IntentKind::NoteCreate { body: NoteInput }` and replay it
+// verbatim (mirrors `ActivityCreate`). The `skip_serializing_if` attributes are
+// Serialize-only; on the way back, the `Option`/`Vec` fields default naturally.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NoteInput {
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -218,6 +222,32 @@ impl ApiClient {
     }
 }
 
+/// Longest first-line slice we lift into a note's title. The full text always
+/// lands in `content`, so truncating the title never loses input.
+pub(crate) const TITLE_MAX: usize = 120;
+
+/// Split a captured thought into `(title, content)`: the title is the first
+/// non-empty line (clipped to `TITLE_MAX`), and the full text is kept verbatim
+/// in `content` so nothing is lost. The server's note model requires a title;
+/// capture is content-first, so we derive one.
+///
+/// One spelling of the rule, home in the notes domain and reused by both note
+/// surfaces: the quick-capture overlay (`src/app/capture.rs`) and the headless
+/// `engineer note capture` (`src/note_cli.rs`).
+pub(crate) fn derive_title_content(text: &str) -> (String, Option<String>) {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return (String::new(), None);
+    }
+    let first = trimmed
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let title: String = first.chars().take(TITLE_MAX).collect();
+    (title, Some(trimmed.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,6 +286,23 @@ mod tests {
         let note = client(&server).create_note(&body).await.unwrap();
         assert_eq!(note.id, 1);
         assert!(note.book_linked);
+    }
+
+    #[test]
+    fn derive_title_content_lifts_first_line_and_keeps_full_text() {
+        let (title, content) = derive_title_content("closures are objects\n\nthe env model\n");
+        assert_eq!(title, "closures are objects");
+        assert_eq!(
+            content.as_deref(),
+            Some("closures are objects\n\nthe env model")
+        );
+    }
+
+    #[test]
+    fn derive_title_content_empty_is_empty() {
+        let (title, content) = derive_title_content("   \n  ");
+        assert!(title.is_empty());
+        assert!(content.is_none());
     }
 
     #[tokio::test]
