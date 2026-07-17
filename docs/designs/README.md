@@ -48,7 +48,7 @@ What transfers from the web app is the **information architecture** (which scree
 | Sign in | identity / auth | built (`screens/login.rs`) |
 | Activities table | `Activities.html` | built (`screens/activities.rs`) |
 | Timer + header cell | `navigation-bar.html` §M + `timer-hygiene.html` | built v1 (`screens/timer.rs`) — redesign specified in `timer.dc.html`, gaps in `briefs/shipped/timer-gaps.brief.md` |
-| Notes capture + browser | `notes.html` | built (`screens/notes.rs`) |
+| Notes capture + browser + `$EDITOR`/headless/faces | `notes.dc.html` (from `notes.html`) | built — capture (`app/capture.rs`), browser + delete/unlink faces (`screens/notes.rs`), `$EDITOR` (`editor.rs`), headless twin (`note_cli.rs`); epic #120 |
 | Review (dashboard / browse / sitting) | `review.html` | built (`screens/review.rs`) |
 | Progress (pace meters) | `progress.html` | built (`screens/progress.rs`) |
 | Week planning + retro | `week-planning.dc.html` | built (`screens/week.rs`) |
