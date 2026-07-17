@@ -54,7 +54,11 @@ engineer note show <id>            # one note in full — content + citations
 
 engineer queue                     # the offline write queue — one row per unsynced intent (--json for machines)
 engineer queue sync                # replay the queue now: pending intents re-send in order
+engineer queue resolve <id> --keep=local|server|both  # pick a side on a waiting divergence (or --edit/--drop --force/--skip a rejected write)
+engineer queue drop <id> --force   # drop a diverged/rejected write — the standalone twin of the inspector's `x`
 ```
+
+The queue also has a **TUI face** — the Queue inspector (`:queue`, or the `g q` goto chord): the same intent-log table, with `r` retry-now (a reconnect drain), `x` drop the selected diverged write (confirmed on a second press), and `⏎` to open a divergence's reconcile panel.
 
 Timer exit codes answer "is the clock counting?": `0` counting (running / focus work) · `1` nothing running (and verb refusals) · `3` idle, reclaim pending · `4` not counting (paused / focus break).
 Output is plain when piped — ANSI colour only on a TTY, and never when `NO_COLOR` is set.

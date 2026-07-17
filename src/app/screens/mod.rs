@@ -25,6 +25,7 @@ pub mod inbox;
 pub mod login;
 pub mod notes;
 pub mod progress;
+pub mod queue;
 pub mod review;
 pub mod settings;
 pub mod timer;
@@ -113,6 +114,7 @@ pub enum ScreenKind {
     Week,
     Inbox,
     Connect,
+    Queue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +141,7 @@ pub enum Screen {
     Week(week::Week),
     Inbox(inbox::Inbox),
     Connect(connect::Connect),
+    Queue(queue::Queue),
 }
 
 impl Screen {
@@ -159,6 +162,7 @@ impl Screen {
             ScreenKind::Week => Self::Week(week::Week::default()),
             ScreenKind::Inbox => Self::Inbox(inbox::Inbox::default()),
             ScreenKind::Connect => Self::Connect(connect::Connect::default()),
+            ScreenKind::Queue => Self::Queue(queue::Queue::default()),
         }
     }
 
@@ -179,6 +183,7 @@ impl Screen {
             Self::Week(_) => ScreenKind::Week,
             Self::Inbox(_) => ScreenKind::Inbox,
             Self::Connect(_) => ScreenKind::Connect,
+            Self::Queue(_) => ScreenKind::Queue,
         }
     }
 
@@ -199,6 +204,7 @@ impl Screen {
             Self::Week(_) => "Week",
             Self::Inbox(_) => "Inbox",
             Self::Connect(_) => "Connect",
+            Self::Queue(_) => "Queue",
         }
     }
 
@@ -226,6 +232,7 @@ impl Screen {
             Self::Week(s) => s.on_enter(api, tx),
             Self::Inbox(s) => s.on_enter(api, tx),
             Self::Connect(s) => s.on_enter(api, tx),
+            Self::Queue(s) => s.on_enter(api, tx),
         }
     }
 
@@ -242,6 +249,7 @@ impl Screen {
             Self::Week(s) => s.intercept_key(key),
             Self::Inbox(s) => s.intercept_key(key),
             Self::Connect(s) => s.intercept_key(key),
+            Self::Queue(s) => s.intercept_key(key),
             _ => None,
         }
     }
@@ -268,6 +276,7 @@ impl Screen {
             Self::Week(s) => s.handle(action, api, tx).await,
             Self::Inbox(s) => s.handle(action, api, tx).await,
             Self::Connect(s) => s.handle(action, api, tx).await,
+            Self::Queue(s) => s.handle(action, api, tx).await,
         }
     }
 
@@ -288,6 +297,7 @@ impl Screen {
             Self::Week(s) => s.render(frame, area),
             Self::Inbox(s) => s.render(frame, area),
             Self::Connect(s) => s.render(frame, area),
+            Self::Queue(s) => s.render(frame, area),
         }
     }
 
@@ -319,6 +329,7 @@ impl Screen {
                 ("w", "week"),
                 ("r", "review"),
                 ("i", "inbox"),
+                ("q", "queue"),
                 ("h", "home"),
                 ("b", "books"),
                 ("n", "notes"),
@@ -352,6 +363,7 @@ impl Screen {
             Self::Week(s) => s.hints(),
             Self::Inbox(s) => s.hints(),
             Self::Connect(s) => s.hints(),
+            Self::Queue(s) => s.hints(),
         }
     }
 }

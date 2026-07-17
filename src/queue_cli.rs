@@ -2,8 +2,9 @@
 //! (offline-write.brief.md §8 Foundation; the §Queue inspector / headless-twin
 //! boards). The bare read prints one row per unsynced intent; `sync` runs a
 //! replay pass now; `resolve` picks a side on a waiting divergence — the
-//! headless twin of the Timer screen's reconcile panel. A look and a nudge —
-//! not a sync manager.
+//! headless twin of the Timer screen's reconcile panel; `drop <id>` is the
+//! standalone spelling of the reconcile board's `x` (the same engine as
+//! `resolve <id> --drop`). A look and a nudge — not a sync manager.
 //!
 //! Exit codes answer "does the queue need me?": 0 drained, empty, or only
 //! parked-for-review · 3 writes queued, offline (deliberately not a failure —
@@ -27,7 +28,7 @@ use color_eyre::eyre::Result;
 use crate::api::{ApiClient, ApiError, Timer};
 use crate::auth::TokenProvider;
 use crate::config::Config;
-use crate::queue::{self, Intent, IntentState, QueueStore, Resolution, Resolved};
+use crate::queue::{self, view, Intent, IntentState, QueueStore, Resolution, Resolved};
 
 #[derive(Args)]
 pub struct QueueArgs {
@@ -69,6 +70,16 @@ enum QueueCmd {
         /// replay; the stream behind it keeps syncing.
         #[arg(long)]
         skip: bool,
+    },
+    /// Drop a diverged/rejected write by id — the standalone twin of the `x`
+    /// gesture on the Queue inspector, and a plainer spelling of `resolve <id>
+    /// --drop`. Same engine (`queue::drop_intent`); `--force` confirms.
+    Drop {
+        /// The intent id from the bare read's `#` column.
+        id: u64,
+        /// Confirm the drop — dropping discards the queued write forever.
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -166,6 +177,10 @@ async fn dispatch(
                 "pick exactly one resolution: --keep=local|server|both, --edit, --drop, or --skip",
             ),
         },
+        // The standalone `drop <id>` — the headless twin of the board's `x`.
+        // Routes the same `drop_cmd` as `resolve <id> --drop`, so the two
+        // spellings share one engine and one confirmation contract.
+        Some(QueueCmd::Drop { id, force }) => drop_cmd(api, store, id, force, json, colored).await,
     })
 }
 
@@ -192,26 +207,24 @@ fn read(store: &QueueStore, json: bool, colored: bool) -> Outcome {
         return Outcome::ok("queue empty");
     }
 
+    // The `#  INTENT  TARGET  AGE  STATE` columns come from the one shared
+    // shaper (`queue::view`) the TUI board renders too — one source of truth.
+    let [h_id, h_intent, h_target, h_age, h_state] = view::HEADERS;
     let mut out = vec![paint(
-        &format!(
-            "{:<5} {:<8} {:<12} {:<6} STATE",
-            "#", "INTENT", "TARGET", "AGE"
-        ),
+        &format!("{h_id:<5} {h_intent:<8} {h_target:<12} {h_age:<6} {h_state}"),
         COLOR_MUTED,
         colored,
     )];
     for i in &intents {
+        let r = view::row(i, now);
         let state = match &i.state {
-            IntentState::Pending => paint("pending", COLOR_QUEUED, colored),
-            IntentState::Diverged { .. } => paint("diverged", COLOR_DIVERGED, colored),
-            IntentState::Parked { .. } => paint("parked", COLOR_MUTED, colored),
+            IntentState::Pending => paint(r.state, COLOR_QUEUED, colored),
+            IntentState::Diverged { .. } => paint(r.state, COLOR_DIVERGED, colored),
+            IntentState::Parked { .. } => paint(r.state, COLOR_MUTED, colored),
         };
         out.push(format!(
             "{:<5} {:<8} {:<12} {:<6} {state}",
-            i.id,
-            i.kind.word(),
-            i.stream,
-            fmt_age(age_s(i, now)),
+            r.id, r.intent, r.target, r.age,
         ));
     }
     // The divergence is the loud state: below the table, each waiting choice
@@ -271,7 +284,7 @@ fn exit_for(intents: &[Intent]) -> i32 {
 fn json_read(intents: &[Intent], now: i64) -> serde_json::Value {
     serde_json::json!({
         "depth": intents.len(),
-        "oldest_age_s": intents.first().map(|i| age_s(i, now)),
+        "oldest_age_s": intents.first().map(|i| view::age_s(i, now)),
         "diverged": intents.iter().filter(|i| i.is_diverged()).count(),
         "parked": intents.iter().filter(|i| i.is_parked()).count(),
         "intents": intents.iter().map(|i| {
@@ -279,8 +292,8 @@ fn json_read(intents: &[Intent], now: i64) -> serde_json::Value {
                 "id": i.id,
                 "verb": i.kind.word(),
                 "stream": i.stream,
-                "age_s": age_s(i, now),
-                "state": state_word(i),
+                "age_s": view::age_s(i, now),
+                "state": view::state_word(i),
                 "attempts": i.attempts,
             });
             // The stored objection rides along so a script can read the
@@ -309,28 +322,6 @@ fn json_read(intents: &[Intent], now: i64) -> serde_json::Value {
             v
         }).collect::<Vec<_>>(),
     })
-}
-
-fn state_word(i: &Intent) -> &'static str {
-    match i.state {
-        IntentState::Pending => "pending",
-        IntentState::Diverged { .. } => "diverged",
-        IntentState::Parked { .. } => "parked",
-    }
-}
-
-fn age_s(i: &Intent, now: i64) -> i64 {
-    (now - i.queued_at.as_second()).max(0)
-}
-
-/// `42s` · `7m` · `3h` · `2d` — the queue table's one-glance age.
-fn fmt_age(secs: i64) -> String {
-    match secs {
-        s if s < 60 => format!("{s}s"),
-        s if s < 3600 => format!("{}m", s / 60),
-        s if s < 86_400 => format!("{}h", s / 3600),
-        s => format!("{}d", s / 86_400),
-    }
 }
 
 // ---------------------------------------------------------------- sync
@@ -966,14 +957,6 @@ mod tests {
         assert_eq!(v["diverged"], false);
     }
 
-    #[test]
-    fn ages_read_at_a_glance() {
-        assert_eq!(fmt_age(42), "42s");
-        assert_eq!(fmt_age(420), "7m");
-        assert_eq!(fmt_age(7200), "2h");
-        assert_eq!(fmt_age(200_000), "2d");
-    }
-
     // -------------------------------------------------- resolve (#106)
 
     fn cached_running() -> Timer {
@@ -1485,6 +1468,76 @@ mod tests {
             store.intents().unwrap().is_empty(),
             "the one user-chosen delete"
         );
+    }
+
+    /// The standalone `engineer queue drop <id>` — the headless twin of the
+    /// board's `x`. Same engine and confirmation contract as `resolve <id>
+    /// --drop`: refused without `--force`, then the intent leaves the queue.
+    #[tokio::test]
+    async fn standalone_drop_requires_force_then_removes_the_intent() {
+        let dir = scratch();
+        let (store, id) = seeded_rejected_segment(&dir);
+
+        // Without --force: refused, nothing changes.
+        let outcome = dispatch(
+            &dead_api(),
+            &store,
+            None,
+            Some(QueueCmd::Drop { id, force: false }),
+            false,
+            false,
+            "false",
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.err[0].contains("--force"), "{}", outcome.err[0]);
+        assert_eq!(store.intents().unwrap().len(), 1, "nothing left the queue");
+
+        // With --force: gone, explicitly — the same JSON shape resolve --drop emits.
+        let outcome = dispatch(
+            &dead_api(),
+            &store,
+            None,
+            Some(QueueCmd::Drop { id, force: true }),
+            true,
+            false,
+            "false",
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, 0);
+        let v: serde_json::Value = serde_json::from_str(&outcome.out[0]).unwrap();
+        assert_eq!(v["outcome"], "dropped");
+        assert_eq!(v["verb"], "log");
+        assert!(store.intents().unwrap().is_empty(), "the standalone drop");
+    }
+
+    /// `drop <id>` on a non-diverged intent refuses through the shared engine
+    /// (drop is a divergence gesture) — the same refusal `resolve --drop` gives.
+    #[tokio::test]
+    async fn standalone_drop_refuses_a_pending_intent() {
+        let dir = scratch();
+        let store = seeded(&dir, 1);
+        let id = store.intents().unwrap()[0].id;
+        let outcome = dispatch(
+            &dead_api(),
+            &store,
+            None,
+            Some(QueueCmd::Drop { id, force: true }),
+            false,
+            false,
+            "false",
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, 1);
+        assert!(
+            outcome.err[0].contains("not waiting on a divergence"),
+            "{}",
+            outcome.err[0]
+        );
+        assert_eq!(store.intents().unwrap().len(), 1, "kept, not dropped");
     }
 
     #[tokio::test]

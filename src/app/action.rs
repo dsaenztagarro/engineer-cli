@@ -459,6 +459,24 @@ pub enum Action {
     /// clears the in-flight guard so the gesture can be retried.
     ConnectActionFailed,
 
+    // Queue inspector — the intent-log board (`src/app/screens/queue.rs`,
+    // `:queue`, `g q`). `QueueLoaded` carries the same `store.intents()` read
+    // the headless `engineer queue` table prints (one source of truth). The
+    // gestures: `r` retry (a reconnect drain streaming the shipped transcript),
+    // `x` drop the selected *diverged* write (armed → confirmed → the #109
+    // `drop_intent`), `⏎` route a diverged intent to the Timer's shipped
+    // reconcile panel. `QueueRefresh` reloads after a drain / drop lands.
+    QueueLoaded(Vec<Intent>),
+    QueueLoadFailed(String),
+    QueueRefresh,
+    QueueSelectMove(i32),
+    /// `r` — retry now: drain the queue through `drain_reporting`, then reload.
+    QueueRetry,
+    /// `x` — drop the selected diverged write (first press arms, second drops).
+    QueueDropSelected,
+    /// `⏎` — open a diverged intent's reconcile flow (routed to the Timer panel).
+    QueueOpenReconcile,
+
     // Quick-capture overlay (`src/app/capture.rs`). Reachable from any screen
     // via the `<Space>` leader; also opened pre-filled to edit an existing note
     // from the browser. `CaptureOpen*`/`CaptureClose`/`CaptureSaved` are handled
