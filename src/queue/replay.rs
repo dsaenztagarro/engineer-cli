@@ -401,6 +401,30 @@ async fn send_intent(
         // dedupe). A duplicate on a lost ack is benign — a study note is shelved
         // and archivable, never double-counted like a logged segment.
         IntentKind::NoteCreate { body } => api.create_note(body).await.map(|_| Ack::plain(false)),
+        // The note edit replays as a plain PATCH re-sending the whole body
+        // verbatim — anchors omitted or present exactly as enqueued, so the
+        // server's omit-vs-replace citation contract is honored on replay.
+        // Note-update is not in the opt-in set (ADR 0036), and a re-sent identical
+        // body is a benign upsert, so no key. A stored replay is indistinguishable
+        // from a first ack here, so report `false`.
+        IntentKind::NoteUpdate { id, body } => {
+            api.update_note(*id, body).await.map(|_| Ack::plain(false))
+        }
+        // Archive/unarchive/unlink replay as plain calls: a second archive finds
+        // it already archived, a second unlink already loose — naturally
+        // idempotent server-side, so no key. `false` (never a dedupe).
+        IntentKind::NoteArchive { id } => api.archive_note(*id).await.map(|_| Ack::plain(false)),
+        IntentKind::NoteUnarchive { id } => {
+            api.unarchive_note(*id).await.map(|_| Ack::plain(false))
+        }
+        IntentKind::NoteUnlink { id } => api.unlink_note(*id).await.map(|_| Ack::plain(false)),
+        // The book write replays as a plain PATCH re-sending the partial body
+        // (status/page/chapter) verbatim. Book-update is not in the opt-in set
+        // (ADR 0036) and re-applying the same value is naturally idempotent, so no
+        // key. `false` (never a dedupe).
+        IntentKind::BookUpdate { id, body } => {
+            api.update_book(*id, body).await.map(|_| Ack::plain(false))
+        }
     }
 }
 
@@ -1141,6 +1165,118 @@ mod tests {
         assert_eq!(report.deduped, 0, "a plain POST is never a stored replay");
         assert_eq!(report.remaining, 0);
         assert!(store.intents().unwrap().is_empty(), "the capture synced");
+    }
+
+    // --- note writes (#111): edit re-sends the body verbatim, archive/unlink
+    // replay plain ---
+
+    #[tokio::test]
+    async fn note_update_replays_as_a_plain_patch_with_the_body_verbatim() {
+        use crate::api::{Anchor, NoteInput};
+        let server = MockServer::start().await;
+        // No Idempotency-Key matcher: note-update is not in the opt-in set (ADR
+        // 0036). The whole body re-sends wrapped in the `note` key, anchors and
+        // all — the omit-vs-replace contract honored on the wire.
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/notes/7"))
+            .and(body_json(serde_json::json!({
+                "note": { "title": "MVCC", "book_id": 11, "anchors": [{ "chapter_id": 3, "section_id": 32 }] }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 7, "title": "MVCC", "book_id": 11
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("note-update");
+        store
+            .enqueue(IntentKind::NoteUpdate {
+                id: 7,
+                body: NoteInput {
+                    title: "MVCC".into(),
+                    book_id: Some(11),
+                    anchors: Some(vec![Anchor {
+                        chapter_id: Some(3),
+                        section_id: Some(32),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+
+        let report = drain(&client(&server), &store).await.unwrap();
+        assert_eq!(report.replayed, 1);
+        assert_eq!(report.deduped, 0, "a plain PATCH is never a stored replay");
+        assert_eq!(report.remaining, 0);
+        assert!(store.intents().unwrap().is_empty(), "the edit synced");
+    }
+
+    #[tokio::test]
+    async fn note_archive_and_unlink_replay_as_plain_calls() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/notes/5/archive"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 5, "title": "T", "archived_at": "2026-07-16T00:00:00Z"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/notes/5/unlink"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 5, "title": "T", "book_id": null, "book_linked": false
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("note-archive-unlink");
+        store.enqueue(IntentKind::NoteArchive { id: 5 }).unwrap();
+        store.enqueue(IntentKind::NoteUnlink { id: 5 }).unwrap();
+
+        let report = drain(&client(&server), &store).await.unwrap();
+        assert_eq!(report.replayed, 2);
+        assert_eq!(report.deduped, 0, "plain calls are never a stored replay");
+        assert_eq!(report.remaining, 0);
+    }
+
+    // --- book writes (#111): the partial body replays as a plain PATCH ---
+
+    #[tokio::test]
+    async fn book_update_replays_as_a_plain_patch() {
+        use crate::api::{BookStatus, BookUpdate};
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/books/7"))
+            .and(body_json(serde_json::json!({
+                "book": { "status": "completed" }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 7, "title": "SICP", "status": "completed"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("book-update");
+        store
+            .enqueue(IntentKind::BookUpdate {
+                id: 7,
+                body: BookUpdate {
+                    status: Some(BookStatus::Completed),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+
+        let report = drain(&client(&server), &store).await.unwrap();
+        assert_eq!(report.replayed, 1);
+        assert_eq!(report.deduped, 0, "a plain PATCH is never a stored replay");
+        assert_eq!(report.remaining, 0);
+        assert!(store.intents().unwrap().is_empty(), "the book write synced");
     }
 
     // --- target writes (#121): create replays keyed, adjust/retire replay plain,

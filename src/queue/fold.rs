@@ -107,7 +107,12 @@ pub fn fold_timer(
                 | IntentKind::TargetCreate { .. }
                 | IntentKind::TargetAdjust { .. }
                 | IntentKind::TargetRetire { .. }
-                | IntentKind::NoteCreate { .. },
+                | IntentKind::NoteCreate { .. }
+                | IntentKind::NoteUpdate { .. }
+                | IntentKind::NoteArchive { .. }
+                | IntentKind::NoteUnarchive { .. }
+                | IntentKind::NoteUnlink { .. }
+                | IntentKind::BookUpdate { .. },
                 _,
             ) => unreachable!("only timer-stream intents reach the timer fold"),
         });

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::{ActivityCreate, ConflictInfo, FieldError, NoteInput, TargetCreate};
+use crate::api::{ActivityCreate, BookUpdate, ConflictInfo, FieldError, NoteInput, TargetCreate};
 
 /// A single deferred write: a mutation the user performed while the wire was
 /// down, persisted until it replays. Stored only until it syncs — the queue is
@@ -185,6 +185,54 @@ pub enum IntentKind {
     NoteCreate {
         body: NoteInput,
     },
+    /// Revise a study note in place — a deferred `PATCH /api/v1/notes/:id` (the
+    /// browser's `e` edit overlay save, including the #124 chapter/section anchor
+    /// save). Carries the whole `NoteInput` body verbatim so the replay re-sends
+    /// it unchanged — crucially preserving the omit-vs-replace anchors contract:
+    /// a body with `anchors: None` omits the field on replay (citations stay
+    /// untouched), a body with `anchors: Some(_)` replaces them. Replays plain:
+    /// note update is not in the server's `Idempotency-Key` opt-in set (ADR
+    /// 0036), and a re-sent identical body is a benign upsert. Always a real
+    /// server id — an offline-created note isn't reachable to edit before it
+    /// syncs (the browse read is live), so no id-map stitching is needed. Stream
+    /// `"note:<id>"`: ordered behind any earlier queued write to the same note.
+    NoteUpdate {
+        id: i64,
+        body: NoteInput,
+    },
+    /// Shelve a note — a deferred `PATCH /api/v1/notes/:id/archive` (the
+    /// browser's `a` on an active note). Field-flip synthesis (`archived_at`
+    /// set); replays plain — a second archive finds it already archived, so it
+    /// is naturally idempotent. Stream `"note:<id>"`.
+    NoteArchive {
+        id: i64,
+    },
+    /// Restore a shelved note — a deferred `PATCH /api/v1/notes/:id/unarchive`
+    /// (the browser's `a` on an archived note). Field-flip synthesis
+    /// (`archived_at` cleared); replays plain (a second unarchive is idempotent).
+    /// Stream `"note:<id>"`.
+    NoteUnarchive {
+        id: i64,
+    },
+    /// Detach a note from its book — a deferred `PATCH /api/v1/notes/:id/unlink`
+    /// (the detail's `u`). The note survives; only its book anchor is severed.
+    /// Field-flip synthesis (`book_id` cleared, `book_linked` false); replays
+    /// plain (a second unlink finds it already loose). Stream `"note:<id>"`.
+    NoteUnlink {
+        id: i64,
+    },
+    /// Update a book in place — a deferred `PATCH /api/v1/books/:id` (the book
+    /// detail's `s` status flip, `p` page set, and `⎵` chapter-done). Carries the
+    /// whole partial `BookUpdate` body verbatim so the replay re-sends the exact
+    /// fields the user set; the offline synthesis field-flips them onto the
+    /// current book. Replays plain: a re-sent status/page/chapter set is
+    /// naturally idempotent (the same value re-applied), so book update is not in
+    /// the server's `Idempotency-Key` opt-in set (ADR 0036). Always a real server
+    /// id — books are never created offline. Stream `"book:<id>"`.
+    BookUpdate {
+        id: i64,
+        body: BookUpdate,
+    },
 }
 
 impl IntentKind {
@@ -226,6 +274,15 @@ impl IntentKind {
             // A fresh capture has no server id yet — it orders in the shared
             // note stream, like a plan or target declare.
             Self::NoteCreate { .. } => "note".into(),
+            // Edit/archive/unarchive/unlink key on the note they act on — the
+            // whole note's stream, ordered behind any earlier write to it.
+            Self::NoteUpdate { id, .. }
+            | Self::NoteArchive { id }
+            | Self::NoteUnarchive { id }
+            | Self::NoteUnlink { id } => format!("note:{id}"),
+            // Every book write keys on the row it edits — status, page, and
+            // chapter-done all order on the one book's stream.
+            Self::BookUpdate { id, .. } => format!("book:{id}"),
         }
     }
 
@@ -250,6 +307,11 @@ impl IntentKind {
             Self::TargetAdjust { .. } => "adjust",
             Self::TargetRetire { .. } => "retire",
             Self::NoteCreate { .. } => "capture",
+            Self::NoteUpdate { .. } => "edit",
+            Self::NoteArchive { .. } => "archive",
+            Self::NoteUnarchive { .. } => "unarchive",
+            Self::NoteUnlink { .. } => "unlink",
+            Self::BookUpdate { .. } => "book",
         }
     }
 }
@@ -408,6 +470,122 @@ mod tests {
         let json = serde_json::to_string(&capture).unwrap();
         assert!(json.contains(r#""verb":"note_create""#), "{json}");
         assert_eq!(serde_json::from_str::<IntentKind>(&json).unwrap(), capture);
+    }
+
+    #[test]
+    fn note_write_intents_roundtrip_and_key_their_note_stream() {
+        use crate::api::{Anchor, NoteInput};
+
+        let update = IntentKind::NoteUpdate {
+            id: 7,
+            body: NoteInput {
+                title: "MVCC".into(),
+                anchors: Some(vec![Anchor {
+                    chapter_id: Some(3),
+                    section_id: Some(32),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+        };
+        assert_eq!(update.word(), "edit");
+        assert_eq!(update.stream(), "note:7", "keyed on the note it edits");
+        let json = serde_json::to_string(&update).unwrap();
+        assert!(json.contains(r#""verb":"note_update""#), "{json}");
+        assert_eq!(serde_json::from_str::<IntentKind>(&json).unwrap(), update);
+
+        for (kind, word) in [
+            (IntentKind::NoteArchive { id: 7 }, "archive"),
+            (IntentKind::NoteUnarchive { id: 7 }, "unarchive"),
+            (IntentKind::NoteUnlink { id: 7 }, "unlink"),
+        ] {
+            assert_eq!(kind.word(), word);
+            assert_eq!(kind.stream(), "note:7", "keyed on the note it acts on");
+            let json = serde_json::to_string(&kind).unwrap();
+            assert!(json.contains(&format!(r#""verb":"note_{word}""#)), "{json}");
+            assert_eq!(serde_json::from_str::<IntentKind>(&json).unwrap(), kind);
+        }
+    }
+
+    #[test]
+    fn note_update_carries_the_omit_vs_replace_anchors_contract_through_serde() {
+        use crate::api::NoteInput;
+
+        // Omit: `anchors: None` must round-trip as absent — the replay PATCH then
+        // leaves the note's citations untouched (the NoteInput contract).
+        let omit = IntentKind::NoteUpdate {
+            id: 9,
+            body: NoteInput {
+                title: "kept".into(),
+                anchors: None,
+                ..Default::default()
+            },
+        };
+        let json = serde_json::to_string(&omit).unwrap();
+        assert!(
+            !json.contains("anchors"),
+            "an omitted anchor stays omitted: {json}"
+        );
+        match serde_json::from_str::<IntentKind>(&json).unwrap() {
+            IntentKind::NoteUpdate { body, .. } => assert!(body.anchors.is_none()),
+            other => panic!("expected NoteUpdate, got {other:?}"),
+        }
+
+        // Replace: an empty `Some(vec![])` is distinct from `None` — it replaces
+        // the citations with nothing, and must survive the round-trip as `Some`.
+        let replace = IntentKind::NoteUpdate {
+            id: 9,
+            body: NoteInput {
+                title: "cleared".into(),
+                anchors: Some(vec![]),
+                ..Default::default()
+            },
+        };
+        let json = serde_json::to_string(&replace).unwrap();
+        assert!(
+            json.contains(r#""anchors":[]"#),
+            "a replace sends the field: {json}"
+        );
+        match serde_json::from_str::<IntentKind>(&json).unwrap() {
+            IntentKind::NoteUpdate { body, .. } => {
+                assert_eq!(body.anchors, Some(vec![]), "Some(empty) is not None")
+            }
+            other => panic!("expected NoteUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn book_update_intent_roundtrips_and_keys_its_book_stream() {
+        use crate::api::{BookStatus, BookUpdate};
+
+        let status = IntentKind::BookUpdate {
+            id: 7,
+            body: BookUpdate {
+                status: Some(BookStatus::Completed),
+                ..Default::default()
+            },
+        };
+        assert_eq!(status.word(), "book");
+        assert_eq!(status.stream(), "book:7", "keyed on the book it edits");
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains(r#""verb":"book_update""#), "{json}");
+        assert!(json.contains(r#""status":"completed""#), "{json}");
+        assert_eq!(serde_json::from_str::<IntentKind>(&json).unwrap(), status);
+
+        // A page set carries only `current_page` — the partial body is verbatim.
+        let page = IntentKind::BookUpdate {
+            id: 7,
+            body: BookUpdate {
+                current_page: Some(142),
+                ..Default::default()
+            },
+        };
+        let json = serde_json::to_string(&page).unwrap();
+        assert!(
+            !json.contains("status"),
+            "an unset field stays omitted: {json}"
+        );
+        assert_eq!(serde_json::from_str::<IntentKind>(&json).unwrap(), page);
     }
 
     #[test]

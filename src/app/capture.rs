@@ -27,6 +27,8 @@ use tui_textarea::{CursorMove, TextArea};
 
 use crate::api::{derive_title_content, Anchor, AnchorData, ApiClient, Book, Note, NoteInput};
 use crate::app::action::Action;
+use crate::app::screens::{open_queued, QueuePaths};
+use crate::queue::WriteOutcome;
 use crate::ui::notify::Level;
 use crate::ui::picker::{Picker, PickerItem};
 use crate::ui::{layout::bordered, theme, widgets};
@@ -87,6 +89,9 @@ pub struct QuickCapture {
     book_query: String,
     book_results: Vec<Book>,
     book_state: ListState,
+    /// Queue + read-cache locations for the offline write seam — `None`
+    /// (production) uses the shared XDG paths, tests inject a scratch dir.
+    queue_paths: QueuePaths,
 }
 
 impl Default for QuickCapture {
@@ -111,6 +116,7 @@ impl Default for QuickCapture {
             book_query: String::new(),
             book_results: vec![],
             book_state: ListState::default(),
+            queue_paths: None,
         }
     }
 }
@@ -263,7 +269,13 @@ impl QuickCapture {
                     ));
                 }
                 self.pending = true;
-                spawn_save(api, tx, self.editing, self.build_input());
+                spawn_save(
+                    api,
+                    tx,
+                    self.queue_paths.clone(),
+                    self.editing,
+                    self.build_input(),
+                );
             }
             Action::CaptureSaveFailed => self.pending = false,
             Action::CaptureCancel => {
@@ -801,20 +813,44 @@ fn anchor_items(data: &AnchorData) -> Vec<PickerItem<AnchorChoice>> {
     items
 }
 
+/// Save the draft through the offline write seam — one editor, two verbs: a
+/// PATCH when editing (the browser's `e`, anchor save and all), a POST for a
+/// fresh capture. Offline, both queue and the overlay closes just the same (a
+/// muted "queued (offline)" replaces the confirm); a live problem or auth error
+/// keeps the draft open with the guard released so the note is never lost.
 fn spawn_save(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
+    paths: QueuePaths,
     editing: Option<i64>,
     body: NoteInput,
 ) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Error,
+                    text: format!("save failed: {e}"),
+                });
+                let _ = tx.send(Action::CaptureSaveFailed);
+                return;
+            }
+        };
         let res = match editing {
-            Some(id) => api.update_note(id, &body).await,
-            None => api.create_note(&body).await,
+            Some(id) => queued.update_note(id, &body).await,
+            None => queued.create_note(&body).await,
         };
         match res {
-            Ok(_) => {
+            Ok(WriteOutcome::Confirmed(_)) => {
+                let _ = tx.send(Action::CaptureSaved);
+            }
+            Ok(WriteOutcome::Provisional(_)) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Info,
+                    text: "queued (offline) — will sync".into(),
+                });
                 let _ = tx.send(Action::CaptureSaved);
             }
             Err(e) => {
@@ -918,12 +954,76 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
+    /// A base URL nothing listens on — reqwest fails before any response, which
+    /// is exactly `ApiError::Transport`, the offline seam's trigger.
+    fn dead_api() -> ApiClient {
+        ApiClient::with_token(
+            url::Url::parse("http://127.0.0.1:1/").unwrap(),
+            "tok".into(),
+        )
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("engineer-capture-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[tokio::test]
     async fn save_with_content_marks_pending() {
         let (mut s, api, tx, _rx) = setup();
+        // A scratch queue so the spawned save never touches the shared XDG state.
+        let dir = scratch("pending");
+        s.queue_paths = Some((dir.join("queue.json"), dir.join("timer-cache.json")));
         type_content(&mut s, &api, &tx, "a real thought").await;
         s.handle(Action::CaptureSave, &api, &tx).await;
         assert!(s.pending);
+    }
+
+    #[tokio::test]
+    async fn offline_edit_save_queues_a_note_update_with_the_body() {
+        // The edit overlay's PATCH (the #124 anchor save) rides the queue: an
+        // offline save of an edit enqueues a NoteUpdate carrying the body.
+        let dir = scratch("edit");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let note: Note = serde_json::from_value(serde_json::json!({
+            "id": 55, "title": "MVCC", "content": "MVCC keeps one version",
+            "book_id": 11, "book_title": "SICP"
+        }))
+        .unwrap();
+        let mut s = QuickCapture::for_edit(note);
+        s.queue_paths = Some((dir.join("queue.json"), dir.join("timer-cache.json")));
+        s.handle(Action::CaptureSave, &dead_api(), &tx).await;
+        assert!(s.pending);
+
+        // Offline → the save queues and reports it; the overlay still closes.
+        let mut saw_saved = false;
+        for _ in 0..3 {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .expect("an action within 5s")
+                .expect("an action")
+            {
+                Action::CaptureSaved => {
+                    saw_saved = true;
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        assert!(
+            saw_saved,
+            "an offline save still confirms (the draft is safe)"
+        );
+
+        let intents = crate::queue::QueueStore::at(dir.join("queue.json"))
+            .pending()
+            .unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].kind.word(), "edit");
+        assert_eq!(intents[0].stream, "note:55");
     }
 
     #[test]

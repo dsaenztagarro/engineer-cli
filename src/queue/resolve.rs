@@ -632,7 +632,12 @@ fn compose_local_session(
             | IntentKind::TargetCreate { .. }
             | IntentKind::TargetAdjust { .. }
             | IntentKind::TargetRetire { .. }
-            | IntentKind::NoteCreate { .. } => {
+            | IntentKind::NoteCreate { .. }
+            | IntentKind::NoteUpdate { .. }
+            | IntentKind::NoteArchive { .. }
+            | IntentKind::NoteUnarchive { .. }
+            | IntentKind::NoteUnlink { .. }
+            | IntentKind::BookUpdate { .. } => {
                 unreachable!("a non-timer write never shares a timer session's stream")
             }
         }

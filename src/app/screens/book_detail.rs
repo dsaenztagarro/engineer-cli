@@ -7,8 +7,11 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::{ApiClient, Book, BookChapter, BookStatus, BookUpdate};
 use crate::app::action::Action;
+use crate::queue::WriteOutcome;
 use crate::ui::notify::Level;
 use crate::ui::{layout::bordered, theme, widgets};
+
+use super::{notify_seam_error, open_queued, QueuePaths};
 
 /// The status picker's rows, in display order. The `r/c/u/h/a` mnemonics and the
 /// kit's pill vocabulary (` reading `/` done `/` unread `/` hold `/` stop `) key
@@ -28,6 +31,9 @@ pub struct BookDetail {
     edit_page: Option<String>,
     /// The status picker modal's cursor, `Some` while it's open.
     status_picker: Option<ListState>,
+    /// Queue + read-cache locations for the offline write seam — `None`
+    /// (production) uses the shared XDG paths, tests inject a scratch dir.
+    queue_paths: QueuePaths,
 }
 
 impl Default for BookDetail {
@@ -40,6 +46,7 @@ impl Default for BookDetail {
             state,
             edit_page: None,
             status_picker: None,
+            queue_paths: None,
         }
     }
 }
@@ -105,30 +112,18 @@ impl BookDetail {
             Action::SubmitPage => {
                 if let (Some(book), Some(buf)) = (&self.book, &self.edit_page) {
                     if let Ok(page) = buf.parse::<u32>() {
-                        let id = book.id;
-                        let api = api.clone();
-                        let tx = tx.clone();
-                        let body = BookUpdate {
-                            current_page: Some(page),
-                            ..Default::default()
-                        };
-                        tokio::spawn(async move {
-                            match api.update_book(id, &body).await {
-                                Ok(b) => {
-                                    let _ = tx.send(Action::BookUpdated(Box::new(b)));
-                                    let _ = tx.send(Action::Notify {
-                                        level: Level::Success,
-                                        text: "page updated".into(),
-                                    });
-                                }
-                                Err(e) => {
-                                    let _ = tx.send(Action::Notify {
-                                        level: Level::Error,
-                                        text: format!("update failed: {e}"),
-                                    });
-                                }
-                            }
-                        });
+                        spawn_book_update(
+                            api,
+                            tx,
+                            self.queue_paths.clone(),
+                            book.clone(),
+                            BookUpdate {
+                                current_page: Some(page),
+                                ..Default::default()
+                            },
+                            Some("page updated".into()),
+                            format!("page {page} · queued (offline) — will sync"),
+                        );
                     }
                 }
                 self.edit_page = None;
@@ -136,28 +131,19 @@ impl BookDetail {
             Action::ToggleChapterDone => {
                 if let Some(chapter) = self.selected_chapter().cloned() {
                     if let Some(book) = &self.book {
-                        let id = book.id;
-                        let chapter_id = chapter.id;
-                        let api = api.clone();
-                        let tx = tx.clone();
                         // Mark this chapter as current and advance cursor.
-                        let body = BookUpdate {
-                            current_chapter_id: Some(chapter_id),
-                            ..Default::default()
-                        };
-                        tokio::spawn(async move {
-                            match api.update_book(id, &body).await {
-                                Ok(b) => {
-                                    let _ = tx.send(Action::BookUpdated(Box::new(b)));
-                                }
-                                Err(e) => {
-                                    let _ = tx.send(Action::Notify {
-                                        level: Level::Error,
-                                        text: format!("update failed: {e}"),
-                                    });
-                                }
-                            }
-                        });
+                        spawn_book_update(
+                            api,
+                            tx,
+                            self.queue_paths.clone(),
+                            book.clone(),
+                            BookUpdate {
+                                current_chapter_id: Some(chapter.id),
+                                ..Default::default()
+                            },
+                            None,
+                            "chapter · queued (offline) — will sync".into(),
+                        );
                         self.move_cursor(1);
                     }
                 }
@@ -187,30 +173,18 @@ impl BookDetail {
             Action::BookStatusConfirm => {
                 if let (Some(state), Some(book)) = (self.status_picker.as_ref(), &self.book) {
                     let status = STATUSES[state.selected().unwrap_or(0)];
-                    let id = book.id;
-                    let api = api.clone();
-                    let tx = tx.clone();
-                    let body = BookUpdate {
-                        status: Some(status),
-                        ..Default::default()
-                    };
-                    tokio::spawn(async move {
-                        match api.update_book(id, &body).await {
-                            Ok(b) => {
-                                let _ = tx.send(Action::BookUpdated(Box::new(b)));
-                                let _ = tx.send(Action::Notify {
-                                    level: Level::Success,
-                                    text: format!("status → {}", status.label()),
-                                });
-                            }
-                            Err(e) => {
-                                let _ = tx.send(Action::Notify {
-                                    level: Level::Error,
-                                    text: format!("update failed: {e}"),
-                                });
-                            }
-                        }
-                    });
+                    spawn_book_update(
+                        api,
+                        tx,
+                        self.queue_paths.clone(),
+                        book.clone(),
+                        BookUpdate {
+                            status: Some(status),
+                            ..Default::default()
+                        },
+                        Some(format!("status → {}", status.label())),
+                        format!("status → {} · queued (offline) — will sync", status.label()),
+                    );
                 }
                 self.status_picker = None;
             }
@@ -398,6 +372,56 @@ fn status_index(status: BookStatus) -> usize {
     STATUSES.iter().position(|&s| s == status).unwrap_or(0)
 }
 
+/// Route a book write through the offline seam — the shared arm behind the
+/// detail's three writes (`s` status, `p` page, `⎵` chapter-done). Live, the
+/// server's recomputed book (progress, chapter marks) feeds the detail; offline,
+/// the seam field-flips `current` and the queued stand-in feeds it just the same
+/// (progress stays at its last-known reading, honest until the drain), with a
+/// muted "queued (offline)" line. `ok_msg` is the confirmed-only success line
+/// (chapter-done stays silent, `None`).
+fn spawn_book_update(
+    api: &ApiClient,
+    tx: &UnboundedSender<Action>,
+    paths: QueuePaths,
+    current: Book,
+    body: BookUpdate,
+    ok_msg: Option<String>,
+    queued_msg: String,
+) {
+    let id = current.id;
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => return notify_seam_error(&tx, "update failed", e),
+        };
+        match queued.update_book(id, &body, &current).await {
+            Ok(WriteOutcome::Confirmed(b)) => {
+                let _ = tx.send(Action::BookUpdated(Box::new(b)));
+                if let Some(msg) = ok_msg {
+                    let _ = tx.send(Action::Notify {
+                        level: Level::Success,
+                        text: msg,
+                    });
+                }
+            }
+            Ok(WriteOutcome::Provisional(b)) => {
+                let _ = tx.send(Action::BookUpdated(Box::new(b)));
+                let _ = tx.send(Action::Notify {
+                    level: Level::Info,
+                    text: queued_msg,
+                });
+            }
+            Err(e) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Error,
+                    text: format!("update failed: {e}"),
+                });
+            }
+        }
+    });
+}
+
 /// A fixed-size rectangle centered in `area`, clamped to fit.
 fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.width);
@@ -429,6 +453,20 @@ mod tests {
     fn dev_api() -> ApiClient {
         let config = Config::for_environment(Environment::Development);
         ApiClient::with_token(config.api_url.clone(), "tok".into())
+    }
+
+    /// A base URL nothing listens on — reqwest fails before any response, which
+    /// is exactly `ApiError::Transport`, the offline seam's trigger.
+    fn dead_api() -> ApiClient {
+        ApiClient::with_token(Url::parse("http://127.0.0.1:1/").unwrap(), "tok".into())
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("engineer-book-detail-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     async fn loaded(
@@ -559,6 +597,10 @@ mod tests {
         let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut s = loaded(&api, &tx, "reading").await;
+        // A scratch queue so the live write's drain-before-write never touches
+        // the shared XDG state.
+        let dir = scratch("confirm");
+        s.queue_paths = Some((dir.join("queue.json"), dir.join("timer-cache.json")));
 
         s.handle(Action::BookStatusPicker, &api, &tx).await;
         s.handle(Action::BookStatusSelect(BookStatus::OnHold), &api, &tx)
@@ -590,6 +632,59 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn offline_status_confirm_queues_a_book_update_and_flips_the_pill() {
+        let dir = scratch("offline-status");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = loaded(&dead_api(), &tx, "reading").await;
+        s.queue_paths = Some((dir.join("queue.json"), dir.join("timer-cache.json")));
+
+        s.handle(Action::BookStatusPicker, &dead_api(), &tx).await;
+        s.handle(
+            Action::BookStatusSelect(BookStatus::OnHold),
+            &dead_api(),
+            &tx,
+        )
+        .await;
+        s.handle(Action::BookStatusConfirm, &dead_api(), &tx).await;
+
+        // Offline: the seam field-flips the current book and feeds it back, then
+        // an Info "queued (offline)" line.
+        let first = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("BookUpdated within 5s")
+            .expect("an action");
+        let updated = match first {
+            Action::BookUpdated(b) => b,
+            other => panic!("expected BookUpdated, got {other:?}"),
+        };
+        s.handle(Action::BookUpdated(updated), &dead_api(), &tx)
+            .await;
+        assert_eq!(
+            s.book.as_ref().unwrap().status,
+            BookStatus::OnHold,
+            "the provisional flip reflects locally"
+        );
+        let second = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("notify within 5s")
+            .expect("an action");
+        assert!(matches!(
+            second,
+            Action::Notify {
+                level: Level::Info,
+                ..
+            }
+        ));
+
+        let intents = crate::queue::QueueStore::at(dir.join("queue.json"))
+            .pending()
+            .unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].kind.word(), "book");
+        assert_eq!(intents[0].stream, "book:7");
     }
 
     #[tokio::test]
