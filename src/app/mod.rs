@@ -684,6 +684,19 @@ impl App {
             }
             Command::Note(None) => self.dispatch(Action::CaptureOpen),
             Command::Note(Some(text)) => self.dispatch(Action::CaptureOpenText(text)),
+            // `:log` = the `a` gesture from anywhere — open the activity capture
+            // form. The headless after-the-fact capture ships as `engineer log`
+            // (#87); the form is structured (title/kind/duration/notes) with no
+            // free-text seed, so the palette verb takes no payload.
+            Command::Log => self.dispatch(Action::Goto(ScreenKind::ActivityNew)),
+            // `:target` routes to Progress and opens the declare flow (the
+            // screen's `n`). The Goto lands first, so `ProgressDeclareBegin`
+            // reaches the now-current Progress screen; adjust/retire stay on its
+            // `e`/`x`. Full word only — `:t` is pinned to the timer.
+            Command::Target => {
+                self.dispatch(Action::Goto(ScreenKind::Progress));
+                self.dispatch(Action::ProgressDeclareBegin);
+            }
             Command::Quit => self.should_quit = true,
             Command::Write => self.dispatch(Action::ActivitySubmit),
             Command::Logs => match Config::log_dir() {
@@ -1383,6 +1396,70 @@ mod tests {
         app.handle(opened.unwrap()).await;
         assert!(app.capture.is_some());
         assert!(rendered_text(&mut app).contains("closures are objects"));
+    }
+
+    #[tokio::test]
+    async fn command_log_opens_the_activity_capture_form() {
+        let (mut app, mut rx) = test_app(Some("alice@example.com".into()));
+        // `:log` is the `a` gesture from anywhere — it routes to the activity
+        // capture form (ActivityNew), the same destination `a` opens.
+        submit_command(&mut app, "log").await;
+        let goto = drain(&mut rx)
+            .into_iter()
+            .find(|a| matches!(a, Action::Goto(ScreenKind::ActivityNew)));
+        assert!(goto.is_some(), "expected a Goto(ActivityNew)");
+        app.handle(goto.unwrap()).await;
+        assert_eq!(app.current.kind(), ScreenKind::ActivityNew);
+    }
+
+    #[tokio::test]
+    async fn command_target_lands_on_progress_and_opens_declare() {
+        let (mut app, mut rx) = test_app(Some("alice@example.com".into()));
+        // `:target` navigates to Progress and starts the declare flow. The two
+        // actions enqueue in order — Goto first, then ProgressDeclareBegin —
+        // so the begin reaches the now-current Progress screen.
+        submit_command(&mut app, "target").await;
+        let actions = drain(&mut rx);
+        let goto = actions
+            .iter()
+            .position(|a| matches!(a, Action::Goto(ScreenKind::Progress)));
+        let begin = actions
+            .iter()
+            .position(|a| matches!(a, Action::ProgressDeclareBegin));
+        assert!(goto.is_some(), "expected a Goto(Progress)");
+        assert!(begin.is_some(), "expected a ProgressDeclareBegin");
+        assert!(goto < begin, "Goto must land before the declare begins");
+        // Land on Progress, seed a loaded week (the screen renders the declare
+        // overlay only over loaded meters), then let the declare begin — the
+        // overlay must open.
+        app.handle(Action::Goto(ScreenKind::Progress)).await;
+        let progress = serde_json::from_value(serde_json::json!({
+            "week": {
+                "id": "2026-W29", "monday": "2026-07-13", "sunday": "2026-07-19",
+                "elapsed_days": 4, "now_fraction": 0.5714
+            },
+            "totals": { "actual_minutes": 0, "activity_count": 0, "thin": false }
+        }))
+        .unwrap();
+        app.handle(Action::ProgressLoaded(Box::new(progress))).await;
+        app.handle(Action::ProgressDeclareBegin).await;
+        assert_eq!(app.current.kind(), ScreenKind::Progress);
+        assert!(
+            rendered_text(&mut app).contains("declare a target"),
+            "the declare overlay should be open"
+        );
+    }
+
+    #[tokio::test]
+    async fn command_t_prefix_still_resolves_to_the_timer() {
+        // The muscle-memory guard, exercised end-to-end through the palette:
+        // adding `:target` must not make `:t` ambiguous. `:t` navigates to the
+        // timer, not the new verb.
+        let (mut app, mut rx) = test_app(Some("alice@example.com".into()));
+        submit_command(&mut app, "t").await;
+        assert!(drain(&mut rx)
+            .iter()
+            .any(|a| matches!(a, Action::Goto(ScreenKind::Timer))));
     }
 
     #[tokio::test]

@@ -3,15 +3,19 @@
 //! One static table (`ENTRIES`) pins the verb inventory from the daily-loop
 //! brief (§5, command-palette.html): navigation (`:home` `:books`
 //! `:activities` `:notes` `:review` `:progress` `:week` `:timer`), actions
-//! (`:timer start|pause|resume|stop`, `:note <text>`) and housekeeping (`:q`
+//! (`:timer start|pause|resume|stop`, `:note <text>`, `:log` the activity
+//! capture form, `:target` the Progress declare flow) and housekeeping (`:q`
 //! `:logs` `:w` `:logout`, plus `:help`). The dispatcher, Tab completion, the
 //! inline line-state hints, and `:help` all read this one table, so the grammar
 //! never drifts between what runs and what the UI advertises.
 //!
 //! Resolution is vim-flavoured: an exact verb or alias wins; otherwise an
 //! unambiguous prefix resolves (`:act` → activities, `:t start` → timer start),
-//! and an ambiguous prefix (`:l` → logs/logout) reports its candidates rather
-//! than guessing.
+//! and an ambiguous prefix (`:l` → log/logs/logout) reports its candidates
+//! rather than guessing. `:target` ships as a full word only, with **no**
+//! `t`-prefixed alias: `timer` carries the exact alias `t` so `:t` still wins
+//! for the timer (exact beats prefix), the same way `:w` stays the write alias
+//! next to `:week`. So `:t` → timer, `:ta` → target, `:ti` → timer.
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -50,6 +54,11 @@ pub enum Target {
     Timer,
     /// Opens quick-capture, prefilled when text is supplied.
     Note,
+    /// Opens the activity capture form (the `a` gesture, from any screen).
+    Log,
+    /// Opens the Progress screen and starts the declare flow (the `:target`
+    /// verb; named for the dispatch, not the verb, to avoid the enum stutter).
+    Declare,
     Quit,
     Write,
     Logs,
@@ -152,7 +161,10 @@ pub const ENTRIES: &[Entry] = &[
     },
     Entry {
         verb: "timer",
-        aliases: &[],
+        // `t` is pinned to the timer as an exact alias so `:t` keeps resolving
+        // here (exact beats prefix) even though `target` also starts with `t` —
+        // the tested muscle-memory binding survives the new verb.
+        aliases: &["t"],
         kind: Kind::Nav,
         arg: Arg::Enum(TimerVerb::NAMES),
         help: "timer screen · start|pause|resume|stop",
@@ -165,6 +177,25 @@ pub const ENTRIES: &[Entry] = &[
         arg: Arg::Text,
         help: "quick-capture, prefilled with <text>",
         target: Target::Note,
+    },
+    Entry {
+        verb: "log",
+        aliases: &[],
+        kind: Kind::Action,
+        arg: Arg::None,
+        help: "log a completed activity",
+        target: Target::Log,
+    },
+    Entry {
+        verb: "target",
+        // Full word only — deliberately no `t`-prefixed alias; see the module
+        // doc. The Progress screen owns adjust (`e`) / retire (`x`); the verb
+        // opens the declare flow.
+        aliases: &[],
+        kind: Kind::Action,
+        arg: Arg::None,
+        help: "declare a weekly target (Progress)",
+        target: Target::Declare,
     },
     Entry {
         verb: "logs",
@@ -229,6 +260,10 @@ pub enum Command {
     Timer(TimerVerb),
     /// `None` opens a blank capture; `Some` prefills it with the text.
     Note(Option<String>),
+    /// Open the activity capture form.
+    Log,
+    /// Open the Progress screen and start the declare flow.
+    Target,
     Quit,
     Write,
     Logs,
@@ -354,6 +389,10 @@ fn build(entry: &Entry, arg: &str) -> Parse {
             }
         }
         Target::Note => Parse::Run(Command::Note((!arg.is_empty()).then(|| arg.to_string()))),
+        // Bare verbs — the activity form / declare flow ignore a stray argument
+        // (the form is structured; there is no free-text payload to route).
+        Target::Log => Parse::Run(Command::Log),
+        Target::Declare => Parse::Run(Command::Target),
         Target::Quit => Parse::Run(Command::Quit),
         Target::Write => Parse::Run(Command::Write),
         Target::Logs => Parse::Run(Command::Logs),
@@ -644,7 +683,8 @@ mod tests {
 
     #[test]
     fn ambiguous_prefixes_report_all_candidates() {
-        assert_eq!(parse("l"), Parse::Ambiguous(vec!["logs", "logout"]));
+        // `log` (the new capture verb) joins logs/logout under the `l` prefix.
+        assert_eq!(parse("l"), Parse::Ambiguous(vec!["log", "logs", "logout"]));
         assert_eq!(parse("h"), Parse::Ambiguous(vec!["home", "help"]));
         // note (action) and notes (nav) share the whole "note" stem.
         assert_eq!(parse("n"), Parse::Ambiguous(vec!["notes", "note"]));
@@ -664,14 +704,22 @@ mod tests {
 
     #[test]
     fn completion_extends_to_the_longest_common_prefix() {
-        // Lone match that takes an argument opens the slot.
-        assert_eq!(complete("t"), "timer ");
+        // `timer` and `target` now share the bare `t` prefix, so completion
+        // stops at the branch point (the `:t` → timer alias still runs it, and
+        // the inline hint names the resolution).
+        assert_eq!(complete("t"), "t");
+        // Past the branch point each side completes: `ti` → timer (opens the
+        // argument slot), `ta` → target (no argument).
+        assert_eq!(complete("ti"), "timer ");
         assert_eq!(complete("time"), "timer ");
+        assert_eq!(complete("ta"), "target");
         // Lone match with no argument completes fully.
         assert_eq!(complete("boo"), "books");
         assert_eq!(complete("act"), "activities");
         // note / notes share the "note" stem.
         assert_eq!(complete("n"), "note");
+        // log / logs / logout share the "log" stem.
+        assert_eq!(complete("lo"), "log");
         // Argument completion: start / stop share "st".
         assert_eq!(complete("timer s"), "timer st");
         assert_eq!(complete("timer p"), "timer pause");
@@ -704,6 +752,50 @@ mod tests {
         assert!(s.contains("home"));
         assert!(s.contains("timer[start|pause|resume|stop]"));
         assert!(s.contains("note <text>"));
+        // The two new action verbs appear in the actions group.
+        assert!(s.contains("log"));
+        assert!(s.contains("target"));
         assert!(s.contains("logout"));
+    }
+
+    #[test]
+    fn log_and_target_verbs_resolve() {
+        // `:log` opens the activity capture form; a stray argument is ignored
+        // (the form is structured — there is no free-text payload to route).
+        assert_eq!(cmd("log"), Command::Log);
+        assert_eq!(cmd("log 45m reading"), Command::Log);
+        // `:target` opens the Progress declare flow; full word and unique
+        // prefixes past the `t` branch resolve.
+        assert_eq!(cmd("target"), Command::Target);
+        assert_eq!(cmd("ta"), Command::Target);
+        assert_eq!(cmd("tar"), Command::Target);
+    }
+
+    #[test]
+    fn target_is_a_full_word_and_never_steals_the_timer_prefix() {
+        // The whole point of the deferral: adding `target` must not break `:t`.
+        // `t` is an exact alias of timer, so exact wins over the shared prefix.
+        assert_eq!(cmd("t"), Command::Nav(ScreenKind::Timer));
+        assert_eq!(cmd("t start"), Command::Timer(TimerVerb::Start));
+        // `ti`/`tim` stay timer by prefix; only `ta…` reaches target.
+        assert_eq!(cmd("ti"), Command::Nav(ScreenKind::Timer));
+        assert_eq!(cmd("tim"), Command::Nav(ScreenKind::Timer));
+        // `target` carries no `t`-prefixed alias — the alias lives on timer.
+        let target = ENTRIES.iter().find(|e| e.verb == "target").unwrap();
+        assert!(target.aliases.is_empty());
+        // And `:t` never lands as an ambiguous prefix.
+        assert!(matches!(
+            parse("t"),
+            Parse::Run(Command::Nav(ScreenKind::Timer))
+        ));
+    }
+
+    #[test]
+    fn log_verb_hint_and_completion_follow_the_table() {
+        // Resolved-verb hint reads the table's help.
+        assert!(hint("log").text.contains("log a completed activity"));
+        assert!(hint("target").text.contains("declare a weekly target"));
+        // The `t` branch hint names the timer resolution (exact alias).
+        assert!(hint("t").text.contains("timer"));
     }
 }
