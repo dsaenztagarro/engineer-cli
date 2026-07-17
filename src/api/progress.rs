@@ -110,8 +110,12 @@ impl PaceState {
 /// a successor), so a lineage is addressed by axis + scope, not by id.
 // Only `scope` and `hours_per_week` drive the meter today; the rest mirror the
 // wire format for parity with the web/MCP consumers.
+// `Default` lets the offline target-write seam synthesize a provisional row from
+// only what a queued gesture knows (a negative id + the hours), the scope left
+// empty — the caller renders such a stand-in from its own label, never the
+// scope (`QueuedClient::adjust_target`/`retire_target`).
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct TargetRef {
     pub id: i64,
     pub axis: String,
@@ -127,7 +131,7 @@ pub struct TargetRef {
 /// domain id and `domain` is inlined; for kind/intent targets `value` is the
 /// enum string and `domain` is absent.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct Scope {
     pub axis: String,
     #[serde(default)]

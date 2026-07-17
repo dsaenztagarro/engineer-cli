@@ -12,7 +12,8 @@
 use std::path::PathBuf;
 
 use crate::api::{
-    Activity, ActivityCreate, ActivityUpdate, ApiClient, ApiError, Timer, TimerStopped, WeekNote,
+    Activity, ActivityCreate, ActivityUpdate, ApiClient, ApiError, TargetCreate, TargetRef, Timer,
+    TimerStopped, WeekNote,
 };
 use crate::timer_cache;
 use crate::timer_clock;
@@ -32,6 +33,12 @@ pub const PROVISIONAL_SEGMENT_ID: i64 = -1;
 /// server-minted on replay, so the provisional row carries a negative sentinel
 /// and the board renders it `◔ … queued` instead of a real activity id.
 pub const PROVISIONAL_ACTIVITY_ID: i64 = -1;
+
+/// A stand-in `id` for a target declared while offline — a negative sentinel
+/// like [`PROVISIONAL_ACTIVITY_ID`], so the Progress screen renders the declare
+/// as queued rather than a real target id (the caller draws the queued line from
+/// its own label; this provisional value is discarded).
+pub const PROVISIONAL_TARGET_ID: i64 = -1;
 
 /// How a write landed: on the server, or into the queue with a locally
 /// synthesized stand-in the caller renders as provisional.
@@ -442,6 +449,97 @@ impl QueuedClient {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Declare a weekly target — the Progress `n` flow (`POST /api/v1/targets`).
+    /// Drain-before-live, then the live POST; offline it enqueues an
+    /// [`IntentKind::TargetCreate`] carrying the whole body and returns a
+    /// provisional negative-id row the screen renders as queued. Like a plan
+    /// create, an offline declare needs no cached snapshot — a fresh target is
+    /// legitimate with nothing local to fold.
+    pub async fn create_target(
+        &self,
+        create: &TargetCreate,
+    ) -> Result<WriteOutcome<TargetRef>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.create_target(create).await {
+            Ok(t) => Ok(WriteOutcome::Confirmed(t)),
+            Err(ApiError::Transport(_)) => self.defer_target(
+                IntentKind::TargetCreate {
+                    body: create.clone(),
+                },
+                TargetRef {
+                    id: PROVISIONAL_TARGET_ID,
+                    hours_per_week: create.hours_per_week,
+                    active: true,
+                    ..Default::default()
+                },
+            ),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Adjust a target's weekly hours (Progress `e`). Offline enqueues an
+    /// [`IntentKind::TargetAdjust`]; the replay re-addresses a closed version to
+    /// the lineage's live row (ADR 0026). A confirmed adjust returns the LIVE row
+    /// — its id may differ when the edit minted a successor version, so the caller
+    /// re-reads rather than trusting the addressed id.
+    pub async fn adjust_target(
+        &self,
+        id: i64,
+        hours: f64,
+    ) -> Result<WriteOutcome<TargetRef>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.update_target(id, hours).await {
+            Ok(t) => Ok(WriteOutcome::Confirmed(t)),
+            Err(ApiError::Transport(_)) => self.defer_target(
+                IntentKind::TargetAdjust { id, hours },
+                TargetRef {
+                    id,
+                    hours_per_week: hours,
+                    active: true,
+                    ..Default::default()
+                },
+            ),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Retire a target — close the lineage, never delete (Progress `x`). Offline
+    /// enqueues an [`IntentKind::TargetRetire`] and returns the row marked
+    /// retired; the replay is a plain call (a second retire is idempotent).
+    pub async fn retire_target(&self, id: i64) -> Result<WriteOutcome<TargetRef>, ApiError> {
+        self.drain_best_effort().await;
+        match self.api.retire_target(id).await {
+            Ok(t) => Ok(WriteOutcome::Confirmed(t)),
+            Err(ApiError::Transport(_)) => self.defer_target(
+                IntentKind::TargetRetire { id },
+                TargetRef {
+                    id,
+                    active: false,
+                    retired: true,
+                    ..Default::default()
+                },
+            ),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The offline arm the target-write verbs share — the [`defer_activity`]
+    /// twin for [`TargetRef`]: enqueue first (the gesture must never be lost),
+    /// then return the provisional stand-in. No cached snapshot is needed — a
+    /// target write names its own row.
+    ///
+    /// [`defer_activity`]: Self::defer_activity
+    fn defer_target(
+        &self,
+        kind: IntentKind,
+        provisional: TargetRef,
+    ) -> Result<WriteOutcome<TargetRef>, ApiError> {
+        self.store.enqueue(kind).map_err(|e| {
+            ApiError::Transport(format!("offline, and queueing the write failed: {e}"))
+        })?;
+        Ok(WriteOutcome::Provisional(provisional))
     }
 
     /// The offline arm the plan-write verbs share: enqueue the intent (the
@@ -956,5 +1054,116 @@ mod tests {
         assert_eq!(intents.len(), 1);
         assert_eq!(intents[0].kind.word(), "reflect");
         assert_eq!(intents[0].stream, "week:2026-W29");
+    }
+
+    // --- target writes (#121): declare / adjust / retire through the seam ---
+
+    #[tokio::test]
+    async fn live_declare_is_confirmed_and_queues_nothing() {
+        use crate::api::{TargetCreate, TargetScope};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/targets"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 42, "axis": "domain",
+                "scope": { "axis": "domain", "value": 7, "domain": { "id": 7, "name": "Distributed Systems" } },
+                "hours_per_week": 6.0, "active": true, "retired": false
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let dir = tmp_dir("live-declare");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let create = TargetCreate {
+            scope: TargetScope::Domain(7),
+            hours_per_week: 6.0,
+        };
+        let out = queued.create_target(&create).await.unwrap();
+        assert!(!out.is_provisional());
+        assert_eq!(out.value().id, 42);
+        assert_eq!(out.value().scope.name(), "Distributed Systems");
+        assert_eq!(queued.queue_summary().depth, 0);
+    }
+
+    #[tokio::test]
+    async fn offline_declare_enqueues_and_synthesizes_a_provisional_row() {
+        // The dead-address offline declare (#121): a fresh target needs no cached
+        // snapshot — a negative-id provisional row is always legitimate.
+        use crate::api::{TargetCreate, TargetScope};
+        let api = dead_api();
+        let dir = tmp_dir("offline-declare");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"), // never written
+        );
+
+        let create = TargetCreate {
+            scope: TargetScope::Kind("coding".into()),
+            hours_per_week: 4.0,
+        };
+        let out = queued.create_target(&create).await.unwrap();
+        assert!(out.is_provisional());
+        assert!(out.value().id < 0, "a queued declare has no server id yet");
+        assert!((out.value().hours_per_week - 4.0).abs() < 1e-9);
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].kind.word(), "declare");
+        assert_eq!(intents[0].stream, "target");
+        match &intents[0].kind {
+            IntentKind::TargetCreate { body } => {
+                assert_eq!(body.scope, TargetScope::Kind("coding".into()));
+                assert!((body.hours_per_week - 4.0).abs() < 1e-9);
+            }
+            other => panic!("expected a TargetCreate intent, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn offline_adjust_enqueues_keyed_on_the_lineage() {
+        let api = dead_api();
+        let dir = tmp_dir("offline-target-adjust");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let out = queued.adjust_target(42, 8.0).await.unwrap();
+        assert!(out.is_provisional());
+        assert_eq!(out.value().id, 42);
+        assert!((out.value().hours_per_week - 8.0).abs() < 1e-9);
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents[0].kind.word(), "adjust");
+        assert_eq!(intents[0].stream, "target:42", "keyed on the row it edits");
+    }
+
+    #[tokio::test]
+    async fn offline_retire_enqueues_and_marks_retired() {
+        let api = dead_api();
+        let dir = tmp_dir("offline-target-retire");
+        let queued = QueuedClient::with_paths(
+            &api,
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let out = queued.retire_target(42).await.unwrap();
+        assert!(out.is_provisional());
+        assert!(out.value().retired);
+        assert!(!out.value().active);
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        assert_eq!(intents[0].kind.word(), "retire");
+        assert_eq!(intents[0].stream, "target:42");
     }
 }

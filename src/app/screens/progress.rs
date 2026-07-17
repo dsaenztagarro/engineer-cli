@@ -13,13 +13,21 @@ use ratatui::Frame;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::{
-    ApiClient, Domain, PaceState, Progress as ProgressData, ProgressReading, TargetCreate,
-    TargetScope,
+    codes, ApiClient, ApiError, Domain, PaceState, Progress as ProgressData, ProgressReading,
+    TargetCreate, TargetScope,
 };
 use crate::app::action::Action;
+use crate::queue::WriteOutcome;
 use crate::ui::notify::Level;
 use crate::ui::picker::{Picker, PickerItem};
 use crate::ui::{layout::bordered, theme, widgets};
+
+use super::{notify_seam_error, open_queued, QueuePaths};
+
+/// The shared "the server moved on — re-read" copy for a target write that hits
+/// a `target-version-closed` conflict live (ADR 0026): a soft re-fetch, never a
+/// hard error. The Inbox screen speaks the same idiom for a stale draft.
+const TARGET_MOVED_ON: &str = "this target moved on — re-fetching the live pace";
 
 /// Meter bar width in cells (matches the design mock's ten-block bar).
 const BAR_WIDTH: usize = 10;
@@ -44,11 +52,14 @@ enum Declare {
     Loading,
     /// Fuzzy-picking the scope — any domain, kind, or intent — in one list.
     Scope(Picker<TargetScope>),
-    /// Entering the weekly hours for the chosen scope.
+    /// Entering the weekly hours for the chosen scope. Keeps the scope picker so
+    /// `Esc` steps *back* to it — query and all — instead of cancelling the whole
+    /// flow (§Declare · hours: "⏎ declare · Esc back").
     Hours {
         scope: TargetScope,
         label: String,
         buf: String,
+        picker: Picker<TargetScope>,
     },
 }
 
@@ -67,6 +78,14 @@ pub struct Progress {
     retire_armed: Option<i64>,
     /// `Some` while the `n`-declare flow (scope pick → hours) is open.
     declare: Option<Declare>,
+    /// Targets declared offline this session — rendered as provisional `◔ …
+    /// queued` lines under the meters until the create replays and a live
+    /// refetch returns the real reading. Only the render of what's pending
+    /// (the queue is the ledger); cleared on any authoritative reload or week step.
+    provisional: Vec<String>,
+    /// Queue + read-cache paths for the write seam (`None` = shared XDG; tests
+    /// inject a scratch dir so a spawned write never touches the real queue).
+    queue_paths: QueuePaths,
 }
 
 impl Progress {
@@ -160,6 +179,8 @@ impl Progress {
                 let n = self.data.as_ref().map_or(0, |d| d.targets.len());
                 self.selected = self.selected.min(n.saturating_sub(1));
                 self.retire_armed = None;
+                // An authoritative reading supersedes any queued-declare stand-ins.
+                self.provisional.clear();
             }
             Action::ProgressLoadFailed(e) => {
                 self.loading = false;
@@ -168,12 +189,16 @@ impl Progress {
             Action::ProgressWeekStep(delta) => {
                 self.offset += delta;
                 self.loading = true;
+                // A different week's readings are coming — drop this week's queued
+                // stand-ins so they never bleed across the step.
+                self.provisional.clear();
                 self.fetch(api, tx);
             }
             Action::ProgressWeekReset => {
                 if self.offset != 0 {
                     self.offset = 0;
                     self.loading = true;
+                    self.provisional.clear();
                     self.fetch(api, tx);
                 }
             }
@@ -217,28 +242,7 @@ impl Progress {
                 self.edit = None;
                 match (id, parsed) {
                     (Some(id), Some(hours)) if hours > 0.0 => {
-                        let api = api.clone();
-                        let tx = tx.clone();
-                        tokio::spawn(async move {
-                            match api.update_target(id, hours).await {
-                                Ok(t) => {
-                                    let _ = tx.send(Action::Notify {
-                                        level: Level::Success,
-                                        text: format!(
-                                            "target → {}h/wk",
-                                            fmt_hours(t.hours_per_week)
-                                        ),
-                                    });
-                                    let _ = tx.send(Action::RefreshProgress);
-                                }
-                                Err(e) => {
-                                    let _ = tx.send(Action::Notify {
-                                        level: Level::Error,
-                                        text: format!("adjust failed: {e}"),
-                                    });
-                                }
-                            }
-                        });
+                        spawn_adjust_target(api, tx, self.queue_paths.clone(), id, hours);
                     }
                     (Some(_), _) => {
                         return Some((Level::Warning, "enter a positive number of hours".into()))
@@ -251,25 +255,7 @@ impl Progress {
                 if self.retire_armed == Some(id) {
                     // Second press on the same row — confirm.
                     self.retire_armed = None;
-                    let api = api.clone();
-                    let tx = tx.clone();
-                    tokio::spawn(async move {
-                        match api.retire_target(id).await {
-                            Ok(_) => {
-                                let _ = tx.send(Action::Notify {
-                                    level: Level::Success,
-                                    text: "target retired — history kept".into(),
-                                });
-                                let _ = tx.send(Action::RefreshProgress);
-                            }
-                            Err(e) => {
-                                let _ = tx.send(Action::Notify {
-                                    level: Level::Error,
-                                    text: format!("retire failed: {e}"),
-                                });
-                            }
-                        }
-                    });
+                    spawn_retire_target(api, tx, self.queue_paths.clone(), id);
                 } else {
                     self.retire_armed = Some(id);
                     return Some((
@@ -299,92 +285,98 @@ impl Progress {
                 }
             }
             Action::ProgressDeclareKey(key) => self.declare_key(key, api, tx),
+            Action::ProgressDeclareQueued(desc) => self.provisional.push(desc),
             _ => {}
         }
         None
     }
 
-    /// Route a key while the declare flow is open. Uses take-then-replace so a
-    /// stage transition can reassign `self.declare` without a borrow conflict.
+    /// Route a key while the declare flow is open. Matches the taken state by
+    /// value so a stage transition can move the picker into (and back out of)
+    /// the hours step; every continuing arm puts the state back.
     fn declare_key(&mut self, key: KeyEvent, api: &ApiClient, tx: &UnboundedSender<Action>) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let Some(mut state) = self.declare.take() else {
+        let Some(state) = self.declare.take() else {
             return;
         };
-        match &mut state {
+        match state {
             Declare::Loading => {
-                if key.code == KeyCode::Esc {
-                    return; // taken → cancelled
+                if key.code != KeyCode::Esc {
+                    self.declare = Some(Declare::Loading); // Esc: taken → cancelled
                 }
             }
-            Declare::Scope(picker) => match key.code {
-                KeyCode::Esc => return,
+            Declare::Scope(mut picker) => match key.code {
+                KeyCode::Esc => {} // taken → cancelled
                 KeyCode::Enter => {
-                    if let (Some(scope), Some(label)) =
-                        (picker.selected().cloned(), picker.selected_label())
-                    {
-                        let label = label.to_string();
-                        self.declare = Some(Declare::Hours {
+                    let choice = picker
+                        .selected()
+                        .cloned()
+                        .zip(picker.selected_label().map(str::to_string));
+                    // The picker rides into the hours step so Esc can walk back.
+                    self.declare = Some(match choice {
+                        Some((scope, label)) => Declare::Hours {
                             scope,
                             label,
                             buf: String::new(),
-                        });
-                    }
-                    return;
+                            picker,
+                        },
+                        // Everything filtered out — nothing to pick; stay put.
+                        None => Declare::Scope(picker),
+                    });
                 }
-                KeyCode::Backspace => picker.backspace(),
-                KeyCode::Down => picker.move_cursor(1),
-                KeyCode::Up => picker.move_cursor(-1),
-                KeyCode::Char('n') if ctrl => picker.move_cursor(1),
-                KeyCode::Char('p') if ctrl => picker.move_cursor(-1),
-                KeyCode::Char(c) if !ctrl => picker.input(c),
-                _ => {}
+                code => {
+                    match code {
+                        KeyCode::Backspace => picker.backspace(),
+                        KeyCode::Down => picker.move_cursor(1),
+                        KeyCode::Up => picker.move_cursor(-1),
+                        KeyCode::Char('n') if ctrl => picker.move_cursor(1),
+                        KeyCode::Char('p') if ctrl => picker.move_cursor(-1),
+                        KeyCode::Char(c) if !ctrl => picker.input(c),
+                        _ => {}
+                    }
+                    self.declare = Some(Declare::Scope(picker));
+                }
             },
-            Declare::Hours { scope, buf, .. } => match key.code {
-                KeyCode::Esc => return,
-                KeyCode::Backspace => {
-                    buf.pop();
+            Declare::Hours {
+                scope,
+                label,
+                mut buf,
+                picker,
+            } => match key.code {
+                // Back to the scope picker, query and cursor intact — the
+                // design's hours footer is "⏎ declare · Esc back".
+                KeyCode::Esc => self.declare = Some(Declare::Scope(picker)),
+                KeyCode::Enter if matches!(buf.trim().parse::<f64>(), Ok(h) if h > 0.0) => {
+                    let hours = buf.trim().parse::<f64>().expect("guard just parsed it");
+                    let create = TargetCreate {
+                        scope,
+                        hours_per_week: hours,
+                    };
+                    // The picker label is `axis · scope`; the queued line
+                    // shows the scope + hours, lowercased like the meters.
+                    let scope_name = label.rsplit(" · ").next().unwrap_or(&label).to_lowercase();
+                    let desc = format!("{scope_name} · {}h/wk", fmt_hours(hours));
+                    spawn_declare_target(api, tx, self.queue_paths.clone(), create, desc);
+                    // done → closed
                 }
-                KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => buf.push(c),
-                KeyCode::Enter => match buf.trim().parse::<f64>() {
-                    Ok(hours) if hours > 0.0 => {
-                        let create = TargetCreate {
-                            scope: scope.clone(),
-                            hours_per_week: hours,
-                        };
-                        let api = api.clone();
-                        let tx = tx.clone();
-                        tokio::spawn(async move {
-                            match api.create_target(&create).await {
-                                Ok(t) => {
-                                    let _ = tx.send(Action::Notify {
-                                        level: Level::Success,
-                                        text: format!(
-                                            "declared {} · {}h/wk",
-                                            t.scope.name(),
-                                            fmt_hours(t.hours_per_week)
-                                        ),
-                                    });
-                                    let _ = tx.send(Action::RefreshProgress);
-                                }
-                                Err(e) => {
-                                    let _ = tx.send(Action::Notify {
-                                        level: Level::Error,
-                                        text: format!("declare failed: {e}"),
-                                    });
-                                }
-                            }
-                        });
-                        return; // done → closed
+                code => {
+                    match code {
+                        KeyCode::Backspace => {
+                            buf.pop();
+                        }
+                        KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => buf.push(c),
+                        // Invalid hours on Enter: keep the prompt open.
+                        _ => {}
                     }
-                    // Invalid hours: keep the prompt open (fall through, put back).
-                    _ => {}
-                },
-                _ => {}
+                    self.declare = Some(Declare::Hours {
+                        scope,
+                        label,
+                        buf,
+                        picker,
+                    });
+                }
             },
         }
-        // Stages that continue (picker filtering, hours typing) keep the state.
-        self.declare = Some(state);
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -408,8 +400,23 @@ impl Progress {
         lines.push(Line::from(""));
 
         if data.targets.is_empty() {
+            // The teaching empty state points at the keystroke first, the honest
+            // headless verb second (§Progress · empty; the design drew `d`, the
+            // shipped binding is `n` — the "new" mnemonic the footer advertises).
             lines.push(Line::from(Span::styled(
-                "No targets yet — declare one with `engineer target declare` (e.g. --kind coding --hours 4).",
+                "No weekly targets yet.",
+                theme::muted(),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Press ", theme::muted()),
+                Span::styled("n", Style::default().fg(theme::ACCENT)),
+                Span::styled(
+                    " to declare a weekly intent — a promise you keep from the terminal.",
+                    theme::muted(),
+                ),
+            ]));
+            lines.push(Line::from(Span::styled(
+                "or headless: engineer target declare systems --hours 6",
                 theme::muted(),
             )));
         } else {
@@ -434,6 +441,16 @@ impl Progress {
                     }
                 }
             }
+        }
+
+        // Offline declares this session — a `◔ … queued` stand-in per target,
+        // until the create replays and a live refetch returns the real reading.
+        for desc in &self.provisional {
+            lines.push(Line::from(vec![
+                Span::styled("  ◔ ", Style::default().fg(theme::ACCENT)),
+                Span::raw(desc.clone()),
+                Span::styled("  queued", theme::muted()),
+            ]));
         }
 
         lines.push(Line::from(""));
@@ -464,7 +481,7 @@ impl Progress {
                 frame,
                 area,
                 "declare a target — hours",
-                Span::from(format!("{label}  →  {buf}█ h/wk   (⏎ save · Esc cancel)")),
+                Span::from(format!("{label}  →  {buf}█ h/wk   (⏎ declare · Esc back)")),
             ),
             None => {}
         }
@@ -478,7 +495,7 @@ impl Progress {
                     theme::muted(),
                 )),
                 _ => Line::from(Span::styled(
-                    "enter weekly hours · ⏎ declare · Esc cancel",
+                    "enter weekly hours · ⏎ declare · Esc back",
                     theme::muted(),
                 )),
             };
@@ -497,6 +514,129 @@ impl Progress {
             ("a", "audit"),
             ("h", "home"),
         ])
+    }
+}
+
+/// Declare a weekly target through the queue seam (`n` → scope → hours). A
+/// confirmed create refetches the pace (the server now has the row); an offline
+/// one queues and the screen renders `desc` as a `◔ … queued` line until it
+/// replays.
+fn spawn_declare_target(
+    api: &ApiClient,
+    tx: &UnboundedSender<Action>,
+    paths: QueuePaths,
+    create: TargetCreate,
+    desc: String,
+) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => return notify_seam_error(&tx, "declare failed", e),
+        };
+        match queued.create_target(&create).await {
+            Ok(WriteOutcome::Confirmed(t)) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Success,
+                    text: format!(
+                        "declared {} · {}h/wk",
+                        t.scope.name(),
+                        fmt_hours(t.hours_per_week)
+                    ),
+                });
+                let _ = tx.send(Action::RefreshProgress);
+            }
+            Ok(WriteOutcome::Provisional(_)) => {
+                let _ = tx.send(Action::ProgressDeclareQueued(desc));
+                let _ = tx.send(Action::Notify {
+                    level: Level::Info,
+                    text: "declared · queued (offline) — will sync".into(),
+                });
+            }
+            Err(e) => notify_target_write_error(&tx, "declare failed", e),
+        }
+    });
+}
+
+/// Adjust the selected target's weekly hours through the queue seam (`e`). A
+/// confirmed adjust refetches — the returned LIVE row's id may differ (a same-day
+/// edit mints a successor), so the screen re-reads rather than patch in place;
+/// an offline adjust queues.
+fn spawn_adjust_target(
+    api: &ApiClient,
+    tx: &UnboundedSender<Action>,
+    paths: QueuePaths,
+    id: i64,
+    hours: f64,
+) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => return notify_seam_error(&tx, "adjust failed", e),
+        };
+        match queued.adjust_target(id, hours).await {
+            Ok(WriteOutcome::Confirmed(t)) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Success,
+                    text: format!("target → {}h/wk", fmt_hours(t.hours_per_week)),
+                });
+                let _ = tx.send(Action::RefreshProgress);
+            }
+            Ok(WriteOutcome::Provisional(_)) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Info,
+                    text: "adjusted · queued (offline) — will sync".into(),
+                });
+            }
+            Err(e) => notify_target_write_error(&tx, "adjust failed", e),
+        }
+    });
+}
+
+/// Retire the selected target through the queue seam (`x`, second press).
+/// Confirmed refetches; offline queues. Retire closes the lineage — history is
+/// kept, never deleted.
+fn spawn_retire_target(api: &ApiClient, tx: &UnboundedSender<Action>, paths: QueuePaths, id: i64) {
+    let (api, tx) = (api.clone(), tx.clone());
+    tokio::spawn(async move {
+        let queued = match open_queued(&api, &paths) {
+            Ok(q) => q,
+            Err(e) => return notify_seam_error(&tx, "retire failed", e),
+        };
+        match queued.retire_target(id).await {
+            Ok(WriteOutcome::Confirmed(_)) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Success,
+                    text: "target retired — history kept".into(),
+                });
+                let _ = tx.send(Action::RefreshProgress);
+            }
+            Ok(WriteOutcome::Provisional(_)) => {
+                let _ = tx.send(Action::Notify {
+                    level: Level::Info,
+                    text: "retired · queued (offline) — will sync".into(),
+                });
+            }
+            Err(e) => notify_target_write_error(&tx, "retire failed", e),
+        }
+    });
+}
+
+/// Route a live target-write failure: a `target-version-closed` conflict (ADR
+/// 0026 — the version you addressed was superseded) is not an error but a soft
+/// re-read — render the shared "moved on" copy and refetch, so the live lineage's
+/// current pace comes back (the user re-adjusts the fresh row). Every other
+/// failure is the loud seam error.
+fn notify_target_write_error(tx: &UnboundedSender<Action>, context: &str, e: ApiError) {
+    if e.code() == Some(codes::TARGET_VERSION_CLOSED) {
+        let _ = tx.send(Action::Notify {
+            level: Level::Warning,
+            text: TARGET_MOVED_ON.into(),
+        });
+        let _ = tx.send(Action::RefreshProgress);
+    } else {
+        notify_seam_error(tx, context, e);
     }
 }
 
@@ -746,6 +886,52 @@ mod tests {
         (api, tx)
     }
 
+    /// A dead port refuses fast — the offline arm of the write seam.
+    fn dead_api() -> ApiClient {
+        ApiClient::with_token(url::Url::parse("http://127.0.0.1:1/").unwrap(), "t".into())
+    }
+
+    fn scratch_paths() -> (std::path::PathBuf, std::path::PathBuf) {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "engineer-progress-screen-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        (dir.join("queue.json"), dir.join("timer-cache.json"))
+    }
+
+    fn render_text(p: &mut Progress) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut terminal = Terminal::new(TestBackend::new(96, 24)).unwrap();
+        terminal.draw(|f| p.render(f, f.area())).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    async fn wait_for(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
+        pred: impl Fn(&Action) -> bool,
+    ) -> bool {
+        for _ in 0..100 {
+            while let Ok(a) = rx.try_recv() {
+                if pred(&a) {
+                    return true;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        false
+    }
+
     fn loaded() -> Progress {
         // two targets: id 42 (6h), id 51 (2h)
         Progress {
@@ -813,7 +999,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn declare_scope_pick_moves_to_hours_then_esc_cancels() {
+    async fn declare_scope_pick_moves_to_hours_then_esc_steps_back() {
         let (api, tx) = ctx();
         let mut p = Progress {
             declare: Some(Declare::Scope(Progress::scope_picker(&[Domain {
@@ -830,14 +1016,17 @@ mod tests {
         p.handle(Action::ProgressDeclareKey(key(KeyCode::Enter)), &api, &tx)
             .await;
         match &p.declare {
-            Some(Declare::Hours { scope, label, buf }) => {
+            Some(Declare::Hours {
+                scope, label, buf, ..
+            }) => {
                 assert!(matches!(scope, TargetScope::Domain(7)));
                 assert!(label.contains("Systems"), "{label}");
                 assert!(buf.is_empty());
             }
             other => panic!("expected Hours, got {:?}", other.is_some()),
         }
-        // Type hours, then Esc cancels the whole flow.
+        // Type hours, then Esc steps *back* to the scope picker (§Declare ·
+        // hours: "Esc back"), filter intact — the same pick lands again.
         p.handle(
             Action::ProgressDeclareKey(key(KeyCode::Char('6'))),
             &api,
@@ -847,7 +1036,111 @@ mod tests {
         assert!(matches!(&p.declare, Some(Declare::Hours { buf, .. }) if buf == "6"));
         p.handle(Action::ProgressDeclareKey(key(KeyCode::Esc)), &api, &tx)
             .await;
+        assert!(
+            matches!(&p.declare, Some(Declare::Scope(picker)) if picker.selected_label().is_some_and(|l| l.contains("Systems"))),
+            "Esc from hours returns to the picker with the query kept"
+        );
+        // Esc again from the picker cancels the whole flow.
+        p.handle(Action::ProgressDeclareKey(key(KeyCode::Esc)), &api, &tx)
+            .await;
         assert!(p.declare.is_none());
+    }
+
+    #[test]
+    fn empty_state_teaches_n_first_then_the_headless_verb() {
+        let mut data = sample();
+        data.targets.clear();
+        let mut p = Progress {
+            data: Some(data),
+            ..Default::default()
+        };
+        let text = render_text(&mut p);
+        assert!(text.contains("No weekly targets yet."), "{text}");
+        assert!(
+            text.contains("Press") && text.contains("declare a weekly intent"),
+            "the keystroke is taught first: {text}"
+        );
+        assert!(
+            text.contains("engineer target declare"),
+            "the headless verb is taught second: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn offline_declare_enqueues_and_renders_the_provisional_line() {
+        // The full wiring, offline: the hours `⏎` → the declare helper →
+        // `QueuedClient` → the persisted queue, plus the `◔ … queued` line the
+        // screen renders until the create replays. A dead port forces offline.
+        use crate::queue::{IntentKind, QueueStore};
+
+        let (queue_path, cache_path) = scratch_paths();
+        let api = dead_api();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut p = Progress {
+            data: Some(sample()),
+            declare: Some(Declare::Hours {
+                scope: TargetScope::Kind("coding".into()),
+                label: "kind · coding".into(),
+                buf: String::new(),
+                picker: Progress::scope_picker(&[]),
+            }),
+            queue_paths: Some((queue_path.clone(), cache_path)),
+            ..Default::default()
+        };
+
+        p.handle(
+            Action::ProgressDeclareKey(key(KeyCode::Char('4'))),
+            &api,
+            &tx,
+        )
+        .await;
+        p.handle(Action::ProgressDeclareKey(key(KeyCode::Enter)), &api, &tx)
+            .await;
+        assert!(p.declare.is_none(), "the flow closed on submit");
+
+        // The spawned write lands in the queue (the dead port refuses fast).
+        let store = QueueStore::at(&queue_path);
+        let mut pending = store.pending().unwrap();
+        for _ in 0..100 {
+            if !pending.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            pending = store.pending().unwrap();
+        }
+        assert_eq!(pending.len(), 1, "the declare landed in the queue");
+        assert_eq!(pending[0].kind.word(), "declare");
+        assert_eq!(pending[0].stream, "target");
+        match &pending[0].kind {
+            IntentKind::TargetCreate { body } => {
+                assert_eq!(body.scope, TargetScope::Kind("coding".into()));
+                assert!((body.hours_per_week - 4.0).abs() < 1e-9);
+            }
+            other => panic!("expected a TargetCreate intent, got {other:?}"),
+        }
+
+        // The spawn streamed the provisional line back; feed it and render it.
+        assert!(
+            wait_for(&mut rx, |a| {
+                matches!(a, Action::ProgressDeclareQueued(d) if d == "coding · 4h/wk")
+            })
+            .await,
+            "the queued declare streams a provisional line back"
+        );
+        p.handle(
+            Action::ProgressDeclareQueued("coding · 4h/wk".into()),
+            &api,
+            &tx,
+        )
+        .await;
+        let text = render_text(&mut p);
+        assert!(text.contains("◔"), "the queued marker renders: {text}");
+        assert!(text.contains("coding · 4h/wk"), "{text}");
+
+        // An authoritative reload clears the stand-in.
+        p.handle(Action::ProgressLoaded(Box::new(sample())), &api, &tx)
+            .await;
+        assert!(p.provisional.is_empty(), "a fresh reading supersedes it");
     }
 
     #[test]

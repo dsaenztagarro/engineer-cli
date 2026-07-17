@@ -356,7 +356,10 @@ fn compose_local_session(
             IntentKind::ActivityCreate { .. }
             | IntentKind::ActivityUpdate { .. }
             | IntentKind::ActivityArchive { .. }
-            | IntentKind::WeekNoteWrite { .. } => {
+            | IntentKind::WeekNoteWrite { .. }
+            | IntentKind::TargetCreate { .. }
+            | IntentKind::TargetAdjust { .. }
+            | IntentKind::TargetRetire { .. } => {
                 unreachable!("a non-timer write never shares a timer session's stream")
             }
         }

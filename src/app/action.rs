@@ -101,10 +101,10 @@ pub enum Action {
     ProgressWeekStep(i32),
     ProgressWeekReset,
     RefreshProgress,
-    // Target editing on the Progress screen (job 6 — adjust in place). `e` edits
-    // the selected target's weekly hours inline; `x` retires it (armed, confirmed
-    // on a second press). Declaring a new target is the headless `engineer target
-    // declare` verb until the shared scope picker lands (cross-cutting.brief.md).
+    // Target editing on the Progress screen. `e` edits the selected target's
+    // weekly hours inline; `x` retires it (armed, confirmed on a second press).
+    // Every target write (declare/adjust/retire) routes through `QueuedClient`,
+    // so an offline gesture queues and replays like the timer/week writes (#121).
     ProgressSelectMove(i32),
     ProgressAdjustBegin,
     ProgressAdjustInput(char),
@@ -114,10 +114,13 @@ pub enum Action {
     ProgressRetire,
     // Declare a new target on the Progress screen (`n`) — riding the fuzzy picker.
     // `Begin` fetches domains; `Ready` opens the scope picker over domains + the
-    // kind/intent enums; `Key` routes every key while the flow is open.
+    // kind/intent enums; `Key` routes every key while the flow is open; `Queued`
+    // records an offline declare so the screen renders it `◔ … queued` until it
+    // syncs (the Week board's `WeekPlanQueued` twin).
     ProgressDeclareBegin,
     ProgressDeclareReady(Vec<Domain>),
     ProgressDeclareKey(crossterm::event::KeyEvent),
+    ProgressDeclareQueued(String),
 
     // Timer — the header cell (app-owned snapshot) and the Timer screen.
     // `RefreshTimer` re-polls the header snapshot; `TimerLoaded` updates the

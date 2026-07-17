@@ -201,6 +201,38 @@ async fn send_intent(api: &ApiClient, intent: &Intent) -> Result<bool, ApiError>
         IntentKind::WeekNoteWrite { iso_week, body } => {
             api.update_week_note(iso_week, body).await.map(|_| false)
         }
+        // A declare re-sends the whole create body under the stored key, so a
+        // lost ack can never mint the target twice (keyed strictly dominates a
+        // plain re-send here — see `create_target_idempotent`).
+        IntentKind::TargetCreate { body } => api
+            .create_target_idempotent(body, key)
+            .await
+            .map(|k| k.replayed),
+        // Adjust replays plain, re-addressing a closed version to the lineage's
+        // live row (ADR 0026). Retire replays plain and is naturally idempotent
+        // (a second retire finds the lineage already closed). A stored replay is
+        // indistinguishable from a first ack on these, so report `false`.
+        IntentKind::TargetAdjust { id, hours } => replay_target_adjust(api, *id, *hours).await,
+        IntentKind::TargetRetire { id } => api.retire_target(*id).await.map(|_| false),
+    }
+}
+
+/// Replay a target adjust, honoring the append-only lineage rule (engineer ADR
+/// 0026): adjusting a *closed* version fails `target-version-closed`, but the
+/// server hands back the lineage's live row id — so re-address the same hours to
+/// it rather than diverging. The gesture ("this many hours on this lineage")
+/// still lands. A closed version with no live row left (`live_target_id` absent
+/// — the lineage was retired meanwhile) is a genuine divergence and propagates.
+async fn replay_target_adjust(api: &ApiClient, id: i64, hours: f64) -> Result<bool, ApiError> {
+    match api.update_target(id, hours).await {
+        Ok(_) => Ok(false),
+        Err(e) if e.code() == Some(crate::api::codes::TARGET_VERSION_CLOSED) => {
+            match e.live_target_id() {
+                Some(live) => api.update_target(live, hours).await.map(|_| false),
+                None => Err(e),
+            }
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -789,5 +821,161 @@ mod tests {
         assert_eq!(report.deduped, 0, "a plain PATCH is never a stored replay");
         assert_eq!(report.remaining, 0);
         assert!(store.intents().unwrap().is_empty(), "the reflection synced");
+    }
+
+    // --- target writes (#121): create replays keyed, adjust/retire replay plain,
+    // a closed-version adjust re-addresses to the live lineage row ---
+
+    #[tokio::test]
+    async fn target_create_replays_with_the_stored_idempotency_key() {
+        use crate::api::{TargetCreate, TargetScope};
+        let server = MockServer::start().await;
+        let store = tmp_store("target-create");
+        let intent = store
+            .enqueue(IntentKind::TargetCreate {
+                body: TargetCreate {
+                    scope: TargetScope::Domain(7),
+                    hours_per_week: 6.0,
+                },
+            })
+            .unwrap();
+        // The whole create body re-sends verbatim, carrying the queued key so a
+        // lost ack can never mint the target twice.
+        Mock::given(method("POST"))
+            .and(path("/api/v1/targets"))
+            .and(header("Idempotency-Key", intent.idempotency_key.as_str()))
+            .and(body_json(serde_json::json!({
+                "target": { "axis": "domain", "hours_per_week": 6.0, "domain_id": 7 }
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 42, "axis": "domain",
+                "scope": { "axis": "domain", "value": 7 },
+                "hours_per_week": 6.0, "active": true, "retired": false
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let report = drain(&client(&server), &store).await.unwrap();
+        assert_eq!(report.replayed, 1);
+        assert_eq!(report.remaining, 0);
+        assert!(store.intents().unwrap().is_empty(), "the declare synced");
+    }
+
+    #[tokio::test]
+    async fn target_adjust_and_retire_replay_as_plain_calls() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/targets/42"))
+            .and(body_json(serde_json::json!({
+                "target": { "hours_per_week": 8.0 }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 42, "axis": "domain", "scope": { "axis": "domain", "value": 7 },
+                "hours_per_week": 8.0, "active": true, "retired": false
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/targets/42/retire"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 42, "axis": "domain", "scope": { "axis": "domain", "value": 7 },
+                "hours_per_week": 8.0, "active": false, "retired": true
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("target-adjust-retire");
+        store
+            .enqueue(IntentKind::TargetAdjust { id: 42, hours: 8.0 })
+            .unwrap();
+        store.enqueue(IntentKind::TargetRetire { id: 42 }).unwrap();
+
+        let report = drain(&client(&server), &store).await.unwrap();
+        assert_eq!(report.replayed, 2);
+        assert_eq!(report.deduped, 0, "plain calls are never a stored replay");
+        assert_eq!(report.remaining, 0);
+    }
+
+    /// A queued adjust whose version closed while offline: the server rejects
+    /// with `target-version-closed` and the live row id, and the replay
+    /// re-addresses the same hours to it (ADR 0026) rather than diverging — the
+    /// gesture still lands, and the intent leaves the queue.
+    #[tokio::test]
+    async fn a_closed_version_adjust_readdresses_to_the_live_lineage_row() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/targets/42"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "type": "https://engineer.example/problems/target-version-closed",
+                "title": "Target version is closed",
+                "status": 422,
+                "detail": "Fetch the live target for this axis and scope, then retry.",
+                "code": "target-version-closed",
+                "live_target_id": 47
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // The re-address: the same hours land on the lineage's live row.
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/targets/47"))
+            .and(body_json(serde_json::json!({
+                "target": { "hours_per_week": 8.0 }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 47, "axis": "domain", "scope": { "axis": "domain", "value": 7 },
+                "hours_per_week": 8.0, "active": true, "retired": false
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("target-readdress");
+        store
+            .enqueue(IntentKind::TargetAdjust { id: 42, hours: 8.0 })
+            .unwrap();
+
+        let report = drain(&client(&server), &store).await.unwrap();
+        assert_eq!(report.replayed, 1, "the re-addressed adjust landed");
+        assert_eq!(report.remaining, 0);
+        assert!(!report.diverged, "a re-address is not a divergence");
+        assert!(store.intents().unwrap().is_empty(), "the adjust synced");
+    }
+
+    /// A closed version with no live row left (the lineage was fully retired
+    /// meanwhile) has nowhere to re-address — a genuine divergence that halts the
+    /// pass and persists the objection, like any other server refusal.
+    #[tokio::test]
+    async fn a_closed_version_adjust_with_no_live_row_diverges() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/targets/42"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "type": "https://engineer.example/problems/target-version-closed",
+                "title": "Target version is closed",
+                "status": 422,
+                "detail": "This lineage is retired.",
+                "code": "target-version-closed"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("target-readdress-none");
+        store
+            .enqueue(IntentKind::TargetAdjust { id: 42, hours: 8.0 })
+            .unwrap();
+
+        let report = drain(&client(&server), &store).await.unwrap();
+        assert_eq!(report.replayed, 0);
+        assert!(
+            report.diverged,
+            "no live row to re-address — a real divergence"
+        );
+        let intents = store.intents().unwrap();
+        assert!(intents[0].is_diverged());
     }
 }

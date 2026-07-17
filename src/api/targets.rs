@@ -15,12 +15,15 @@
 //! The response is the bare target object (a superset of [`TargetRef`], which the
 //! progress read already reuses); the extra timestamp fields are ignored on decode.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use super::{ApiClient, ApiError, List, TargetRef};
+use super::{ApiClient, ApiError, Keyed, List, TargetRef};
 
 /// The slice of the log a new target measures — the axis and its scope value.
-#[derive(Debug, Clone)]
+// `Serialize`/`Deserialize`/`PartialEq` so a deferred declare persists verbatim
+// on an `IntentKind::TargetCreate` in `queue.json` (the queue never re-derives a
+// gesture — it re-sends exactly what the user made).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TargetScope {
     /// A domain, addressed by its id.
     Domain(i64),
@@ -41,7 +44,9 @@ impl TargetScope {
 }
 
 /// A target to declare: its scope plus the weekly hours.
-#[derive(Debug, Clone)]
+// Same round-trip contract as [`TargetScope`]: an offline declare rides this
+// whole body into the queue and re-sends it verbatim on replay.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TargetCreate {
     pub scope: TargetScope,
     pub hours_per_week: f64,
@@ -88,6 +93,25 @@ struct CreateTarget<'a> {
     intent: Option<&'a str>,
 }
 
+/// Build the create request body for a declare, sending exactly the one scope
+/// field the chosen axis needs. Shared by the live and idempotent-replay paths.
+fn create_body(create: &TargetCreate) -> CreateBody<'_> {
+    let (domain_id, kind, intent) = match &create.scope {
+        TargetScope::Domain(id) => (Some(*id), None, None),
+        TargetScope::Kind(k) => (None, Some(k.as_str()), None),
+        TargetScope::Intent(i) => (None, None, Some(i.as_str())),
+    };
+    CreateBody {
+        target: CreateTarget {
+            axis: create.scope.axis(),
+            hours_per_week: create.hours_per_week,
+            domain_id,
+            kind,
+            intent,
+        },
+    }
+}
+
 #[derive(Serialize)]
 struct AdjustBody {
     target: HoursOnly,
@@ -110,21 +134,25 @@ impl ApiClient {
 
     /// Declare a weekly target. Returns the created row.
     pub async fn create_target(&self, create: &TargetCreate) -> Result<TargetRef, ApiError> {
-        let (domain_id, kind, intent) = match &create.scope {
-            TargetScope::Domain(id) => (Some(*id), None, None),
-            TargetScope::Kind(k) => (None, Some(k.as_str()), None),
-            TargetScope::Intent(i) => (None, None, Some(i.as_str())),
-        };
-        let body = CreateBody {
-            target: CreateTarget {
-                axis: create.scope.axis(),
-                hours_per_week: create.hours_per_week,
-                domain_id,
-                kind,
-                intent,
-            },
-        };
-        self.post("/api/v1/targets", &body).await
+        self.post("/api/v1/targets", &create_body(create)).await
+    }
+
+    /// The `create_target` twin carrying an `Idempotency-Key` — the queue's
+    /// replay path re-sends a deferred declare through this so a lost ack can
+    /// never mint the target twice. Keyed (not plain) is the safe default: the
+    /// server dedupes on the key where targets-create is in engineer#809's ADR
+    /// 0036 opt-in set, and where it is not the header is simply ignored — keyed
+    /// can only ever prevent a double-write, never cause one (a replay re-sends
+    /// the identical body under the identical key, so a key-reuse conflict cannot
+    /// arise), so it strictly dominates a plain re-send. The activity/timer
+    /// creates replay under the same contract.
+    pub(crate) async fn create_target_idempotent(
+        &self,
+        create: &TargetCreate,
+        idempotency_key: &str,
+    ) -> Result<Keyed<TargetRef>, ApiError> {
+        self.post_idempotent("/api/v1/targets", &create_body(create), idempotency_key)
+            .await
     }
 
     /// Adjust a target's weekly hours. Returns the LIVE row — its `id` may differ
