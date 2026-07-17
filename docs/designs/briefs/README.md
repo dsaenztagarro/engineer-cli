@@ -27,7 +27,6 @@ One brief per module. Folder tells status: `proposed/` = has open design/impleme
 
 | Module brief | What it covers | Open work |
 |---|---|---|
-| [`proposed/notes.brief.md`](proposed/notes.brief.md) | Five-second capture + the notes browser + one-line anchor read-back. | `$EDITOR`-for-prose (replaces the in-TUI textarea for long-form) |
 | [`proposed/offline-write.brief.md`](proposed/offline-write.brief.md) | The **write** half of offline-tolerance: the timer as a controlling local clock + a persisted optimistic write queue every mutation rides, reconciled on reconnect with divergence surfaced. (Read half shipped in #91.) | the whole mechanism (Phase A timer first) |
 | [`proposed/cross-cutting.brief.md`](proposed/cross-cutting.brief.md) | Concerns every module inherits: the governing sterling-not-a-replica principle, offline-tolerance's shared principle (write detail lives in `offline-write`), fuzzy pickers, the TUI↔headless contract, the pending accent-hue decision. | broaden fuzzy; ratify accent hue |
 
@@ -43,6 +42,7 @@ One brief per module. Folder tells status: `proposed/` = has open design/impleme
 | [`shipped/home.brief.md`](shipped/home.brief.md) | Home, enriched — lead with the running timer + this week's pace over one `GET /api/v1/today` read, with a global `g`-goto grammar and the `engineer today` headless twin. | epic #61 (v0.6.0) |
 | [`shipped/week-planning.brief.md`](shipped/week-planning.brief.md) | Plan the week + the retro (planned-vs-done) via `GET /api/v1/weeks/:iso_week`; planning writes go through the activities API, the reflection through the v1 week-note route. | epic #113 (v0.9.0) |
 | [`shipped/assisted-capture.brief.md`](shipped/assisted-capture.brief.md) | The draft-triage inbox over `/api/v1/automations/tasks` + a terminal-native git-source connect flow over the `/api/v1/capture/sources` contract (ADR 0035); both with headless twins. | headless inbox #90 (v0.7.0); epic #118 (v0.9.0) |
+| [`shipped/notes.brief.md`](shipped/notes.brief.md) | Five-second capture + the notes browser + one-line anchor read-back, the `$EDITOR`-for-prose long-form path, the headless `engineer note` twin, and the deliberate delete / unlink / chapter-section anchor-picker faces. | `$EDITOR` #88 (v0.7.0); headless twin + the deliberate faces epic #120 (v0.9.0) |
 
 *(Some of the CLI's earliest screens — Login, Books, Book detail — predate the briefs workflow; see the kit README's screen inventory. The retired omnibus `terminal-client.brief.md` and the pre-lifecycle `daily-loop.brief.md` were decomposed into the module set above.)*
 

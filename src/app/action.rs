@@ -1,7 +1,7 @@
 use crate::api::{
-    Activity, AuditAcknowledged, AuditRead, Book, BookChapter, CaptureSource, Dashboard,
-    DayMinutes, Domain, Note, Progress, RateResult, Task, Timer, TimerCandidate, TimerSettings,
-    TimerStopped, Today, Topic, Week,
+    Activity, AnchorData, AuditAcknowledged, AuditRead, Book, BookChapter, CaptureSource,
+    Dashboard, DayMinutes, Domain, Note, Progress, RateResult, Task, Timer, TimerCandidate,
+    TimerSettings, TimerStopped, Today, Topic, Week,
 };
 use crate::app::screens::review::Rating;
 use crate::app::screens::ScreenKind;
@@ -320,6 +320,15 @@ pub enum Action {
     NotesToggleArchived,
     NotesArchiveSelected,
     NotesEditSelected,
+    /// Detach the open note from its book (`unlink_note`) — a book-detach, not
+    /// an archive; the note survives (notes.dc.html §Note detail, `u`).
+    NotesUnlinkSelected,
+    /// The guarded permanent delete on the detail (`delete_note`): the first
+    /// press arms ("delete (permanent)"), a second confirms, any other key
+    /// disarms. Live-only — an offline delete refuses honestly.
+    NotesDeleteArm,
+    NotesDeleteConfirm,
+    NotesDeleteDisarm,
     RefreshNotes,
 
     // Review (`src/app/screens/review.rs`) — one screen, three stages: the
@@ -450,6 +459,16 @@ pub enum Action {
     CaptureBookPickerSubmit,
     CaptureBookPickerClose,
     CaptureBookResults(Vec<Book>),
+    /// The richer chapter/section anchor picker over the book's `anchor_data`
+    /// (notes.dc.html §Anchor picker). Open kicks the fetch/mount; the rest
+    /// drive the shared fuzzy picker while it's open.
+    CaptureAnchorPickerOpen,
+    CaptureAnchorPickerClose,
+    CaptureAnchorPickerSubmit,
+    CaptureAnchorMove(i32),
+    CaptureAnchorInput(char),
+    CaptureAnchorBackspace,
+    CaptureAnchorDataLoaded(Box<AnchorData>),
 
     // Command mode. The buffer is mutated in the event layer; these are signals.
     CommandBegin,

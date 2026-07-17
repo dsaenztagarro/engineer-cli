@@ -602,7 +602,14 @@ impl App {
             | Action::CaptureBookMove(_)
             | Action::CaptureBookPickerSubmit
             | Action::CaptureBookPickerClose
-            | Action::CaptureBookResults(_)) => {
+            | Action::CaptureBookResults(_)
+            | Action::CaptureAnchorPickerOpen
+            | Action::CaptureAnchorPickerClose
+            | Action::CaptureAnchorPickerSubmit
+            | Action::CaptureAnchorMove(_)
+            | Action::CaptureAnchorInput(_)
+            | Action::CaptureAnchorBackspace
+            | Action::CaptureAnchorDataLoaded(_)) => {
                 if let Some(cap) = self.capture.as_mut() {
                     if let Some((level, text)) =
                         cap.handle(capture_action, &self.api, &self.tx).await
