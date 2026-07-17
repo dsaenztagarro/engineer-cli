@@ -90,6 +90,37 @@ pub enum IntentKind {
     ActivityArchive {
         id: i64,
     },
+    /// Mark an activity done — a deferred `POST /api/v1/activities/:id/complete`
+    /// (the Activities table's `c`). Replays plain: completing an
+    /// already-complete activity is naturally idempotent server-side, so no
+    /// `Idempotency-Key` is needed. Always carries a real server id — the table
+    /// refuses the gesture on a still-queued provisional row (#109), so a
+    /// complete never references an unminted id. Stream `"activity:<id>"`: it
+    /// orders behind the row it acts on.
+    ActivityComplete {
+        id: i64,
+    },
+    /// "Do this again" — a deferred `POST /api/v1/activities/:id/duplicate` (the
+    /// table's `d`). The server mints a fresh `planned` copy. Duplicate is **not**
+    /// in the server's `Idempotency-Key` opt-in set (ADR 0036 — timer
+    /// start/stop/pause/resume, segment create, activity create, target create),
+    /// so it replays as a **plain** POST: a re-send after a lost ack mints a
+    /// *second* copy. That double-fire is an accepted risk (#110): a visible,
+    /// archivable duplicate beats a silently-dropped gesture, and — unlike a
+    /// logged segment — a planned copy is never double-*counted*. Always carries a
+    /// real source id (provisional rows refuse the gesture). Stream
+    /// `"activity:<id>"`: it orders behind the source row.
+    ActivityDuplicate {
+        id: i64,
+    },
+    /// Restore an archived plan item — a deferred `PATCH
+    /// /api/v1/activities/:id/unarchive` (the table's `a` toggle on an archived
+    /// row). Reversible and naturally idempotent (a second unarchive finds it
+    /// already active), so it replays plain. Always carries a real server id
+    /// (provisional rows refuse the gesture). Stream `"activity:<id>"`.
+    ActivityUnarchive {
+        id: i64,
+    },
     /// Append a manual segment to an existing activity — the `engineer log
     /// --activity` write (after-the-fact time on work already recorded),
     /// deferred while offline. Carries the target activity, the segment's start,
@@ -169,7 +200,14 @@ impl IntentKind {
             // A declare has no server id yet — it orders in the shared activity
             // stream; adjust/drop key on the row they act on.
             Self::ActivityCreate { .. } => "activity".into(),
-            Self::ActivityUpdate { id, .. } | Self::ActivityArchive { id } => {
+            // Adjust/drop and the lifecycle verbs all key on the row they act
+            // on — the whole activity's stream, ordered behind any earlier write
+            // to it.
+            Self::ActivityUpdate { id, .. }
+            | Self::ActivityArchive { id }
+            | Self::ActivityComplete { id }
+            | Self::ActivityDuplicate { id }
+            | Self::ActivityUnarchive { id } => {
                 format!("activity:{id}")
             }
             // Orders behind the activity it belongs to. A provisional (negative)
@@ -203,6 +241,9 @@ impl IntentKind {
             Self::ActivityCreate { .. } => "plan",
             Self::ActivityUpdate { .. } => "adjust",
             Self::ActivityArchive { .. } => "drop",
+            Self::ActivityComplete { .. } => "complete",
+            Self::ActivityDuplicate { .. } => "duplicate",
+            Self::ActivityUnarchive { .. } => "unarchive",
             Self::SegmentCreate { .. } => "log",
             Self::WeekNoteWrite { .. } => "reflect",
             Self::TargetCreate { .. } => "declare",
@@ -326,6 +367,24 @@ mod tests {
         let retire = IntentKind::TargetRetire { id: 42 };
         assert_eq!(retire.word(), "retire");
         assert_eq!(retire.stream(), "target:42");
+    }
+
+    #[test]
+    fn activity_lifecycle_verbs_roundtrip_and_key_their_row_stream() {
+        for (kind, word) in [
+            (IntentKind::ActivityComplete { id: 42 }, "complete"),
+            (IntentKind::ActivityDuplicate { id: 42 }, "duplicate"),
+            (IntentKind::ActivityUnarchive { id: 42 }, "unarchive"),
+        ] {
+            assert_eq!(kind.word(), word);
+            assert_eq!(kind.stream(), "activity:42", "keyed on the row it acts on");
+            let json = serde_json::to_string(&kind).unwrap();
+            assert!(
+                json.contains(&format!(r#""verb":"activity_{word}""#)),
+                "{json}"
+            );
+            assert_eq!(serde_json::from_str::<IntentKind>(&json).unwrap(), kind);
+        }
     }
 
     #[test]

@@ -26,6 +26,14 @@
 //! into a cache, and the rows settle to plain on the next fetch after the
 //! drain. Row actions refuse on a provisional row — there is no server id to
 //! act on yet.
+//!
+//! Offline writes (#110): the row's lifecycle verbs — complete (`c`),
+//! archive/unarchive (`a`), duplicate (`d`) — route through `QueuedClient` like
+//! every other write, so an offline gesture queues (confirming `· queued
+//! (offline)`) instead of bouncing. Complete/unarchive replay plain (naturally
+//! idempotent); duplicate mints a fresh copy and replays plain too (not in the
+//! `Idempotency-Key` opt-in set, ADR 0036), so a lost-ack re-fire makes a
+//! visible, archivable second copy — the accepted risk over a lost gesture.
 
 use jiff::Timestamp;
 use ratatui::layout::{Constraint, Rect};
@@ -37,11 +45,11 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::{Activity, ActivityFilters, ApiClient};
 use crate::app::action::Action;
-use crate::queue::{self, FoldedActivity, QueueStore};
+use crate::queue::{self, FoldedActivity, QueueStore, WriteOutcome};
 use crate::ui::notify::Level;
 use crate::ui::{layout::bordered, theme, widgets};
 
-use super::QueuePaths;
+use super::{notify_seam_error, open_queued, QueuePaths};
 
 /// Page size we request. Also the divisor for "page N of M" when the server
 /// omits `per_page` from `meta`.
@@ -318,15 +326,28 @@ impl Activities {
                     Err(warn) => return Some(warn),
                 } {
                     let (api, tx) = (api.clone(), tx.clone());
+                    let paths = self.queue_paths.clone();
                     let title = a.title.clone();
                     tokio::spawn(async move {
-                        match api.complete_activity(a.id).await {
-                            Ok(_) => {
+                        let queued = match open_queued(&api, &paths) {
+                            Ok(q) => q,
+                            Err(e) => return notify_seam_error(&tx, "complete failed", e),
+                        };
+                        match queued.complete_activity(a.id).await {
+                            Ok(WriteOutcome::Confirmed(_)) => {
                                 let _ = tx.send(Action::Notify {
                                     level: Level::Success,
                                     text: format!("completed · {title}"),
                                 });
                                 let _ = tx.send(Action::RefreshActivities);
+                            }
+                            Ok(WriteOutcome::Provisional(_)) => {
+                                let _ = tx.send(Action::Notify {
+                                    level: Level::Info,
+                                    text: format!(
+                                        "completed · {title} · queued (offline) — will sync"
+                                    ),
+                                });
                             }
                             Err(e) => {
                                 let _ = tx.send(Action::Notify {
@@ -345,14 +366,19 @@ impl Activities {
                 } {
                     let archived = a.is_archived();
                     let (api, tx) = (api.clone(), tx.clone());
+                    let paths = self.queue_paths.clone();
                     tokio::spawn(async move {
+                        let queued = match open_queued(&api, &paths) {
+                            Ok(q) => q,
+                            Err(e) => return notify_seam_error(&tx, "archive failed", e),
+                        };
                         let res = if archived {
-                            api.unarchive_activity(a.id).await
+                            queued.unarchive_activity(a.id).await
                         } else {
-                            api.archive_activity(a.id).await
+                            queued.archive_activity(a.id).await
                         };
                         match res {
-                            Ok(_) => {
+                            Ok(WriteOutcome::Confirmed(_)) => {
                                 let _ = tx.send(Action::Notify {
                                     level: Level::Success,
                                     text: if archived {
@@ -362,6 +388,16 @@ impl Activities {
                                     },
                                 });
                                 let _ = tx.send(Action::RefreshActivities);
+                            }
+                            Ok(WriteOutcome::Provisional(_)) => {
+                                let _ = tx.send(Action::Notify {
+                                    level: Level::Info,
+                                    text: if archived {
+                                        "unarchived · queued (offline) — will sync".into()
+                                    } else {
+                                        "archived · queued (offline) — will sync".into()
+                                    },
+                                });
                             }
                             Err(e) => {
                                 let _ = tx.send(Action::Notify {
@@ -379,15 +415,28 @@ impl Activities {
                     Err(warn) => return Some(warn),
                 } {
                     let (api, tx) = (api.clone(), tx.clone());
+                    let paths = self.queue_paths.clone();
                     let title = a.title.clone();
                     tokio::spawn(async move {
-                        match api.duplicate_activity(a.id).await {
-                            Ok(_) => {
+                        let queued = match open_queued(&api, &paths) {
+                            Ok(q) => q,
+                            Err(e) => return notify_seam_error(&tx, "duplicate failed", e),
+                        };
+                        match queued.duplicate_activity(a.id).await {
+                            Ok(WriteOutcome::Confirmed(_)) => {
                                 let _ = tx.send(Action::Notify {
                                     level: Level::Success,
                                     text: format!("duplicated · {title}"),
                                 });
                                 let _ = tx.send(Action::RefreshActivities);
+                            }
+                            Ok(WriteOutcome::Provisional(_)) => {
+                                let _ = tx.send(Action::Notify {
+                                    level: Level::Info,
+                                    text: format!(
+                                        "duplicated · {title} · queued (offline) — will sync"
+                                    ),
+                                });
                             }
                             Err(e) => {
                                 let _ = tx.send(Action::Notify {
@@ -982,7 +1031,11 @@ mod tests {
 
         let api = srv_client(&server);
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut s = Activities::default();
+        let (queue_path, _) = scratch_queue();
+        let mut s = Activities {
+            queue_paths: Some((queue_path, std::path::PathBuf::new())),
+            ..Activities::default()
+        };
         s.handle(loaded(three(), 1, 25, 3), &api, &tx).await;
         s.state.select(Some(0));
         s.handle(Action::ActivitiesComplete, &api, &tx).await;
@@ -1004,7 +1057,11 @@ mod tests {
 
         let api = srv_client(&server);
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut s = Activities::default();
+        let (queue_path, _) = scratch_queue();
+        let mut s = Activities {
+            queue_paths: Some((queue_path, std::path::PathBuf::new())),
+            ..Activities::default()
+        };
         let archived = activity(serde_json::json!({
             "id": 5, "title": "Old", "archived_at": "2026-07-01T00:00:00Z"
         }));
@@ -1027,7 +1084,11 @@ mod tests {
 
         let api = srv_client(&server);
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut s = Activities::default();
+        let (queue_path, _) = scratch_queue();
+        let mut s = Activities {
+            queue_paths: Some((queue_path, std::path::PathBuf::new())),
+            ..Activities::default()
+        };
         s.handle(loaded(three(), 1, 25, 3), &api, &tx).await;
         s.state.select(Some(1)); // id 2
         s.handle(Action::ActivitiesDuplicate, &api, &tx).await;
@@ -1225,5 +1286,47 @@ mod tests {
         // refine from, and no fetch is spawned for a negative id.
         feed(&mut s, &api, &tx, Action::ActivitiesOpenDetail).await;
         assert_eq!(s.detail.as_ref().unwrap().title, "Paxos made live");
+    }
+
+    // ---- offline row actions enqueue through the queue (#110) ----
+
+    #[tokio::test]
+    async fn offline_row_actions_enqueue_through_the_queue() {
+        // A dead address: each live write bounces (Transport) and the verb
+        // queues on its row's stream, confirming `queued (offline)` rather than
+        // failing — the wiring proof for the QueuedClient seam (its own
+        // enqueue/synthesis is covered in `queue::client`).
+        let (queue_path, _) = scratch_queue();
+        let api = ApiClient::with_token(Url::parse("http://127.0.0.1:1/").unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Activities {
+            queue_paths: Some((queue_path.clone(), std::path::PathBuf::new())),
+            ..Activities::default()
+        };
+        s.handle(loaded(three(), 1, 25, 3), &api, &tx).await;
+
+        s.state.select(Some(0)); // id 1 → complete
+        s.handle(Action::ActivitiesComplete, &api, &tx).await;
+        s.state.select(Some(2)); // id 3 → duplicate
+        s.handle(Action::ActivitiesDuplicate, &api, &tx).await;
+
+        // Each verb enqueues before it notifies, so two `queued (offline)`
+        // notices mean both intents have landed.
+        for _ in 0..2 {
+            assert!(
+                recv_matching(&mut rx, |a| matches!(
+                    a,
+                    Action::Notify { text, .. } if text.contains("queued (offline)")
+                ))
+                .await,
+                "each offline verb confirms queued"
+            );
+        }
+
+        let intents = QueueStore::at(&queue_path).pending().unwrap();
+        let words: Vec<&str> = intents.iter().map(|i| i.kind.word()).collect();
+        assert_eq!(intents.len(), 2, "both verbs queued: {words:?}");
+        assert!(words.contains(&"complete"), "{words:?}");
+        assert!(words.contains(&"duplicate"), "{words:?}");
     }
 }
