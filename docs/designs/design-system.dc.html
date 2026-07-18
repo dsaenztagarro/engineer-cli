@@ -101,6 +101,57 @@
   </div>
 </div>
 
+<!-- ============================ SIGN IN · SERVER ERROR ============================ -->
+<div style="position:absolute; left:900px; top:1120px; width:600px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">SIGN IN · SERVER ERROR (auth unreachable · 5xx)</div>
+  <div data-screen-label="Sign in error" style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — blocking error · 64×18</span>
+    </div>
+    <div style="padding:14px 16px; font-size:14px; line-height:1.35; color:#E6EBF2">
+      <div style="display:flex; align-items:baseline; margin-bottom:8px">
+        <span style="color:#8787FF; font-weight:700">engineer</span>
+        <span style="color:#808080">&nbsp;&nbsp;›&nbsp;&nbsp;</span><span>Sign in</span>
+        <span style="flex:1"></span>
+        <span style="color:#D75F5F">● identity unreachable</span>
+      </div>
+      <div style="display:flex">
+        <span style="color:#585858">┌</span>
+        <span style="color:#8787FF; font-weight:700; white-space:pre"> Sign in </span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┐</span>
+      </div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:14px 10px 2px; text-align:center"><span style="color:#8787FF; font-weight:700">engineer</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px 12px; text-align:center; color:#808080">Track what you study, from the terminal.</div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px"><span style="background:#D75F5F; color:#0B0E14; font-weight:700; white-space:pre; display:inline-block; width:100%"> ✖ can't reach the identity server </span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:6px 10px 2px; text-align:center; color:#808080">identity.dsaenz.dev returned <span style="color:#D75F5F; font-weight:700">HTTP 500</span></div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px 12px; text-align:center; color:#808080">the sign-in flow can't start — <span style="color:#E6EBF2">nothing was changed</span>.</div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px 2px; text-align:center">Press <span style="color:#8787FF; font-weight:700">Enter</span> to retry &nbsp;·&nbsp; <span style="color:#8787FF; font-weight:700">q</span> to quit</div><span style="color:#585858">│</span></div>
+      <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px 14px; text-align:center; color:#585858; font-size:12px">last attempt 12:04:31 · retry 2 · loopback callback never opened</div><span style="color:#585858">│</span></div>
+      <div style="display:flex">
+        <span style="color:#585858">└</span>
+        <div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <span style="color:#585858">┘</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; margin-top:8px; flex-wrap:wrap; color:#808080; font-size:12px">
+        <span style="color:#585858">blocks on:</span>
+        <span style="border:1px solid #3A2430; color:#D75F5F; white-space:pre; padding:0 6px; border-radius:3px">unreachable</span>
+        <span style="border:1px solid #3A2430; color:#D75F5F; white-space:pre; padding:0 6px; border-radius:3px">5xx</span>
+        <span style="border:1px solid #3A3020; color:#D7AF5F; white-space:pre; padding:0 6px; border-radius:3px">401 expired → re-auth</span>
+      </div>
+      <div style="display:flex; align-items:center; margin-top:8px">
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> ⏎ </span><span>&nbsp;retry</span>
+        <span style="color:#585858">&nbsp;&nbsp;·&nbsp;&nbsp;</span>
+        <span style="background:#8787FF; color:#0B0E14; font-weight:600; white-space:pre"> q </span><span>&nbsp;quit</span>
+      </div>
+      <div style="margin-top:8px; padding-top:8px; border-top:1px solid #1A2230; color:#585858; font-size:12px; line-height:1.5">Headless twin (§C): <span style="color:#8787FF">engineer login</span> exits <span style="color:#D75F5F; font-weight:700">1</span>, same reason on <span style="color:#808080">stderr</span> — <span style="color:#E6EBF2">Tier 3</span> of the error model, whole screen, one recovery key.</div>
+    </div>
+  </div>
+</div>
+
 <!-- ============================ HOME / DASHBOARD ============================ -->
 <div style="position:absolute; left:40px; top:480px; width:840px">
   <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">HOME · DASHBOARD</div>
@@ -479,7 +530,7 @@
 
 <!-- ============================ NOTIFICATION & SEARCH STATES ============================ -->
 <div style="position:absolute; left:40px; top:2440px; width:780px">
-  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">FOOTER · NOTIFICATION &amp; SEARCH STATES</div>
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">FOOTER · NOTIFICATION &amp; SEARCH STATES · TIER 1</div>
   <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
     <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
       <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
@@ -488,7 +539,7 @@
       <span style="margin-left:6px;letter-spacing:.02em">footer states</span>
     </div>
     <div style="padding:14px 16px; font-size:14px; line-height:1.7; color:#E6EBF2">
-      <div style="color:#808080; margin-bottom:6px">The footer row swaps key-hints for a level-styled tile. Info/success read as colour; warning/error fill the row. Each auto-expires.</div>
+      <div style="color:#808080; margin-bottom:6px"><span style="color:#8787FF; font-weight:700">Tier 1</span> of the error model → the footer row swaps key-hints for a level-styled tile, then auto-expires. Info/success read as colour; warning/error fill the row. Persistent &amp; whole-screen errors use Tiers 2–3 (see the ERROR &amp; NOTIFICATION MODEL panel).</div>
       <div><span style="color:#8787FF; white-space:pre"> ℹ search: type then Enter </span></div>
       <div><span style="color:#87AF87; font-weight:700; white-space:pre"> ✓ progress saved </span></div>
       <div><span style="background:#D7AF5F; color:#0B0E14; white-space:pre; display:inline-block; width:100%"> ⚠ offline — showing cached books</span></div>
@@ -508,6 +559,59 @@
         <span style="color:#585858">┘</span>
       </div>
       <div style="display:flex; align-items:center; margin-top:8px; color:#808080">type to search · <span style="color:#8787FF">↵</span>&nbsp;apply · <span style="color:#8787FF">n/N</span>&nbsp;next match · <span style="color:#8787FF">Esc</span>&nbsp;cancel</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ ERROR & NOTIFICATION MODEL ============================ -->
+<div style="position:absolute; left:1660px; top:1860px; width:1000px">
+  <div data-drags-parent="1" style="font-weight:600; font-size:12px; color:#9aa4b2; margin-bottom:10px; letter-spacing:.06em">ERROR &amp; NOTIFICATION MODEL · WHERE EACH MESSAGE LANDS</div>
+  <div style="background:#05080F; border:1px solid #1A2230; border-radius:8px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55)">
+    <div style="display:flex; align-items:center; gap:8px; padding:9px 14px; background:#0C111A; border-bottom:1px solid #1A2230; font-size:12px; color:#808080">
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#585858"></span>
+      <span style="margin-left:6px;letter-spacing:.02em">engineer-cli — every info / success / warn / error, one home each</span>
+    </div>
+    <div style="padding:16px 18px; font-size:13px; line-height:1.5; color:#E6EBF2">
+      <div style="color:#808080; margin-bottom:14px">Every message the client shows lands in exactly one of three places, chosen by <span style="color:#E6EBF2">scope × lifetime</span>. The wording is identical across the TUI tile, the inline line, and headless <span style="color:#8787FF">stderr</span> (§C) — <span style="color:#E6EBF2">one spelling per outcome</span>. Colour is fixed: <span style="color:#8787FF">info accent</span> · <span style="color:#87AF87">success 108</span> · <span style="color:#D7AF5F">warn 179</span> · <span style="color:#D75F5F">error 167</span>.</div>
+
+      <!-- TIER 1 -->
+      <div style="border:1px solid #1A2230; border-left:2px solid #8787FF; border-radius:6px; padding:13px 15px; margin-bottom:12px">
+        <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:3px"><span style="background:#8787FF; color:#0B0E14; font-weight:700; padding:1px 8px; border-radius:3px; font-size:12px">TIER 1</span><span style="font-weight:700">FOOTER NOTIFY TILE</span><span style="color:#808080; font-size:12px">transient · auto-expiring · the outcome of a keystroke</span></div>
+        <div style="color:#808080; font-size:12.5px; margin-bottom:10px"><span style="color:#E6EBF2">Where:</span> the bottom footer row — it borrows the key-hint line for a few seconds, then reverts. Never blocks input. <span style="color:#E6EBF2">Use for:</span> the result of an action you just took, or an ambient state flip (online → offline).</div>
+        <div style="background:#05080F; border:1px solid #121826; border-radius:5px; padding:9px 11px; font-size:13px; line-height:1.85">
+          <div><span style="color:#8787FF; white-space:pre"> ℹ search: type then Enter </span><span style="color:#585858">&nbsp;&nbsp;info — accent text</span></div>
+          <div><span style="color:#87AF87; font-weight:700; white-space:pre"> ✓ progress saved </span><span style="color:#585858">&nbsp;&nbsp;success — green text</span></div>
+          <div><span style="background:#D7AF5F; color:#0B0E14; white-space:pre; display:inline-block; min-width:340px"> ⚠ offline — showing cached books</span><span style="color:#585858">&nbsp;&nbsp;warn — full-row bg</span></div>
+          <div><span style="background:#D75F5F; color:#0B0E14; white-space:pre; display:inline-block; min-width:340px"> ✖ log failed: request timed out</span><span style="color:#585858">&nbsp;&nbsp;error — full-row bg</span></div>
+        </div>
+      </div>
+
+      <!-- TIER 2 -->
+      <div style="border:1px solid #1A2230; border-left:2px solid #D7AF5F; border-radius:6px; padding:13px 15px; margin-bottom:12px">
+        <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:3px"><span style="background:#D7AF5F; color:#0B0E14; font-weight:700; padding:1px 8px; border-radius:3px; font-size:12px">TIER 2</span><span style="font-weight:700">INLINE PANEL STATE</span><span style="color:#808080; font-size:12px">persistent · scoped to one region · a read that failed</span></div>
+        <div style="color:#808080; font-size:12.5px; margin-bottom:10px"><span style="color:#E6EBF2">Where:</span> inside the bordered block whose data didn't load — the body that would hold rows shows the reason + a retry key, while the rest of the screen stays live. <span style="color:#E6EBF2">Distinguish</span> <span style="color:#585858">empty</span> (no rows) from <span style="color:#D75F5F">failed</span> (couldn't fetch). <span style="color:#E6EBF2">Use for:</span> a list / detail / segment load — one panel is broken, the screen isn't.</div>
+        <div style="font-size:13px; line-height:1.4; color:#E6EBF2">
+          <div style="display:flex"><span style="color:#585858">┌</span><span style="color:#8787FF; font-weight:700; white-space:pre"> Books · all </span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┐</span></div>
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:12px 10px 2px; text-align:center"><span style="color:#D75F5F; font-weight:700">✖ couldn't load books</span></div><span style="color:#585858">│</span></div>
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px; text-align:center; color:#808080">identity.dsaenz.dev → HTTP 500</div><span style="color:#585858">│</span></div>
+          <div style="display:flex"><span style="color:#585858">│</span><div style="flex:1; min-width:0; padding:2px 10px 12px; text-align:center; color:#808080"><span style="color:#8787FF; font-weight:700">r</span> retry&nbsp;&nbsp;·&nbsp;&nbsp;<span style="color:#8787FF; font-weight:700">o</span> open last-cached</div><span style="color:#585858">│</span></div>
+          <div style="display:flex"><span style="color:#585858">└</span><div style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; color:#585858">──────────────────────────────────────────────────────────────────────────────────────</div><span style="color:#585858">┘</span></div>
+        </div>
+      </div>
+
+      <!-- TIER 3 -->
+      <div style="border:1px solid #1A2230; border-left:2px solid #D75F5F; border-radius:6px; padding:13px 15px; margin-bottom:14px">
+        <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:3px"><span style="background:#D75F5F; color:#0B0E14; font-weight:700; padding:1px 8px; border-radius:3px; font-size:12px">TIER 3</span><span style="font-weight:700">BLOCKING SCREEN</span><span style="color:#808080; font-size:12px">persistent · whole screen · nothing else can render</span></div>
+        <div style="color:#808080; font-size:12.5px"><span style="color:#E6EBF2">Where:</span> the entire content area, with the one recovery action offered (retry / re-auth / quit). <span style="color:#E6EBF2">Use for:</span> auth down or 5xx, expired token (401 → re-auth), missing config — the screen is meaningless without it. <span style="color:#E6EBF2">Reference:</span> the <span style="color:#8787FF">SIGN IN · SERVER ERROR</span> tile. At launch with no network, reads fall back to <span style="color:#D7AF5F">cached, read-only</span> (§A) rather than blocking.</div>
+      </div>
+
+      <!-- DECISION RULE -->
+      <div style="background:#0C0F17; border:1px solid #1A2230; border-radius:6px; padding:11px 14px; font-size:12.5px; color:#808080; line-height:1.7">
+        <span style="color:#E6EBF2; font-weight:700">Pick the tier:</span>&nbsp; transient outcome of a keystroke? → <span style="color:#8787FF; font-weight:700">Tier 1</span>&nbsp;&nbsp;·&nbsp;&nbsp;one region failed, rest fine? → <span style="color:#D7AF5F; font-weight:700">Tier 2</span>&nbsp;&nbsp;·&nbsp;&nbsp;whole screen unusable? → <span style="color:#D75F5F; font-weight:700">Tier 3</span>.
+      </div>
+      <div style="margin-top:10px; padding-top:10px; border-top:1px solid #1A2230; color:#585858; font-size:12px; line-height:1.6"><span style="color:#808080">Honesty (§0·4):</span> offline / stale / failed always render — never hidden to look tidy. <span style="color:#808080">One spelling (§C):</span> the tile, the inline line and stderr share the same copy &amp; a matching exit code, so what a user reads on screen is what a script greps.</div>
     </div>
   </div>
 </div>
