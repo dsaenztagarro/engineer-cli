@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **§C reconciliation — one source for the auth outcome, and a decision record for the whole model.** The `"not authenticated — run \`engineer login\`"` refusal, previously spelled verbatim in five headless verbs and a screen, now has a single source (`messages::not_authenticated()`), pinned by a test to `ApiError::Unauthorized`'s own Display so a 401 reads the same whether printed on `stderr` or drawn on screen. The verb-specific offline refusals ("…start bare or retry online", "…capture loose or retry online") are deliberately left richer than a generic template — the reasoning, and the whole three-tier model, is now recorded in `docs/architecture/decisions/0001-terminal-error-notification-model.md`.
+
 ### Added
 
 - **The error/notification model in the QuickCapture overlay.** When the chapter/section `anchor_data` read fails, the anchor field now shows a scoped, loud `✖ couldn't load chapters · ⏎ retry` (with the reason) instead of a spinner that never resolved — and the draft is untouched (capture is sacred). A 401 there routes to re-auth (dismissing the overlay). This also fixes a bug where an `anchor_data` fetch error left the loading flag stuck.

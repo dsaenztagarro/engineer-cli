@@ -14,6 +14,7 @@ use jiff::Timestamp;
 use crate::api::{ActivityCreate, ApiClient, ApiError};
 use crate::auth::TokenProvider;
 use crate::config::Config;
+use crate::messages;
 use crate::queue::QueuedClient;
 
 #[derive(Args)]
@@ -223,7 +224,7 @@ async fn log_segment(
 
 fn problem_text(e: ApiError) -> String {
     match e {
-        ApiError::Unauthorized => "not authenticated — run `engineer login`".into(),
+        ApiError::Unauthorized => messages::not_authenticated().into(),
         ApiError::Problem { detail, .. } if !detail.is_empty() => detail,
         ApiError::Problem { title, .. } => title,
         other => other.to_string(),

@@ -409,7 +409,7 @@ impl Connect {
 /// requirement's "Connect GitHub first…", a bad feed URL's field message).
 fn problem_text(e: &ApiError) -> String {
     match e {
-        ApiError::Unauthorized => "not authenticated — run `engineer login`".to_string(),
+        ApiError::Unauthorized => messages::not_authenticated().to_string(),
         ApiError::Problem { detail, .. } if !detail.is_empty() => format!("refused · {detail}"),
         ApiError::Problem { title, .. } => format!("refused · {title}"),
         other => other.to_string(),

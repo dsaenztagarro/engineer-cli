@@ -14,6 +14,7 @@ use jiff::{civil::Date, Zoned};
 use crate::api::{ActivityCreate, ApiClient, ApiError, Week};
 use crate::auth::TokenProvider;
 use crate::config::Config;
+use crate::messages;
 use crate::queue::QueuedClient;
 
 #[derive(Args)]
@@ -360,7 +361,7 @@ fn current_iso_week() -> String {
 
 fn problem_text(e: ApiError) -> String {
     match e {
-        ApiError::Unauthorized => "not authenticated — run `engineer login`".into(),
+        ApiError::Unauthorized => messages::not_authenticated().into(),
         ApiError::Problem { detail, .. } if !detail.is_empty() => detail,
         ApiError::Problem { title, .. } => title,
         other => other.to_string(),
