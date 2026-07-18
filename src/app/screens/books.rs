@@ -6,7 +6,7 @@ use ratatui::widgets::{List, ListItem, ListState};
 use ratatui::Frame;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::api::{ApiClient, Book, BookStatus};
+use crate::api::{ApiClient, ApiError, Book, BookStatus};
 use crate::app::action::{Action, BooksFilter};
 use crate::app::screens::ScreenKind;
 use crate::messages;
@@ -73,6 +73,11 @@ impl Books {
             match api.list_books(status, q_ref).await {
                 Ok(list) => {
                     let _ = tx.send(Action::BooksLoaded(list.data));
+                }
+                // A 401 is a session problem, not a books problem — route to
+                // re-auth (Tier 3) rather than a Tier-2 books panel.
+                Err(ApiError::Unauthorized) => {
+                    let _ = tx.send(Action::SessionExpired);
                 }
                 Err(e) => {
                     // Tier 2: report the failure as itself — never an empty
