@@ -116,6 +116,14 @@ impl ApiClient {
         }
     }
 
+    /// The identity host the client talks to (`identity.dsaenz.dev`) — the
+    /// name a Tier-2 failure line prints (`{host} → HTTP 500`) so the reason
+    /// says *where* it came from. Falls back to `"server"` for the rare
+    /// host-less base URL.
+    pub fn host(&self) -> &str {
+        self.base.host_str().unwrap_or("server")
+    }
+
     async fn token(&self) -> Result<String, ApiError> {
         match &self.auth {
             Auth::Static(t) => Ok(t.clone()),

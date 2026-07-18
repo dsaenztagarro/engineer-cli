@@ -1,6 +1,8 @@
 pub mod fuzzy;
 pub mod layout;
 pub mod notify;
+pub mod panel;
 pub mod picker;
+pub mod search;
 pub mod theme;
 pub mod widgets;

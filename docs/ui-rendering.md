@@ -100,10 +100,10 @@ sequenceDiagram
     ST->>V: next frame shows the list
 ```
 
-The same pattern drives the home screen (`HomeLoaded`), the current user
-(`FetchMe` → `SetUser`), and book detail (`BookDetailLoaded`). Failures are not
-swallowed: the spawned task dispatches an `Action::Notify { level: Error, .. }`
-so the footer shows a red tile (see [Notifications](#notifications)).
+The same pattern drives the home screen (`HomeLoaded`), the current user (`FetchMe` → `SetUser`), and book detail (`BookDetailLoaded`).
+Failures are not swallowed, and — this is the rule the design system's error model makes explicit (`docs/designs/design-system.dc.html` §ERROR & NOTIFICATION MODEL) — a read that *failed* is never re-encoded as an *empty* result.
+The spawned task dispatches a typed `*LoadFailed(reason)` action; the screen records a `PanelFailure` and, when the region has no rows, renders the **Tier-2 inline panel state** (`ui::panel::render_panel_state`) inside its bordered block: a loud red reason line plus a retry key, visibly distinct from the calm muted *empty* state.
+Books (`src/app/screens/books.rs`) is the reference adopter.
 
 ## Screen routing
 
@@ -123,10 +123,9 @@ then the global/!screen keymap.
 
 ## Notifications
 
-`ui::notify` (`src/ui/notify.rs`) is the typed, self-expiring notification
-subsystem. `Level` (`Info`/`Success`/`Warning`/`Error`) carries an icon, a
-style, and a TTL; `Notification` is rendered as a one-line footer tile by
-`render_notification`. The reducer sets `App.notification` via `App::notify`;
-the tick loop drops it once `is_expired()`; `Esc` dismisses it early via
-`Action::DismissNotification`. This is the single channel for surfacing both
-successes ("signed in") and failures ("books load failed: …").
+`ui::notify` (`src/ui/notify.rs`) is the typed, self-expiring notification subsystem — **Tier 1** of the design's three-tier error/notification model.
+`Level` (`Info`/`Success`/`Warning`/`Error`) carries an icon, a style, and a TTL; `Notification` is rendered as a one-line footer tile by `render_notification`.
+The reducer sets `App.notification` via `App::notify`; the tick loop drops it once `is_expired()`; `Esc` dismisses it early via `Action::DismissNotification`.
+Tier 1 is for the transient outcome of a keystroke ("signed in", "progress saved").
+The persistent forms are **Tier 2** — the inline panel state for a read that failed (`ui::panel`, scoped to one region) — and **Tier 3** — a whole-screen blocking state for auth down / re-auth.
+The wording for a given outcome is spelled once in `crate::messages`, so the tile, the panel line, and the headless `stderr` a script greps all read the same words (design §C).

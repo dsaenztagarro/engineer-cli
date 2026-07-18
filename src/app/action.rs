@@ -46,12 +46,19 @@ pub enum Action {
 
     // Books
     BooksLoaded(Vec<Book>),
+    /// The books read failed — carries the Tier-2 reason line (built from
+    /// `messages::fail_reason`). Replaces the old `BooksLoaded(vec![])`-on-error
+    /// that made a failure indistinguishable from an empty shelf.
+    BooksLoadFailed(String),
     BooksFilter(BooksFilter),
     BooksSearchInput(char),
     BooksSearchBackspace,
     BooksSearchSubmit,
     BooksSearchCancel,
     BooksMove(i32),
+    /// `n`/`N` — step to the next/previous loaded row matching the live query
+    /// (client-side; `/` still owns the server re-query). Inert with no query.
+    BooksMatchStep(i32),
     BooksJumpStart,
     BooksJumpEnd,
     BooksOpen,
