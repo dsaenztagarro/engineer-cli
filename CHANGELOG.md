@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-18
+
+The error, notification & search-state model, across every screen (EPIC #161 close).
+
 ### Changed
 
 - **§C reconciliation — one source for the auth outcome, and a decision record for the whole model.** The `"not authenticated — run \`engineer login\`"` refusal, previously spelled verbatim in five headless verbs and a screen, now has a single source (`messages::not_authenticated()`), pinned by a test to `ApiError::Unauthorized`'s own Display so a 401 reads the same whether printed on `stderr` or drawn on screen. The verb-specific offline refusals ("…start bare or retry online", "…capture loose or retry online") are deliberately left richer than a generic template — the reasoning, and the whole three-tier model, is now recorded in `docs/architecture/decisions/0001-terminal-error-notification-model.md`.

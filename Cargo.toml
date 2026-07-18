@@ -1,6 +1,6 @@
 [package]
 name = "engineer-cli"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 # 1.89 for std file locking (`File::lock`/`try_lock`) — the offline write
 # queue's advisory locks (`src/queue/store.rs`) with no extra dependency.
