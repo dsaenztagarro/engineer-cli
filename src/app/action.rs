@@ -330,6 +330,10 @@ pub enum Action {
     },
     ActivitiesLoadFailed(String),
     ActivitiesMove(i32),
+    /// `n`/`N` — step to the next/previous *visible* row matching the live
+    /// client-side query (the `/` filter still narrows the page). Inert with no
+    /// query.
+    ActivitiesMatchStep(i32),
     ActivitiesJumpStart,
     ActivitiesJumpEnd,
     ActivitiesPageNext,
@@ -350,7 +354,14 @@ pub enum Action {
 
     // Notes browser (`src/app/screens/notes.rs`).
     NotesLoaded(Vec<Note>),
+    /// The notes read failed — carries the Tier-2 reason line (built from
+    /// `messages::fail_reason`). Replaces the old `NotesLoaded(vec![])`-on-error
+    /// that made a failure indistinguishable from an empty ledger.
+    NotesLoadFailed(String),
     NotesMove(i32),
+    /// `n`/`N` — step to the next/previous loaded row matching the live query
+    /// (client-side; `/` still owns the server re-query). Inert with no query.
+    NotesMatchStep(i32),
     NotesJumpStart,
     NotesJumpEnd,
     NotesSearchInput(char),

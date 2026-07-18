@@ -36,13 +36,10 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::{ApiClient, ApiError, CaptureSource};
 use crate::app::action::Action;
+use crate::messages;
 use crate::ui::notify::Level;
+use crate::ui::panel::{render_panel_state, PanelFailure, PanelState};
 use crate::ui::{layout::bordered, theme, widgets};
-
-/// The live-only refusal: connecting is a server write whose outcome (the opt-in
-/// flag, or the requirement `422`) can't be synthesized offline. Recorded on
-/// epic #118, the same shape as the triage verbs' offline refusal.
-const OFFLINE_REFUSAL: &str = "offline — connecting needs the server; retry online";
 
 /// A modal prompt open over the sources list.
 enum Prompt {
@@ -72,7 +69,9 @@ pub struct Connect {
     sources: Vec<CaptureSource>,
     selected: usize,
     loading: bool,
-    error: Option<String>,
+    /// Tier-2 state: set when the sources read failed, so no-sources and a
+    /// failed fetch render differently. Cleared on the next successful load.
+    failure: Option<PanelFailure>,
     prompt: Option<Prompt>,
     /// A verb is in flight — guards a second fire before the re-read.
     in_flight: bool,
@@ -91,9 +90,15 @@ impl Connect {
                 Ok(sources) => {
                     let _ = tx.send(Action::ConnectLoaded(sources));
                 }
+                // A 401 routes to re-auth; every other failure surfaces as
+                // itself in the Tier-2 panel — never a silent empty list.
+                Err(ApiError::Unauthorized) => {
+                    let _ = tx.send(Action::SessionExpired);
+                }
                 Err(e) => {
-                    let _ = tx.send(Action::ConnectLoadFailed(format!(
-                        "sources load failed: {e}"
+                    let _ = tx.send(Action::ConnectLoadFailed(messages::fail_reason(
+                        api.host(),
+                        &e,
                     )));
                 }
             }
@@ -138,14 +143,18 @@ impl Connect {
             Action::ConnectLoaded(sources) => {
                 self.sources = sources;
                 self.loading = false;
-                self.error = None;
+                self.failure = None;
                 self.in_flight = false;
                 self.clamp_selection();
             }
-            Action::ConnectLoadFailed(e) => {
+            Action::ConnectLoadFailed(reason) => {
                 self.loading = false;
-                self.error = Some(e.clone());
-                return Some((Level::Error, e));
+                self.failure = Some(PanelFailure {
+                    headline: messages::load_failed("sources"),
+                    reason,
+                    retry_key: "r",
+                    cached: false,
+                });
             }
             Action::RefreshConnect => {
                 self.loading = true;
@@ -272,7 +281,7 @@ impl Connect {
                 Err(ApiError::Transport(_)) => {
                     let _ = tx.send(Action::Notify {
                         level: Level::Error,
-                        text: OFFLINE_REFUSAL.to_string(),
+                        text: messages::offline("connecting"),
                     });
                     let _ = tx.send(Action::ConnectActionFailed);
                 }
@@ -324,14 +333,18 @@ impl Connect {
         let block = bordered("Connect · sources");
 
         if self.sources.is_empty() {
-            let body = if self.loading && self.error.is_none() {
-                "loading…".to_string()
-            } else if let Some(e) = &self.error {
-                e.clone()
+            // Failed (loud) is kept distinct from no-sources (calm) via the
+            // shared Tier-2 atom; loading is its own calm state.
+            let state = if let Some(f) = &self.failure {
+                PanelState::Failed(f.clone())
+            } else if self.loading {
+                PanelState::Loading
             } else {
-                "no capture sources".to_string()
+                PanelState::Empty {
+                    hint: Some("no capture sources".into()),
+                }
             };
-            frame.render_widget(Paragraph::new(body).block(block), area);
+            render_panel_state(frame, area, block, &state);
             return;
         }
 
@@ -671,6 +684,42 @@ mod tests {
         assert!(text.contains("Study calendar"), "calendar row: {text}");
         // The un-connectable git source wears the requirement, not connect.
         assert!(text.contains("needs GitHub"), "git state pill: {text}");
+    }
+
+    #[tokio::test]
+    async fn a_load_failure_renders_the_loud_panel_not_an_empty_list() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::ConnectLoadFailed("identity.test → HTTP 500".into()),
+        )
+        .await;
+        assert!(s.failure.is_some(), "the failure is recorded");
+        assert!(s.sources.is_empty(), "no rows are invented on failure");
+        let text = render(&mut s);
+        assert!(
+            text.contains("✖ couldn't load sources"),
+            "loud failure: {text}"
+        );
+        assert!(text.contains("HTTP 500"), "names the reason: {text}");
+        assert!(
+            !text.contains("no capture sources"),
+            "failed is never dressed up as empty: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_result_renders_the_calm_no_sources_state() {
+        let (mut s, api, tx) = setup();
+        feed(&mut s, &api, &tx, Action::ConnectLoaded(vec![])).await;
+        let text = render(&mut s);
+        assert!(text.contains("no capture sources"), "calm empty: {text}");
+        assert!(
+            !text.contains("✖"),
+            "no failure glyph on an empty list: {text}"
+        );
     }
 
     #[tokio::test]

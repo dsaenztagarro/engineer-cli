@@ -35,12 +35,10 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::api::{ApiClient, ApiError, Task};
 use crate::app::action::Action;
 use crate::inbox_cli::{ACCEPTED, ACKNOWLEDGED, ALREADY_MOVED_ON, REJECTED};
+use crate::messages;
 use crate::ui::notify::Level;
+use crate::ui::panel::{render_panel_state, PanelFailure, PanelState};
 use crate::ui::{layout::bordered, theme, widgets};
-
-/// The live-only refusal: triage is a server write whose outcome (a minted
-/// activity, or the `422`) can't be synthesized offline. Recorded on epic #118.
-const OFFLINE_REFUSAL: &str = "offline — triage needs the server; retry online";
 
 /// A draft that expires within this window earns the escalated amber badge — the
 /// design's "escalates once" rule (the ambient count's `▾`, the row's warn pill).
@@ -88,7 +86,9 @@ pub struct Inbox {
     tasks: Vec<Task>,
     selected: usize,
     loading: bool,
-    error: Option<String>,
+    /// Tier-2 state: set when the read failed, so an empty inbox (no drafts) and
+    /// a failed fetch render differently. Cleared on the next successful load.
+    failure: Option<PanelFailure>,
     stage: Stage,
     /// `Some` while the reject-reason capture is open (modal over the current
     /// stage) — owns keys via `intercept_key`.
@@ -103,7 +103,7 @@ impl Default for Inbox {
             tasks: Vec::new(),
             selected: 0,
             loading: false,
-            error: None,
+            failure: None,
             stage: Stage::List,
             rejecting: None,
             in_flight: false,
@@ -128,8 +128,16 @@ impl Inbox {
                 Ok(tasks) => {
                     let _ = tx.send(Action::InboxLoaded(tasks));
                 }
+                // A 401 routes to re-auth; every other failure surfaces as
+                // itself in the Tier-2 panel — never a calm "Inbox clear".
+                Err(ApiError::Unauthorized) => {
+                    let _ = tx.send(Action::SessionExpired);
+                }
                 Err(e) => {
-                    let _ = tx.send(Action::InboxLoadFailed(format!("inbox load failed: {e}")));
+                    let _ = tx.send(Action::InboxLoadFailed(messages::fail_reason(
+                        api.host(),
+                        &e,
+                    )));
                 }
             }
         });
@@ -166,7 +174,7 @@ impl Inbox {
                 Err(ApiError::Transport(_)) => {
                     let _ = tx.send(Action::Notify {
                         level: Level::Error,
-                        text: OFFLINE_REFUSAL.to_string(),
+                        text: messages::offline("triage"),
                     });
                     let _ = tx.send(Action::InboxActionFailed);
                 }
@@ -208,17 +216,21 @@ impl Inbox {
                 tasks.sort_by_key(|t| t.expires_at.map(|e| e.as_second()).unwrap_or(i64::MAX));
                 self.tasks = tasks;
                 self.loading = false;
-                self.error = None;
+                self.failure = None;
                 self.in_flight = false;
                 self.clamp_selection();
                 if self.tasks.is_empty() {
                     self.stage = Stage::List;
                 }
             }
-            Action::InboxLoadFailed(e) => {
+            Action::InboxLoadFailed(reason) => {
                 self.loading = false;
-                self.error = Some(e.clone());
-                return Some((Level::Error, e));
+                self.failure = Some(PanelFailure {
+                    headline: messages::load_failed("the inbox"),
+                    reason,
+                    retry_key: "r",
+                    cached: false,
+                });
             }
             Action::RefreshInbox => {
                 // Re-read resets to the list — the draft that was acted on is
@@ -333,8 +345,14 @@ impl Inbox {
         let block = bordered(format!("Inbox · {pending} pending"));
 
         if self.tasks.is_empty() {
-            if self.loading && self.error.is_none() {
-                frame.render_widget(Paragraph::new("loading…").block(block), area);
+            // Failed and loading route through the shared Tier-2 atom so a read
+            // that failed is loud (never dressed up as a calm "Inbox clear");
+            // a genuinely-empty inbox keeps its bespoke §Inbox · zero success
+            // state (inbox zero is a success, not a void).
+            if let Some(f) = &self.failure {
+                render_panel_state(frame, area, block, &PanelState::Failed(f.clone()));
+            } else if self.loading {
+                render_panel_state(frame, area, block, &PanelState::Loading);
             } else {
                 render_zero(frame, area, block);
             }
@@ -1010,6 +1028,40 @@ mod tests {
         let text = render(&mut s);
         assert!(text.contains("Inbox clear"), "zero state: {text}");
         assert!(text.contains("Nothing to triage"), "zero copy: {text}");
+    }
+
+    #[tokio::test]
+    async fn a_load_failure_renders_the_loud_panel_not_a_calm_zero() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::InboxLoadFailed("identity.test → HTTP 500".into()),
+        )
+        .await;
+        assert!(s.failure.is_some(), "the failure is recorded");
+        assert!(s.tasks.is_empty(), "no rows are invented on failure");
+        let text = render(&mut s);
+        assert!(
+            text.contains("✖ couldn't load the inbox"),
+            "loud failure: {text}"
+        );
+        assert!(text.contains("HTTP 500"), "names the reason: {text}");
+        assert!(
+            !text.contains("Inbox clear"),
+            "failed is never dressed up as the calm zero state: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_successful_load_clears_a_prior_failure() {
+        let (mut s, api, tx) = setup();
+        feed(&mut s, &api, &tx, Action::InboxLoadFailed("boom".into())).await;
+        assert!(s.failure.is_some());
+        feed(&mut s, &api, &tx, Action::InboxLoaded(vec![])).await;
+        assert!(s.failure.is_none(), "a good read clears the Tier-2 failure");
+        assert!(!render(&mut s).contains("✖"));
     }
 
     #[tokio::test]

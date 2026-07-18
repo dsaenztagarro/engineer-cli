@@ -43,10 +43,13 @@ use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::Frame;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::api::{Activity, ActivityFilters, ApiClient};
+use crate::api::{Activity, ActivityFilters, ApiClient, ApiError};
 use crate::app::action::Action;
+use crate::messages;
 use crate::queue::{self, FoldedActivity, QueueStore, WriteOutcome};
 use crate::ui::notify::Level;
+use crate::ui::panel::{render_panel_state, PanelFailure, PanelState};
+use crate::ui::search::{self, SearchBox};
 use crate::ui::{layout::bordered, theme, widgets};
 
 use super::{notify_seam_error, open_queued, QueuePaths};
@@ -77,10 +80,13 @@ pub struct Activities {
     total: u32,
     /// Index into `FILTERS`.
     filter_idx: usize,
-    /// Client-side narrow over the loaded page (no server text search).
-    query: String,
-    searching: bool,
+    /// The `/` search buffer — a client-side narrow over the loaded page (no
+    /// server text search). `n`/`N` step matches within the visible rows.
+    search: SearchBox,
     loading: bool,
+    /// Tier-2 state: set when the page read failed, so an empty page and a
+    /// failed fetch render differently. Cleared on the next successful load.
+    failure: Option<PanelFailure>,
     /// `Some` while the full-field detail read is open, over the table.
     detail: Option<Activity>,
     /// Queue location for the read-time fold; `None` (production) reads the
@@ -99,9 +105,9 @@ impl Default for Activities {
             per_page: PER_PAGE,
             total: 0,
             filter_idx: 0,
-            query: String::new(),
-            searching: false,
+            search: SearchBox::default(),
             loading: false,
+            failure: None,
             detail: None,
             queue_paths: None,
         }
@@ -141,9 +147,15 @@ impl Activities {
                         total: list.meta.total,
                     });
                 }
+                // A 401 routes to re-auth; every other failure surfaces as
+                // itself in the Tier-2 panel — never a silent empty page.
+                Err(ApiError::Unauthorized) => {
+                    let _ = tx.send(Action::SessionExpired);
+                }
                 Err(e) => {
-                    let _ = tx.send(Action::ActivitiesLoadFailed(format!(
-                        "activities load failed: {e}"
+                    let _ = tx.send(Action::ActivitiesLoadFailed(messages::fail_reason(
+                        api.host(),
+                        &e,
                     )));
                 }
             }
@@ -162,14 +174,30 @@ impl Activities {
 
     /// The rows visible after the client-side `/` narrow (all rows when empty).
     fn visible(&self) -> Vec<&FoldedActivity> {
-        if self.query.is_empty() {
+        if self.search.is_empty() {
             return self.items.iter().collect();
         }
-        let q = self.query.to_ascii_lowercase();
+        let q = self.search.query.to_ascii_lowercase();
         self.items
             .iter()
             .filter(|f| matches_query(&f.activity, &q))
             .collect()
+    }
+
+    /// `n`/`N` — move the cursor to the next/previous *visible* row whose title
+    /// matches the live query, wrapping around (the search atom's stepper).
+    fn step_match(&mut self, dir: i32) {
+        let matches: Vec<usize> = {
+            let vis = self.visible();
+            search::match_indices(
+                vis.iter().map(|f| f.activity.title.as_str()),
+                &self.search.query,
+            )
+        };
+        let cur = self.state.selected().unwrap_or(0);
+        if let Some(next) = search::step_match(&matches, cur, dir) {
+            self.state.select(Some(next));
+        }
     }
 
     fn selected(&self) -> Option<FoldedActivity> {
@@ -204,14 +232,21 @@ impl Activities {
                 _ => None,
             };
         }
-        if !self.searching {
+        if !self.search.active {
             if matches!(key.code, KeyCode::Char('/')) {
-                self.searching = true;
-                self.query.clear();
+                self.search.open();
                 return Some(Action::Notify {
                     level: Level::Info,
                     text: "filter: type to narrow this page · Esc clears".into(),
                 });
+            }
+            // `n`/`N` step matches once a query is live (applied, not capturing).
+            if !self.search.is_empty() {
+                match key.code {
+                    KeyCode::Char('n') => return Some(Action::ActivitiesMatchStep(1)),
+                    KeyCode::Char('N') => return Some(Action::ActivitiesMatchStep(-1)),
+                    _ => {}
+                }
             }
             return None;
         }
@@ -239,6 +274,7 @@ impl Activities {
             } => {
                 self.items = items;
                 self.loading = false;
+                self.failure = None;
                 // Adopt the server's echoed pagination when present; a missing
                 // `meta` (all zeros) leaves the requested page/size intact.
                 if page > 0 {
@@ -250,11 +286,17 @@ impl Activities {
                 self.total = total;
                 self.clamp_selection();
             }
-            Action::ActivitiesLoadFailed(msg) => {
+            Action::ActivitiesLoadFailed(reason) => {
                 self.loading = false;
-                return Some((Level::Error, msg));
+                self.failure = Some(PanelFailure {
+                    headline: messages::load_failed("activities"),
+                    reason,
+                    retry_key: "r",
+                    cached: false,
+                });
             }
             Action::ActivitiesMove(d) => self.move_cursor(d),
+            Action::ActivitiesMatchStep(d) => self.step_match(d),
             Action::ActivitiesJumpStart => {
                 self.state.select((!self.visible().is_empty()).then_some(0));
             }
@@ -282,17 +324,16 @@ impl Activities {
                 self.enter_page(api, tx);
             }
             Action::ActivitiesSearchInput(c) => {
-                self.query.push(c);
+                self.search.input(c);
                 self.state.select(Some(0));
             }
             Action::ActivitiesSearchBackspace => {
-                self.query.pop();
+                self.search.backspace();
                 self.state.select(Some(0));
             }
-            Action::ActivitiesSearchSubmit => self.searching = false,
+            Action::ActivitiesSearchSubmit => self.search.apply(),
             Action::ActivitiesSearchCancel => {
-                self.searching = false;
-                self.query.clear();
+                self.search.cancel();
                 self.state.select(Some(0));
             }
             Action::ActivitiesOpenDetail => {
@@ -503,8 +544,7 @@ impl Activities {
     /// Shared reset when the loaded page changes (paging or filtering): drop the
     /// page-scoped search, park the cursor at the top, and refetch.
     fn enter_page(&mut self, api: &ApiClient, tx: &UnboundedSender<Action>) {
-        self.searching = false;
-        self.query.clear();
+        self.search.cancel();
         self.state.select(Some(0));
         self.loading = true;
         self.fetch(api, tx);
@@ -530,13 +570,11 @@ impl Activities {
     }
 
     fn panel_title(&self) -> String {
-        if self.searching || !self.query.is_empty() {
-            return format!("Activities · /{}_", self.query);
-        }
-        match FILTERS[self.filter_idx].0 {
+        let base = match FILTERS[self.filter_idx].0 {
             "all" => "Activities".to_string(),
             label => format!("Activities · {label}"),
-        }
+        };
+        search::title_with_query(&base, &self.search)
     }
 
     /// The bottom-border status line: `page N of M · X total` (+ a loading note).
@@ -566,25 +604,38 @@ impl Activities {
 
         let block = bordered(self.panel_title()).title_bottom(self.status_line().right_aligned());
 
-        if self.loading && self.items.is_empty() {
-            frame.render_widget(Paragraph::new("loading…").block(block), area);
-            return;
-        }
         if self.visible().is_empty() {
-            let msg = if !self.query.is_empty() {
-                "No activities match that filter on this page."
+            // A live query that hides every row on a non-empty page is a search
+            // exhaustion (its own muted line), distinct from a truly-empty page
+            // or a failed/loading read (the shared Tier-2 atom).
+            if !self.search.is_empty() && !self.items.is_empty() {
+                frame.render_widget(
+                    Paragraph::new(search::no_matches_line(&self.search.query)).block(block),
+                    area,
+                );
+                return;
+            }
+            let state = if let Some(f) = &self.failure {
+                PanelState::Failed(f.clone())
+            } else if self.loading {
+                PanelState::Loading
             } else {
-                "No activities here. Log one with `a`, or cycle filters with `f`."
+                PanelState::Empty {
+                    hint: Some(
+                        "No activities here. Log one with `a`, or cycle filters with `f`.".into(),
+                    ),
+                }
             };
-            frame.render_widget(Paragraph::new(msg).block(block), area);
+            render_panel_state(frame, area, block, &state);
             return;
         }
 
         let now = Timestamp::now();
+        let query = self.search.query.clone();
         let rows: Vec<Row> = self
             .visible()
             .iter()
-            .map(|f| activity_row(f, now))
+            .map(|f| activity_row(f, now, &query))
             .collect();
         let table = Table::new(
             rows,
@@ -677,13 +728,10 @@ impl Activities {
         if self.detail.is_some() {
             return widgets::footer_hints(&[("↵/Esc", "close"), ("h", "back")]);
         }
-        if self.searching {
-            return Line::from(Span::styled(
-                "type to filter this page · Enter to keep · Esc to clear",
-                theme::muted(),
-            ));
+        if self.search.active {
+            return search::search_hints();
         }
-        widgets::footer_hints(&[
+        let mut hints: Vec<(&str, &str)> = vec![
             ("j/k", "move"),
             ("↵", "detail"),
             ("c", "done"),
@@ -693,8 +741,13 @@ impl Activities {
             ("f", "filter"),
             ("[ ]", "page"),
             ("/", "find"),
-            ("h", "back"),
-        ])
+        ];
+        // Advertise match-stepping only while a query is live.
+        if !self.search.is_empty() {
+            hints.push(("n/N", "match"));
+        }
+        hints.push(("h", "back"));
+        widgets::footer_hints(&hints)
     }
 }
 
@@ -709,7 +762,7 @@ fn matches_query(a: &Activity, q: &str) -> bool {
         || hit(&a.status)
 }
 
-fn activity_row(f: &FoldedActivity, now: Timestamp) -> Row<'static> {
+fn activity_row(f: &FoldedActivity, now: Timestamp, query: &str) -> Row<'static> {
     let a = &f.activity;
     let when = a
         .started_at
@@ -766,10 +819,13 @@ fn activity_row(f: &FoldedActivity, now: Timestamp) -> Row<'static> {
         )
         .style(theme::muted())
     };
+    // Highlight the live `/` query inside the title (search atom); the base
+    // style stays the row's (muted when archived). An empty query is one span.
+    let title_cell = Cell::from(Line::from(search::highlight(&a.title, query, title_style)));
     Row::new(vec![
         Cell::from(widgets::activity_status_pill(a.status.as_deref())),
         Cell::from(a.kind.clone().unwrap_or_default()).style(theme::muted()),
-        Cell::from(a.title.clone()).style(title_style),
+        title_cell,
         Cell::from(a.domain_name.clone().unwrap_or_default()).style(theme::muted()),
         dur_cell,
         Cell::from(when).style(theme::muted()),
@@ -961,15 +1017,15 @@ mod tests {
     async fn search_narrows_visible_then_cancel_restores() {
         let (mut s, api, tx) = setup();
         feed(&mut s, &api, &tx, loaded(three(), 1, 25, 3)).await;
-        s.searching = true;
+        s.search.open();
         for c in "sicp".chars() {
             feed(&mut s, &api, &tx, Action::ActivitiesSearchInput(c)).await;
         }
         assert_eq!(s.visible().len(), 1);
         assert_eq!(s.visible()[0].activity.id, 1);
         feed(&mut s, &api, &tx, Action::ActivitiesSearchCancel).await;
-        assert!(!s.searching);
-        assert!(s.query.is_empty());
+        assert!(!s.search.active);
+        assert!(s.search.is_empty());
         assert_eq!(s.visible().len(), 3);
     }
 
@@ -977,12 +1033,91 @@ mod tests {
     async fn search_matches_kind_not_only_title() {
         let (mut s, api, tx) = setup();
         feed(&mut s, &api, &tx, loaded(three(), 1, 25, 3)).await;
-        s.searching = true;
+        s.search.open();
         for c in "coding".chars() {
             feed(&mut s, &api, &tx, Action::ActivitiesSearchInput(c)).await;
         }
         assert_eq!(s.visible().len(), 1);
         assert_eq!(s.visible()[0].activity.id, 3);
+    }
+
+    #[tokio::test]
+    async fn n_steps_between_visible_matches() {
+        let (mut s, api, tx) = setup();
+        feed(&mut s, &api, &tx, loaded(three(), 1, 25, 3)).await;
+        // A live query narrowing to the two titles containing "a".
+        s.search.open();
+        feed(&mut s, &api, &tx, Action::ActivitiesSearchInput('a')).await;
+        feed(&mut s, &api, &tx, Action::ActivitiesSearchSubmit).await;
+        assert_eq!(s.visible().len(), 2, "two rows contain `a` in the title");
+        s.state.select(Some(0));
+        feed(&mut s, &api, &tx, Action::ActivitiesMatchStep(1)).await;
+        assert_eq!(
+            s.state.selected(),
+            Some(1),
+            "n steps to the next visible match"
+        );
+        feed(&mut s, &api, &tx, Action::ActivitiesMatchStep(1)).await;
+        assert_eq!(s.state.selected(), Some(0), "n wraps back to the first");
+        feed(&mut s, &api, &tx, Action::ActivitiesMatchStep(-1)).await;
+        assert_eq!(s.state.selected(), Some(1), "N steps backward with wrap");
+    }
+
+    #[tokio::test]
+    async fn a_query_that_filters_everything_shows_the_no_matches_line() {
+        let (mut s, api, tx) = setup();
+        feed(&mut s, &api, &tx, loaded(three(), 1, 25, 3)).await;
+        s.search.open();
+        for c in "zzzz".chars() {
+            feed(&mut s, &api, &tx, Action::ActivitiesSearchInput(c)).await;
+        }
+        assert!(s.visible().is_empty(), "nothing matches");
+        let text = render_activities(&mut s);
+        assert!(
+            text.contains("no other matches for"),
+            "no-matches line: {text}"
+        );
+        assert!(text.contains("zzzz"), "names the query: {text}");
+        // A filtered-to-nothing page is NOT dressed up as a failed/empty load.
+        assert!(!text.contains("✖"), "not a failure: {text}");
+    }
+
+    #[tokio::test]
+    async fn a_load_failure_renders_the_loud_panel_not_an_empty_page() {
+        let (mut s, api, tx) = setup();
+        s.handle(
+            Action::ActivitiesLoadFailed("identity.test → HTTP 500".into()),
+            &api,
+            &tx,
+        )
+        .await;
+        assert!(s.failure.is_some(), "the failure is recorded");
+        assert!(s.items.is_empty(), "no rows are invented on failure");
+        let text = render_activities(&mut s);
+        assert!(
+            text.contains("✖ couldn't load activities"),
+            "loud failure: {text}"
+        );
+        assert!(text.contains("HTTP 500"), "names the reason: {text}");
+    }
+
+    #[tokio::test]
+    async fn an_empty_page_renders_the_calm_empty_state() {
+        let (mut s, api, tx) = setup();
+        feed(&mut s, &api, &tx, loaded(vec![], 1, 25, 0)).await;
+        let text = render_activities(&mut s);
+        assert!(text.contains("No activities here"), "calm empty: {text}");
+        assert!(!text.contains("✖"), "no failure glyph: {text}");
+    }
+
+    #[tokio::test]
+    async fn a_successful_load_clears_a_prior_failure() {
+        let (mut s, api, tx) = setup();
+        s.handle(Action::ActivitiesLoadFailed("boom".into()), &api, &tx)
+            .await;
+        assert!(s.failure.is_some());
+        feed(&mut s, &api, &tx, loaded(three(), 1, 25, 3)).await;
+        assert!(s.failure.is_none(), "a good read clears the Tier-2 failure");
     }
 
     #[tokio::test]

@@ -16,10 +16,13 @@ use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::api::{ApiClient, Note, NoteFilters};
+use crate::api::{ApiClient, ApiError, Note, NoteFilters};
 use crate::app::action::Action;
+use crate::messages;
 use crate::queue::WriteOutcome;
 use crate::ui::notify::Level;
+use crate::ui::panel::{render_panel_state, PanelFailure, PanelState};
+use crate::ui::search::{self, SearchBox};
 use crate::ui::{layout::bordered, theme, widgets};
 
 use super::{notify_seam_error, open_queued, QueuePaths};
@@ -27,12 +30,16 @@ use super::{notify_seam_error, open_queued, QueuePaths};
 pub struct Notes {
     items: Vec<Note>,
     state: ListState,
-    query: String,
-    searching: bool,
+    /// The `/` search buffer. Submitting re-queries the server (`q=`); `n`/`N`
+    /// step matches within the loaded rows (search atom).
+    search: SearchBox,
     /// When set, archived notes are folded back in (dimmed) via the `archived=all`
     /// server filter; otherwise the list is active-only.
     show_archived: bool,
     loading: bool,
+    /// Tier-2 state: set when the read failed, so an empty ledger and a failed
+    /// fetch render differently. Cleared on the next successful load.
+    failure: Option<PanelFailure>,
     /// `Some` while the full-content detail read is open, over the list.
     detail: Option<Note>,
     /// A permanent-delete caught its first press on the detail; the next press
@@ -50,10 +57,10 @@ impl Default for Notes {
         Self {
             items: vec![],
             state,
-            query: String::new(),
-            searching: false,
+            search: SearchBox::default(),
             show_archived: false,
             loading: false,
+            failure: None,
             detail: None,
             delete_armed: false,
             queue_paths: None,
@@ -70,10 +77,10 @@ impl Notes {
     fn fetch(&self, api: &ApiClient, tx: &UnboundedSender<Action>) {
         let (api, tx) = (api.clone(), tx.clone());
         let filters = NoteFilters {
-            q: if self.query.is_empty() {
+            q: if self.search.is_empty() {
                 None
             } else {
-                Some(self.query.clone())
+                Some(self.search.query.clone())
             },
             // "all" keeps active notes and folds archived ones back in (dimmed);
             // None is active-only. We never request archived-only here.
@@ -85,12 +92,16 @@ impl Notes {
                 Ok(list) => {
                     let _ = tx.send(Action::NotesLoaded(list.data));
                 }
+                // A 401 routes to re-auth; every other failure surfaces as
+                // itself in the Tier-2 panel — never a swallowed empty list.
+                Err(ApiError::Unauthorized) => {
+                    let _ = tx.send(Action::SessionExpired);
+                }
                 Err(e) => {
-                    let _ = tx.send(Action::Notify {
-                        level: Level::Error,
-                        text: format!("notes load failed: {e}"),
-                    });
-                    let _ = tx.send(Action::NotesLoaded(vec![]));
+                    let _ = tx.send(Action::NotesLoadFailed(messages::fail_reason(
+                        api.host(),
+                        &e,
+                    )));
                 }
             }
         });
@@ -121,14 +132,21 @@ impl Notes {
                 _ => None,
             };
         }
-        if !self.searching {
+        if !self.search.active {
             if matches!(key.code, KeyCode::Char('/')) {
-                self.searching = true;
-                self.query.clear();
+                self.search.open();
                 return Some(Action::Notify {
                     level: Level::Info,
                     text: "search: type then Enter".into(),
                 });
+            }
+            // `n`/`N` step matches once a query is live (applied, not capturing).
+            if !self.search.is_empty() {
+                match key.code {
+                    KeyCode::Char('n') => return Some(Action::NotesMatchStep(1)),
+                    KeyCode::Char('N') => return Some(Action::NotesMatchStep(-1)),
+                    _ => {}
+                }
             }
             return None;
         }
@@ -151,6 +169,7 @@ impl Notes {
             Action::NotesLoaded(notes) => {
                 self.items = notes;
                 self.loading = false;
+                self.failure = None;
                 let len = self.items.len();
                 if self.state.selected().unwrap_or(0) >= len {
                     self.state
@@ -159,7 +178,17 @@ impl Notes {
                     self.state.select(Some(0));
                 }
             }
+            Action::NotesLoadFailed(reason) => {
+                self.loading = false;
+                self.failure = Some(PanelFailure {
+                    headline: messages::load_failed("notes"),
+                    reason,
+                    retry_key: "r",
+                    cached: false,
+                });
+            }
             Action::NotesMove(d) => self.move_cursor(d),
+            Action::NotesMatchStep(d) => self.step_match(d),
             Action::NotesJumpStart => {
                 self.state
                     .select(if self.items.is_empty() { None } else { Some(0) });
@@ -169,18 +198,15 @@ impl Notes {
                     self.state.select(Some(self.items.len() - 1));
                 }
             }
-            Action::NotesSearchInput(c) => self.query.push(c),
-            Action::NotesSearchBackspace => {
-                self.query.pop();
-            }
+            Action::NotesSearchInput(c) => self.search.input(c),
+            Action::NotesSearchBackspace => self.search.backspace(),
             Action::NotesSearchSubmit => {
-                self.searching = false;
+                self.search.apply();
                 self.loading = true;
                 self.fetch(api, tx);
             }
             Action::NotesSearchCancel => {
-                self.searching = false;
-                self.query.clear();
+                self.search.cancel();
                 self.loading = true;
                 self.fetch(api, tx);
             }
@@ -380,36 +406,57 @@ impl Notes {
         self.state.selected().and_then(|i| self.items.get(i))
     }
 
+    /// `n`/`N` — move the cursor to the next/previous loaded row whose headline
+    /// matches the live query, wrapping around (the search atom's stepper).
+    fn step_match(&mut self, dir: i32) {
+        let labels: Vec<String> = self.items.iter().map(note_headline).collect();
+        let matches = search::match_indices(labels.iter().map(String::as_str), &self.search.query);
+        let cur = self.state.selected().unwrap_or(0);
+        if let Some(next) = search::step_match(&matches, cur, dir) {
+            self.state.select(Some(next));
+        }
+    }
+
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
         if let Some(note) = self.detail.clone() {
             self.render_detail(frame, area, &note);
             return;
         }
 
-        let title = if self.searching || !self.query.is_empty() {
-            format!("Notes · /{}_", self.query)
-        } else if self.show_archived {
+        let base = if self.show_archived {
             "Notes · incl. archived".to_string()
         } else {
             "Notes".to_string()
         };
+        let title = search::title_with_query(&base, &self.search);
         let block = bordered(title);
 
-        if self.loading && self.items.is_empty() {
-            frame.render_widget(Paragraph::new("loading…").block(block), area);
-            return;
-        }
+        // No rows → a Tier-2 state, not a list. Failed (loud) and empty (calm)
+        // are deliberately distinct; loading is its own calm state.
         if self.items.is_empty() {
-            let msg = if self.query.is_empty() {
-                "No notes yet. Press <Space>c anywhere to capture one."
+            let state = if let Some(f) = &self.failure {
+                PanelState::Failed(f.clone())
+            } else if self.loading {
+                PanelState::Loading
+            } else if !self.search.is_empty() {
+                PanelState::Empty {
+                    hint: Some(format!("no notes match \"{}\"", self.search.query)),
+                }
             } else {
-                "No notes match that search."
+                PanelState::Empty {
+                    hint: Some("No notes yet. Press <Space>c anywhere to capture one.".into()),
+                }
             };
-            frame.render_widget(Paragraph::new(msg).block(block), area);
+            render_panel_state(frame, area, block, &state);
             return;
         }
 
-        let items: Vec<ListItem> = self.items.iter().map(note_list_item).collect();
+        let query = self.search.query.clone();
+        let items: Vec<ListItem> = self
+            .items
+            .iter()
+            .map(|n| note_list_item(n, &query))
+            .collect();
         let list = List::new(items)
             .block(block)
             .highlight_style(theme::selection())
@@ -480,21 +527,21 @@ impl Notes {
                 ("q", "back"),
             ]);
         }
-        if self.searching {
-            return Line::from(Span::styled(
-                "type to search · Enter to apply · Esc to cancel",
-                theme::muted(),
-            ));
+        if self.search.active {
+            return search::search_hints();
         }
-        widgets::footer_hints(&[
-            ("j/k", "move"),
-            ("↵", "open"),
-            ("/", "search"),
+        let mut hints: Vec<(&str, &str)> = vec![("j/k", "move"), ("↵", "open"), ("/", "search")];
+        // Advertise match-stepping only while a query is live.
+        if !self.search.is_empty() {
+            hints.push(("n/N", "match"));
+        }
+        hints.extend([
             ("a", "archive"),
             ("e", "edit"),
             ("t", "archived"),
             ("h", "back"),
-        ])
+        ]);
+        widgets::footer_hints(&hints)
     }
 }
 
@@ -534,21 +581,20 @@ pub(crate) fn anchor_line(note: &Note) -> Option<String> {
     })
 }
 
-fn note_list_item(note: &Note) -> ListItem<'static> {
+fn note_list_item(note: &Note, query: &str) -> ListItem<'static> {
     let archived = note.archived_at.is_some();
     let head_style = if archived {
         theme::muted()
     } else {
         Style::default().add_modifier(Modifier::BOLD)
     };
-    let mut lines = vec![Line::from(vec![
-        Span::styled(note_headline(note), head_style),
-        if archived {
-            Span::styled("  (archived)", theme::muted())
-        } else {
-            Span::raw("")
-        },
-    ])];
+    // Highlight the live query inside the headline (search atom); an empty query
+    // returns one head-styled span, so the row reads exactly as before.
+    let mut head_spans = search::highlight(&note_headline(note), query, head_style);
+    if archived {
+        head_spans.push(Span::styled("  (archived)", theme::muted()));
+    }
+    let mut lines = vec![Line::from(head_spans)];
     if let Some(anchor) = anchor_line(note) {
         lines.push(Line::from(Span::styled(
             format!("  {anchor}"),
@@ -632,24 +678,117 @@ mod tests {
     #[tokio::test]
     async fn search_input_builds_query_then_submit_exits_search() {
         let (mut s, api, tx) = setup();
-        s.searching = true;
+        s.search.open();
         for c in "blocks".chars() {
             feed(&mut s, &api, &tx, Action::NotesSearchInput(c)).await;
         }
-        assert_eq!(s.query, "blocks");
+        assert_eq!(s.search.query, "blocks");
         feed(&mut s, &api, &tx, Action::NotesSearchSubmit).await;
-        assert!(!s.searching);
-        assert_eq!(s.query, "blocks"); // submit keeps the term applied
+        assert!(!s.search.active);
+        assert_eq!(s.search.query, "blocks"); // submit keeps the term applied
     }
 
     #[tokio::test]
     async fn cancel_search_clears_query() {
         let (mut s, api, tx) = setup();
-        s.searching = true;
-        s.query = "x".into();
+        s.search.open();
+        s.search.query = "x".into();
         feed(&mut s, &api, &tx, Action::NotesSearchCancel).await;
-        assert!(!s.searching);
-        assert!(s.query.is_empty());
+        assert!(!s.search.active);
+        assert!(s.search.is_empty());
+    }
+
+    fn render_notes(s: &mut Notes) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
+        terminal.draw(|f| s.render(f, f.area())).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_load_failure_renders_the_loud_panel_not_an_empty_list() {
+        let (mut s, api, tx) = setup();
+        s.handle(
+            Action::NotesLoadFailed("identity.test → HTTP 500".into()),
+            &api,
+            &tx,
+        )
+        .await;
+        assert!(s.failure.is_some(), "the failure is recorded");
+        assert!(s.items.is_empty(), "no rows are invented on failure");
+        let text = render_notes(&mut s);
+        assert!(
+            text.contains("✖ couldn't load notes"),
+            "loud failure: {text}"
+        );
+        assert!(text.contains("HTTP 500"), "names the reason: {text}");
+        assert!(
+            !text.contains("No notes yet"),
+            "failed is never dressed up as empty: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_result_renders_the_calm_empty_state() {
+        let (mut s, api, tx) = setup();
+        feed(&mut s, &api, &tx, Action::NotesLoaded(vec![])).await;
+        let text = render_notes(&mut s);
+        assert!(text.contains("No notes yet"), "calm empty: {text}");
+        assert!(!text.contains("✖"), "no failure glyph: {text}");
+    }
+
+    #[tokio::test]
+    async fn a_successful_load_clears_a_prior_failure() {
+        let (mut s, api, tx) = setup();
+        s.handle(Action::NotesLoadFailed("boom".into()), &api, &tx)
+            .await;
+        assert!(s.failure.is_some());
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::NotesLoaded(vec![note(serde_json::json!({ "id": 1, "title": "a" }))]),
+        )
+        .await;
+        assert!(s.failure.is_none(), "a good read clears the Tier-2 failure");
+        assert!(!render_notes(&mut s).contains("✖"));
+    }
+
+    #[tokio::test]
+    async fn n_steps_between_matches_over_loaded_rows() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::NotesLoaded(vec![
+                note(serde_json::json!({ "id": 1, "title": "Rust ownership" })),
+                note(serde_json::json!({ "id": 2, "title": "Go channels" })),
+                note(serde_json::json!({ "id": 3, "title": "Rust lifetimes" })),
+            ]),
+        )
+        .await;
+        // A live query (as if `/rust` had been applied server-side and the
+        // matching rows returned) — `n`/`N` step within the loaded set.
+        s.search.query = "rust".into();
+        s.state.select(Some(0));
+        s.handle(Action::NotesMatchStep(1), &api, &tx).await;
+        assert_eq!(s.state.selected(), Some(2), "n jumps to the next match");
+        s.handle(Action::NotesMatchStep(1), &api, &tx).await;
+        assert_eq!(
+            s.state.selected(),
+            Some(0),
+            "n wraps back to the first match"
+        );
+        s.handle(Action::NotesMatchStep(-1), &api, &tx).await;
+        assert_eq!(s.state.selected(), Some(2), "N steps backward with wrap");
     }
 
     #[tokio::test]
