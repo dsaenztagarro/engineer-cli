@@ -38,9 +38,10 @@ pub enum Action {
     /// The composed daily-loop aggregate (`GET /api/v1/today`) — the whole Home
     /// screen from one read. Boxed: `Today` is large next to the other variants.
     TodayLoaded(Box<Today>),
-    /// The `today()` load failed; clears Home's spinner (the error is surfaced
-    /// as a notification tile from the load task).
-    HomeLoadFailed,
+    /// The `today()` load failed — carries the Tier-2 reason line (built from
+    /// `messages::fail_reason`). Home renders it as an inline failed panel over
+    /// the whole body, distinct from the calm loading state.
+    HomeLoadFailed(String),
     RefreshHome,
     /// The ambient pending-drafts count for Home's inbox chip (§Inbox · the
     /// ambient count). Loaded by a light `list_pending_tasks()` fetch on Home
