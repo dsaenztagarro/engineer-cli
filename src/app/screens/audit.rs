@@ -12,9 +12,11 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::api::{ApiClient, AuditSegment, SegmentUpdate};
+use crate::api::{ApiClient, ApiError, AuditSegment, SegmentUpdate};
 use crate::app::action::Action;
+use crate::messages;
 use crate::ui::notify::Level;
+use crate::ui::panel::{render_panel_state, PanelFailure, PanelState};
 use crate::ui::{layout::bordered, theme, widgets};
 
 /// Display groups, in rendering order. A row lands in its most severe group
@@ -38,6 +40,10 @@ pub struct Audit {
     rows: Vec<AuditSegment>,
     selected: usize,
     loading: bool,
+    /// Tier-2 state: set when the audit read failed, so an absent read reads as a
+    /// loud failure (with a retry key) rather than the calm "clean log" success.
+    /// Cleared on the next successful load.
+    failure: Option<PanelFailure>,
     /// A `d` on this row id armed the delete confirm; only the very next `d`
     /// on the same row goes through.
     delete_armed: Option<i64>,
@@ -69,11 +75,21 @@ impl Audit {
         match action {
             Action::AuditLoaded(read) => {
                 self.loading = false;
+                self.failure = None;
                 self.audit_count = read.audit_count;
                 let mut rows = read.segments;
                 rows.sort_by_key(group_of);
                 self.rows = rows;
                 self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+            }
+            Action::AuditLoadFailed(reason) => {
+                self.loading = false;
+                self.failure = Some(PanelFailure {
+                    headline: messages::load_failed("the audit"),
+                    reason,
+                    retry_key: "r",
+                    cached: false,
+                });
             }
             Action::AuditReload => {
                 self.loading = true;
@@ -168,26 +184,35 @@ impl Audit {
             "Segment audit".to_string()
         };
         let block = bordered(title);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
 
-        if self.loading && self.rows.is_empty() {
-            frame.render_widget(Paragraph::new("loading…"), inner);
-            return;
-        }
+        // No rows → the body is a Tier-2 state. A failed read is loud (a retry
+        // key, never dressed up as a clean log); loading is calm; a genuinely
+        // clean log is the calm success state — a caught-up inbox, not an
+        // empty/failed panel.
         if self.rows.is_empty() {
-            frame.render_widget(
+            if let Some(f) = &self.failure {
+                render_panel_state(frame, area, block, &PanelState::Failed(f.clone()));
+                return;
+            }
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            let body = if self.loading {
+                Paragraph::new("loading…")
+            } else {
                 Paragraph::new(vec![
                     Line::from(""),
                     Line::from(Span::styled(
                         "  clean log — no flags, no badge, anywhere",
                         Style::default().fg(theme::SUCCESS),
                     )),
-                ]),
-                inner,
-            );
+                ])
+            };
+            frame.render_widget(body, inner);
             return;
         }
+
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
 
         let fence_note = |group: usize| -> String {
             match group {
@@ -274,11 +299,18 @@ fn spawn_load(api: &ApiClient, tx: &UnboundedSender<Action>) {
             Ok(read) => {
                 let _ = tx.send(Action::AuditLoaded(Box::new(read)));
             }
+            // A 401 is a session problem, not an audit problem — route to
+            // re-auth (Tier 3) rather than a Tier-2 audit panel.
+            Err(ApiError::Unauthorized) => {
+                let _ = tx.send(Action::SessionExpired);
+            }
+            // Tier 2: report the failure as itself — never a swallowed read that
+            // looks like a clean log. The reason is spelled once (§C).
             Err(e) => {
-                let _ = tx.send(Action::Notify {
-                    level: Level::Error,
-                    text: format!("audit load failed: {e}"),
-                });
+                let _ = tx.send(Action::AuditLoadFailed(messages::fail_reason(
+                    api.host(),
+                    &e,
+                )));
             }
         }
     });
@@ -459,6 +491,72 @@ mod tests {
         assert!(s.handle(Action::AuditDelete, &api, &tx).await.is_some());
         // The second consecutive d goes through.
         assert!(s.handle(Action::AuditDelete, &api, &tx).await.is_none());
+    }
+
+    fn render_to_string(s: &mut Audit) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
+        terminal.draw(|f| s.render(f, f.area())).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_load_failure_records_the_panel_and_renders_it_loud() {
+        let (mut s, api, tx) = setup();
+        s.loading = true;
+        s.handle(
+            Action::AuditLoadFailed("identity.test → HTTP 500".into()),
+            &api,
+            &tx,
+        )
+        .await;
+        assert!(s.failure.is_some(), "the failure is recorded");
+        assert!(!s.loading, "the spinner is cleared");
+        assert!(s.rows.is_empty(), "no rows are invented on failure");
+        let text = render_to_string(&mut s);
+        assert!(
+            text.contains("✖ couldn't load the audit"),
+            "loud Tier-2 failure: {text}"
+        );
+        assert!(text.contains("HTTP 500"), "names the reason: {text}");
+        assert!(
+            !text.contains("clean log"),
+            "a failed read is never dressed up as a clean log: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_clean_log_stays_calm_not_a_failure() {
+        let (mut s, api, tx) = setup();
+        let read: crate::api::AuditRead =
+            serde_json::from_value(serde_json::json!({ "audit_count": 0, "segments": [] }))
+                .unwrap();
+        s.handle(Action::AuditLoaded(Box::new(read)), &api, &tx)
+            .await;
+        let text = render_to_string(&mut s);
+        assert!(text.contains("clean log"), "calm success state: {text}");
+        assert!(
+            !text.contains("✖"),
+            "no failure glyph on a clean log: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_successful_load_clears_a_prior_failure() {
+        let (mut s, api, tx) = setup();
+        s.handle(Action::AuditLoadFailed("boom".into()), &api, &tx)
+            .await;
+        s.handle(Action::AuditLoaded(Box::new(sample())), &api, &tx)
+            .await;
+        assert!(s.failure.is_none(), "a good read clears the Tier-2 failure");
+        assert!(!render_to_string(&mut s).contains("✖"));
     }
 
     #[tokio::test]

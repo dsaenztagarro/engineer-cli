@@ -39,6 +39,10 @@ pub fn load_failed(noun: &str) -> String {
 /// The Tier-1 tile / headless-stderr form of the same failure, carrying the
 /// cause after the colon ("books load failed: {reason}"). Pair `reason` with
 /// [`fail_reason`] so the tile and the panel's second line agree word for word.
+/// Kept in the catalogue for the headless verbs and any read that still tiles a
+/// failure; the Tier-2 read panels surface theirs inline instead (§C), so no
+/// screen currently calls it.
+#[allow(dead_code)]
 pub fn tile_load_failed(noun: &str, reason: &str) -> String {
     format!("{noun} load failed: {reason}")
 }

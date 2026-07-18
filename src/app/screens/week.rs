@@ -34,10 +34,14 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::api::{ActivityCreate, ApiClient, PlanItem, PlanState, Timer, Week as WeekData};
+use crate::api::{
+    ActivityCreate, ApiClient, ApiError, PlanItem, PlanState, Timer, Week as WeekData,
+};
 use crate::app::action::Action;
+use crate::messages;
 use crate::queue::WriteOutcome;
 use crate::ui::notify::Level;
+use crate::ui::panel::{render_panel_state, PanelFailure, PanelState};
 use crate::ui::{layout::bordered, theme, widgets};
 
 use super::{notify_seam_error, open_queued, QueuePaths};
@@ -74,7 +78,10 @@ pub struct Week {
     /// Weeks relative to the current study week: 0 = this week, -1 = last week.
     offset: i32,
     loading: bool,
-    error: Option<String>,
+    /// Tier-2 state: set when the read failed, so an absent week reads as a loud
+    /// failure (with a retry key) rather than a blank/loading body. Cleared on
+    /// the next successful load.
+    failure: Option<PanelFailure>,
     /// Full-row `▌` cursor over the plan rows — the row `e` (adjust) / `d`
     /// (drop) act on.
     selected: usize,
@@ -141,12 +148,19 @@ impl Week {
                 Ok(week) => {
                     let _ = tx.send(Action::WeekLoaded(Box::new(week)));
                 }
+                // A 401 is a session problem, not a week problem — route to
+                // re-auth (Tier 3) rather than a Tier-2 week panel.
+                Err(ApiError::Unauthorized) => {
+                    let _ = tx.send(Action::SessionExpired);
+                }
+                // Tier 2: report the failure as itself — never a blank board. The
+                // reason is spelled once (§C) so the panel matches a headless
+                // `engineer week`'s stderr.
                 Err(e) => {
-                    let _ = tx.send(Action::Notify {
-                        level: Level::Error,
-                        text: format!("week load failed: {e}"),
-                    });
-                    let _ = tx.send(Action::WeekLoadFailed(e.to_string()));
+                    let _ = tx.send(Action::WeekLoadFailed(messages::fail_reason(
+                        api.host(),
+                        &e,
+                    )));
                 }
             }
         });
@@ -162,7 +176,7 @@ impl Week {
             Action::WeekLoaded(week) => {
                 self.data = Some(*week);
                 self.loading = false;
-                self.error = None;
+                self.failure = None;
                 // Server truth supersedes the provisional rows and note: a synced
                 // declare/reflection is now in the payload, and the queue still
                 // holds any that haven't replayed (the header `↑N` and
@@ -175,9 +189,14 @@ impl Week {
                 let n = self.item_count();
                 self.selected = self.selected.min(n.saturating_sub(1));
             }
-            Action::WeekLoadFailed(e) => {
+            Action::WeekLoadFailed(reason) => {
                 self.loading = false;
-                self.error = Some(e);
+                self.failure = Some(PanelFailure {
+                    headline: messages::load_failed("the week"),
+                    reason,
+                    retry_key: "r",
+                    cached: false,
+                });
             }
             Action::WeekStep(delta) => {
                 self.offset += delta;
@@ -433,15 +452,15 @@ impl Week {
         let block = bordered("Week · planned vs done");
 
         let Some(data) = &self.data else {
-            let body = if let Some(err) = &self.error {
-                Paragraph::new(Line::from(Span::styled(
-                    format!("could not load the week: {err}"),
-                    Style::default().fg(theme::DANGER),
-                )))
+            // No week aggregate → the whole body is a Tier-2 state: a loud
+            // failure (with a retry key) when the read failed, else the calm
+            // loading state. The header/footer nav lives outside this block.
+            let state = if let Some(f) = &self.failure {
+                PanelState::Failed(f.clone())
             } else {
-                Paragraph::new("loading…")
+                PanelState::Loading
             };
-            frame.render_widget(body.block(block), area);
+            render_panel_state(frame, area, block, &state);
             return;
         };
 
@@ -1203,12 +1222,36 @@ mod tests {
         w.handle(Action::WeekLoaded(Box::new(sample())), &api, &tx)
             .await;
         assert!(!w.loading);
-        assert!(w.error.is_none());
+        assert!(w.failure.is_none());
         assert_eq!(w.item_count(), 3);
     }
 
     #[tokio::test]
-    async fn load_failed_surfaces_the_error() {
+    async fn a_load_failure_records_the_panel_and_renders_it_loud() {
+        let (api, tx) = ctx();
+        let mut w = Week {
+            loading: true,
+            ..Default::default()
+        };
+        w.handle(
+            Action::WeekLoadFailed("identity.test → HTTP 500".into()),
+            &api,
+            &tx,
+        )
+        .await;
+        assert!(!w.loading, "the spinner is cleared");
+        assert!(w.failure.is_some(), "the failure is recorded");
+        assert!(w.data.is_none(), "no blank board is invented on failure");
+        let text = render_text(&mut w);
+        assert!(
+            text.contains("✖ couldn't load the week"),
+            "loud Tier-2 failure: {text}"
+        );
+        assert!(text.contains("HTTP 500"), "names the reason: {text}");
+    }
+
+    #[tokio::test]
+    async fn a_loaded_week_clears_a_prior_failure() {
         let (api, tx) = ctx();
         let mut w = Week {
             loading: true,
@@ -1216,8 +1259,13 @@ mod tests {
         };
         w.handle(Action::WeekLoadFailed("boom".into()), &api, &tx)
             .await;
-        assert!(!w.loading);
-        assert_eq!(w.error.as_deref(), Some("boom"));
+        w.handle(Action::WeekLoaded(Box::new(sample())), &api, &tx)
+            .await;
+        assert!(w.failure.is_none(), "a good read clears the Tier-2 failure");
+        assert!(
+            !render_text(&mut w).contains("✖"),
+            "no failure glyph once loaded"
+        );
     }
 
     #[tokio::test]
