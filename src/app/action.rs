@@ -560,6 +560,10 @@ pub enum Action {
     CaptureAnchorInput(char),
     CaptureAnchorBackspace,
     CaptureAnchorDataLoaded(Box<AnchorData>),
+    /// The chapter/section `anchor_data` read failed — carries the Tier-2 reason
+    /// (from `messages::fail_reason`). The overlay marks the anchor field failed
+    /// (with a retry) and keeps the draft intact — capture is sacred.
+    CaptureAnchorDataFailed(String),
 
     // Command mode. The buffer is mutated in the event layer; these are signals.
     CommandBegin,

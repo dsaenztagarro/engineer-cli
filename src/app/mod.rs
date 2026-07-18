@@ -594,7 +594,10 @@ impl App {
                 // A 401 from some authenticated read/write invalidated the
                 // stored session. Route to Login in re-auth mode; `⏎` re-runs
                 // the OAuth flow. Guard against re-entrancy — a burst of 401s
-                // (several screens polling) must not stack Login screens.
+                // (several screens polling) must not stack Login screens. Any
+                // open capture overlay is dismissed — re-auth is a full-screen
+                // takeover, not something a modal should float over.
+                self.capture = None;
                 if !matches!(self.current, Screen::Login(_)) {
                     self.current = Screen::new(ScreenKind::Login);
                 }
@@ -668,7 +671,8 @@ impl App {
             | Action::CaptureAnchorMove(_)
             | Action::CaptureAnchorInput(_)
             | Action::CaptureAnchorBackspace
-            | Action::CaptureAnchorDataLoaded(_)) => {
+            | Action::CaptureAnchorDataLoaded(_)
+            | Action::CaptureAnchorDataFailed(_)) => {
                 if let Some(cap) = self.capture.as_mut() {
                     if let Some((level, text)) =
                         cap.handle(capture_action, &self.api, &self.tx).await
