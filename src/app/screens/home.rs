@@ -14,10 +14,12 @@ use ratatui::widgets::{Cell, List, ListItem, Paragraph, Row, Table};
 use ratatui::Frame;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::api::{ApiClient, BookStatus, Today};
+use crate::api::{ApiClient, ApiError, BookStatus, Today};
 use crate::app::action::Action;
 use crate::app::screens::timer::live_elapsed;
+use crate::messages;
 use crate::ui::notify::Level;
+use crate::ui::panel::{render_panel_state, PanelFailure, PanelState};
 use crate::ui::{layout::bordered, theme, widgets};
 
 #[derive(Default)]
@@ -35,6 +37,10 @@ pub struct Home {
     /// expiry (the design's "escalates once").
     inbox_pending: usize,
     inbox_expiring: bool,
+    /// Tier-2 state: set when the `/today` read failed, so a failure renders a
+    /// loud inline panel over the body (the reason + a retry key) rather than
+    /// the calm loading spinner. Cleared on the next successful load.
+    failure: Option<PanelFailure>,
 }
 
 impl Home {
@@ -55,8 +61,17 @@ impl Home {
                 self.today = Some(*today);
                 self.loaded_at = Some(Instant::now());
                 self.loading = false;
+                self.failure = None;
             }
-            Action::HomeLoadFailed => self.loading = false,
+            Action::HomeLoadFailed(reason) => {
+                self.loading = false;
+                self.failure = Some(PanelFailure {
+                    headline: messages::load_failed("today"),
+                    reason,
+                    retry_key: "r",
+                    cached: false,
+                });
+            }
             Action::HomeInboxLoaded { pending, expiring } => {
                 self.inbox_pending = pending;
                 self.inbox_expiring = expiring;
@@ -73,12 +88,14 @@ impl Home {
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
         let Some(today) = self.today.as_ref() else {
-            let msg = if self.loading {
-                "loading…"
+            // No aggregate yet: a failed `/today` read is a loud Tier-2 panel
+            // (reason + `r` retry), never confused with the calm loading state.
+            let state = if let Some(f) = &self.failure {
+                PanelState::Failed(f.clone())
             } else {
-                "Couldn't load today. Press `r` to refresh."
+                PanelState::Loading
             };
-            frame.render_widget(Paragraph::new(msg).block(bordered("Home")), area);
+            render_panel_state(frame, area, bordered("Home"), &state);
             return;
         };
 
@@ -395,12 +412,17 @@ fn spawn_load(api: ApiClient, tx: UnboundedSender<Action>) {
             Ok(today) => {
                 let _ = tx.send(Action::TodayLoaded(Box::new(today)));
             }
+            // A 401 is a session problem, not a Home problem — route to re-auth.
+            Err(ApiError::Unauthorized) => {
+                let _ = tx.send(Action::SessionExpired);
+            }
             Err(e) => {
-                let _ = tx.send(Action::Notify {
-                    level: Level::Error,
-                    text: format!("today failed: {e}"),
-                });
-                let _ = tx.send(Action::HomeLoadFailed);
+                // Tier 2: the whole-body read failed — the reason rides on the
+                // panel (§C one spelling), not a transient tile.
+                let _ = tx.send(Action::HomeLoadFailed(messages::fail_reason(
+                    api.host(),
+                    &e,
+                )));
             }
         }
     });
@@ -542,6 +564,40 @@ mod tests {
             !text.contains("on pace"),
             "no calm line when behind: {text}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_failed_today_read_renders_the_tier2_panel_not_a_blank() {
+        let (api, tx) = deps();
+        let mut home = Home::default();
+        home.handle(
+            Action::HomeLoadFailed("identity.test → HTTP 500".into()),
+            &api,
+            &tx,
+        )
+        .await;
+        assert!(home.today.is_none(), "no aggregate invented on failure");
+        let text = render_home(&mut home);
+        assert!(
+            text.contains("✖ couldn't load today"),
+            "loud failure: {text}"
+        );
+        assert!(text.contains("HTTP 500"), "names the reason: {text}");
+    }
+
+    #[tokio::test]
+    async fn a_successful_load_clears_a_prior_failure() {
+        let (api, tx) = deps();
+        let mut home = Home::default();
+        home.handle(Action::HomeLoadFailed("boom".into()), &api, &tx)
+            .await;
+        home.handle(Action::TodayLoaded(Box::new(today(full()))), &api, &tx)
+            .await;
+        assert!(
+            home.failure.is_none(),
+            "a good read clears the Tier-2 failure"
+        );
+        assert!(!render_home(&mut home).contains("✖"));
     }
 
     #[tokio::test]
