@@ -27,9 +27,12 @@ use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::Frame;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::api::{ApiClient, Dashboard, Topic, TopicFilters};
+use crate::api::{ApiClient, ApiError, Dashboard, Topic, TopicFilters};
 use crate::app::action::Action;
+use crate::messages;
 use crate::ui::notify::Level;
+use crate::ui::panel::{render_panel_state, PanelFailure, PanelState};
+use crate::ui::search::{self, SearchBox};
 use crate::ui::{layout::bordered, theme, widgets};
 
 /// The four spaced-repetition ratings, each a single keystroke. `f`/`z`/`s`/`i`
@@ -108,7 +111,10 @@ pub struct Review {
     // ---- dashboard ----
     dashboard: Option<Dashboard>,
     loading: bool,
-    error: Option<String>,
+    /// Tier-2 state shared by the dashboard and browse bodies: set when a read
+    /// failed, so an absent-and-failed panel reads loud and distinct from the
+    /// calm loading/empty states. Cleared on the next successful load.
+    failure: Option<PanelFailure>,
 
     // ---- sitting ----
     /// The topic currently being rated; `None` once the queue drains.
@@ -125,9 +131,9 @@ pub struct Review {
     per_page: u32,
     total: u32,
     sort_idx: usize,
-    /// The server-side `q` search text.
-    query: String,
-    searching: bool,
+    /// The `/` search buffer (query + capturing flag). `/` re-queries the
+    /// server (`q`); `n`/`N` step matches within the loaded rows (search atom).
+    search: SearchBox,
     browse_loading: bool,
     /// `Some` while the topic detail read is open, over the browse table.
     detail: Option<Topic>,
@@ -141,7 +147,7 @@ impl Default for Review {
             stage: Stage::Dashboard,
             dashboard: None,
             loading: false,
-            error: None,
+            failure: None,
             current: None,
             rated: 0,
             done: false,
@@ -152,8 +158,7 @@ impl Default for Review {
             per_page: PER_PAGE,
             total: 0,
             sort_idx: 0,
-            query: String::new(),
-            searching: false,
+            search: SearchBox::default(),
             browse_loading: false,
             detail: None,
         }
@@ -177,8 +182,18 @@ impl Review {
                 Ok(d) => {
                     let _ = tx.send(Action::ReviewDashboardLoaded(Box::new(d)));
                 }
+                // A 401 is a session problem, not a review problem — route to
+                // re-auth (Tier 3) rather than a Tier-2 review panel.
+                Err(ApiError::Unauthorized) => {
+                    let _ = tx.send(Action::SessionExpired);
+                }
+                // Tier 2: report the failure as itself. The reason is spelled
+                // once (§C) so the panel matches the catalogue.
                 Err(e) => {
-                    let _ = tx.send(Action::ReviewLoadFailed(format!("review load failed: {e}")));
+                    let _ = tx.send(Action::ReviewLoadFailed(messages::fail_reason(
+                        api.host(),
+                        &e,
+                    )));
                 }
             }
         });
@@ -188,7 +203,7 @@ impl Review {
         let (api, tx) = (api.clone(), tx.clone());
         let filters = TopicFilters {
             sort: Some(SORTS[self.sort_idx].0.to_string()),
-            q: (!self.query.is_empty()).then(|| self.query.clone()),
+            q: (!self.search.is_empty()).then(|| self.search.query.clone()),
             page: Some(self.page),
             ..Default::default()
         };
@@ -202,8 +217,16 @@ impl Review {
                         total: list.meta.total,
                     });
                 }
+                // A 401 routes to re-auth (Tier 3); any other failure surfaces
+                // inline as a Tier-2 browse panel, never a silently-empty table.
+                Err(ApiError::Unauthorized) => {
+                    let _ = tx.send(Action::SessionExpired);
+                }
                 Err(e) => {
-                    let _ = tx.send(Action::ReviewLoadFailed(format!("topics load failed: {e}")));
+                    let _ = tx.send(Action::ReviewLoadFailed(messages::fail_reason(
+                        api.host(),
+                        &e,
+                    )));
                 }
             }
         });
@@ -277,7 +300,7 @@ impl Review {
                         _ => None,
                     };
                 }
-                if self.searching {
+                if self.search.active {
                     return match key.code {
                         KeyCode::Esc => Some(Action::ReviewBrowseSearchCancel),
                         KeyCode::Enter => Some(Action::ReviewBrowseSearchSubmit),
@@ -287,12 +310,20 @@ impl Review {
                     };
                 }
                 if matches!(key.code, KeyCode::Char('/')) {
-                    self.searching = true;
-                    self.query.clear();
+                    self.search.open();
                     return Some(Action::Notify {
                         level: Level::Info,
                         text: "search topics · Enter to run · Esc clears".into(),
                     });
+                }
+                // `n`/`N` step matches once a query is live (applied, not
+                // capturing). Only claim the keys when there's a query to step.
+                if !self.search.is_empty() {
+                    match key.code {
+                        KeyCode::Char('n') => return Some(Action::ReviewBrowseMatchStep(1)),
+                        KeyCode::Char('N') => return Some(Action::ReviewBrowseMatchStep(-1)),
+                        _ => {}
+                    }
                 }
                 None
             }
@@ -310,13 +341,27 @@ impl Review {
             Action::ReviewDashboardLoaded(d) => {
                 self.dashboard = Some(*d);
                 self.loading = false;
-                self.error = None;
+                self.failure = None;
             }
-            Action::ReviewLoadFailed(e) => {
+            Action::ReviewLoadFailed(reason) => {
                 self.loading = false;
                 self.browse_loading = false;
-                self.error = Some(e.clone());
-                return Some((Level::Error, e));
+                // The browse read and the dashboard read share this arm; name
+                // the noun by the stage that was reading so the headline is
+                // honest ("couldn't load topics" vs "couldn't load review").
+                let noun = if self.stage == Stage::Browse {
+                    "topics"
+                } else {
+                    "review"
+                };
+                // Tier 2: the failure surfaces inline in the body panel, not as a
+                // Tier-1 notify tile — reporting it twice would double-count it.
+                self.failure = Some(PanelFailure {
+                    headline: messages::load_failed(noun),
+                    reason,
+                    retry_key: "r",
+                    cached: false,
+                });
             }
             Action::RefreshReview => {
                 self.loading = true;
@@ -324,14 +369,18 @@ impl Review {
             }
             Action::ReviewOpenDashboard => {
                 self.stage = Stage::Dashboard;
+                // Drop any browse failure so it can't bleed into the dashboard
+                // body (both stages read the one `failure` field).
+                self.failure = None;
                 self.loading = true;
                 self.fetch_dashboard(api, tx);
             }
             Action::ReviewOpenBrowse => {
                 self.stage = Stage::Browse;
                 self.detail = None;
-                self.searching = false;
-                self.query.clear();
+                self.search.cancel();
+                // Drop any dashboard failure for the same reason.
+                self.failure = None;
                 self.page = 1;
                 self.browse_state.select(Some(0));
                 self.browse_loading = true;
@@ -411,6 +460,7 @@ impl Review {
             } => {
                 self.topics = items;
                 self.browse_loading = false;
+                self.failure = None;
                 if page > 0 {
                     self.page = page;
                 }
@@ -421,6 +471,7 @@ impl Review {
                 self.clamp_selection();
             }
             Action::ReviewBrowseMove(d) => self.move_cursor(d),
+            Action::ReviewBrowseMatchStep(d) => self.step_match(d),
             Action::ReviewBrowseJumpStart => {
                 self.browse_state
                     .select((!self.topics.is_empty()).then_some(0));
@@ -447,21 +498,18 @@ impl Review {
                 self.page = 1;
                 self.enter_browse_page(api, tx);
             }
-            Action::ReviewBrowseSearchInput(c) => self.query.push(c),
-            Action::ReviewBrowseSearchBackspace => {
-                self.query.pop();
-            }
+            Action::ReviewBrowseSearchInput(c) => self.search.input(c),
+            Action::ReviewBrowseSearchBackspace => self.search.backspace(),
             Action::ReviewBrowseSearchSubmit => {
-                self.searching = false;
+                self.search.apply();
                 self.page = 1;
                 self.browse_state.select(Some(0));
                 self.browse_loading = true;
                 self.fetch_browse(api, tx);
             }
             Action::ReviewBrowseSearchCancel => {
-                self.searching = false;
-                let had_query = !self.query.is_empty();
-                self.query.clear();
+                let had_query = !self.search.is_empty();
+                self.search.cancel();
                 if had_query {
                     self.page = 1;
                     self.browse_state.select(Some(0));
@@ -498,7 +546,8 @@ impl Review {
     /// search prompt (the `q` text persists across pages/sorts), park the cursor
     /// at the top, and refetch.
     fn enter_browse_page(&mut self, api: &ApiClient, tx: &UnboundedSender<Action>) {
-        self.searching = false;
+        // Stop capturing but keep the `q` text — it persists across pages/sorts.
+        self.search.apply();
         self.browse_state.select(Some(0));
         self.browse_loading = true;
         self.fetch_browse(api, tx);
@@ -528,6 +577,18 @@ impl Review {
         self.browse_state.select(Some(next as usize));
     }
 
+    /// `n`/`N` — move the cursor to the next/previous loaded topic whose title
+    /// matches the live query, wrapping around. `/` still owns the server
+    /// re-query; this steps within the rows already on screen.
+    fn step_match(&mut self, dir: i32) {
+        let names: Vec<String> = self.topics.iter().map(topic_name).collect();
+        let matches = search::match_indices(names.iter().map(String::as_str), &self.search.query);
+        let cur = self.browse_state.selected().unwrap_or(0);
+        if let Some(next) = search::step_match(&matches, cur, dir) {
+            self.browse_state.select(Some(next));
+        }
+    }
+
     fn clamp_selection(&mut self) {
         let len = self.topics.len();
         match self.browse_state.selected() {
@@ -553,16 +614,15 @@ impl Review {
 
     fn render_dashboard(&self, frame: &mut Frame, area: Rect) {
         let block = bordered("Review");
+        // No dashboard yet → a Tier-2 state, not a bare line: a failed read is
+        // loud and distinct from the calm loading spinner.
         let Some(d) = &self.dashboard else {
-            let body = if let Some(err) = &self.error {
-                Paragraph::new(Line::from(Span::styled(
-                    format!("could not load review: {err}"),
-                    Style::default().fg(theme::DANGER),
-                )))
+            let state = if let Some(f) = &self.failure {
+                PanelState::Failed(f.clone())
             } else {
-                Paragraph::new("loading…")
+                PanelState::Loading
             };
-            frame.render_widget(body.block(block), area);
+            render_panel_state(frame, area, block, &state);
             return;
         };
 
@@ -689,21 +749,37 @@ impl Review {
         let block =
             bordered(self.browse_title()).title_bottom(self.browse_status().right_aligned());
 
-        if self.browse_loading && self.topics.is_empty() {
-            frame.render_widget(Paragraph::new("loading…").block(block), area);
-            return;
-        }
+        // No rows → a Tier-2 body. Failed (loud) and empty (calm) never collapse;
+        // loading is its own calm state, and a live query the server matched to
+        // nothing reads as the muted no-matches line.
         if self.topics.is_empty() {
-            let msg = if !self.query.is_empty() {
-                "No topics match that search."
+            if let Some(f) = &self.failure {
+                render_panel_state(frame, area, block, &PanelState::Failed(f.clone()));
+            } else if self.browse_loading {
+                render_panel_state(frame, area, block, &PanelState::Loading);
+            } else if !self.search.is_empty() {
+                frame.render_widget(
+                    Paragraph::new(search::no_matches_line(&self.search.query)).block(block),
+                    area,
+                );
             } else {
-                "No topics."
-            };
-            frame.render_widget(Paragraph::new(msg).block(block), area);
+                render_panel_state(
+                    frame,
+                    area,
+                    block,
+                    &PanelState::Empty {
+                        hint: Some("No topics.".into()),
+                    },
+                );
+            }
             return;
         }
 
-        let rows: Vec<Row> = self.topics.iter().map(topic_row).collect();
+        let rows: Vec<Row> = self
+            .topics
+            .iter()
+            .map(|t| topic_row(t, &self.search.query))
+            .collect();
         let table = Table::new(
             rows,
             [
@@ -754,11 +830,7 @@ impl Review {
 
     fn browse_title(&self) -> String {
         let sort = SORTS[self.sort_idx].1;
-        if self.searching || !self.query.is_empty() {
-            format!("Review · browse · {sort} · /{}_", self.query)
-        } else {
-            format!("Review · browse · {sort}")
-        }
+        search::title_with_query(&format!("Review · browse · {sort}"), &self.search)
     }
 
     fn browse_status(&self) -> Line<'static> {
@@ -803,20 +875,22 @@ impl Review {
             Stage::Browse => {
                 if self.detail.is_some() {
                     widgets::footer_hints(&[("f/z/s/i", "rate"), ("↵/Esc", "close")])
-                } else if self.searching {
-                    Line::from(Span::styled(
-                        "type to search topics · Enter to run · Esc to clear",
-                        theme::muted(),
-                    ))
+                } else if self.search.active {
+                    search::search_hints()
                 } else {
-                    widgets::footer_hints(&[
+                    let mut hints: Vec<(&str, &str)> = vec![
                         ("j/k", "move"),
                         ("↵", "detail"),
                         ("s", "sort"),
                         ("[ ]", "page"),
                         ("/", "find"),
-                        ("h", "back"),
-                    ])
+                    ];
+                    // Advertise match-stepping only while a query is live.
+                    if !self.search.is_empty() {
+                        hints.push(("n/N", "match"));
+                    }
+                    hints.push(("h", "back"));
+                    widgets::footer_hints(&hints)
                 }
             }
         }
@@ -852,10 +926,13 @@ fn queue_line(t: &Topic, name_w: usize) -> Line<'static> {
     ])
 }
 
-fn topic_row(t: &Topic) -> Row<'static> {
+fn topic_row(t: &Topic, query: &str) -> Row<'static> {
     let iv = t.interval_days.map(|d| format!("{d}d")).unwrap_or_default();
+    // Highlight the live query inside the topic title (search atom); the muted
+    // trailing columns stay plain.
+    let title = Line::from(search::highlight(&topic_name(t), query, Style::default()));
     Row::new(vec![
-        Cell::from(topic_name(t)),
+        Cell::from(title),
         Cell::from(t.domain_name.clone().unwrap_or_default()).style(theme::muted()),
         Cell::from(t.state.clone()).style(theme::muted()),
         Cell::from(format!("{}×", t.review_count)).style(theme::muted()),
@@ -942,6 +1019,8 @@ mod tests {
     use super::*;
     use crate::config::{Config, Environment};
     use crossterm::event::{KeyEvent, KeyModifiers};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
     use std::time::Duration;
     use tokio::sync::mpsc;
     use url::Url;
@@ -954,6 +1033,17 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         Box::leak(Box::new(rx));
         (Review::default(), api, tx)
+    }
+
+    fn render(s: &mut Review) -> String {
+        let mut t = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        t.draw(|f| s.render(f, f.area())).unwrap();
+        t.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
     }
 
     async fn feed(
@@ -1221,14 +1311,14 @@ mod tests {
     async fn browse_search_builds_query_and_cancel_clears_it() {
         let (mut s, api, tx) = setup();
         s.stage = Stage::Browse;
-        s.searching = true;
+        s.search.open();
         for c in "btree".chars() {
             feed(&mut s, &api, &tx, Action::ReviewBrowseSearchInput(c)).await;
         }
-        assert_eq!(s.query, "btree");
+        assert_eq!(s.search.query, "btree");
         feed(&mut s, &api, &tx, Action::ReviewBrowseSearchCancel).await;
-        assert!(!s.searching);
-        assert!(s.query.is_empty());
+        assert!(!s.search.active);
+        assert!(s.search.is_empty());
     }
 
     #[tokio::test]
@@ -1242,6 +1332,81 @@ mod tests {
         assert_eq!(s.detail.as_ref().unwrap().subdomain_id, 5);
         feed(&mut s, &api, &tx, Action::ReviewBrowseCloseDetail).await;
         assert!(s.detail.is_none());
+    }
+
+    // ---- Tier-2 dashboard failure + browse match-stepping ----
+
+    #[tokio::test]
+    async fn a_dashboard_load_failure_renders_the_tier2_panel_not_a_blank() {
+        let (mut s, api, tx) = setup();
+        s.loading = true;
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::ReviewLoadFailed("identity.test → HTTP 500".into()),
+        )
+        .await;
+        assert!(s.failure.is_some(), "the failure is recorded");
+        assert!(s.dashboard.is_none(), "no dashboard invented on failure");
+        let text = render(&mut s);
+        assert!(
+            text.contains("✖ couldn't load review"),
+            "loud failure: {text}"
+        );
+        assert!(text.contains("HTTP 500"), "names the reason: {text}");
+    }
+
+    fn rust_topics() -> Vec<Topic> {
+        vec![
+            topic(serde_json::json!({
+                "subdomain_id": 1, "domain_id": 1, "subdomain_name": "Rust ownership",
+                "state": "due", "review_count": 1
+            })),
+            topic(serde_json::json!({
+                "subdomain_id": 2, "domain_id": 1, "subdomain_name": "Go routines",
+                "state": "due", "review_count": 1
+            })),
+            topic(serde_json::json!({
+                "subdomain_id": 3, "domain_id": 1, "subdomain_name": "Rust atomics",
+                "state": "due", "review_count": 1
+            })),
+        ]
+    }
+
+    #[tokio::test]
+    async fn browse_n_steps_between_matches_over_loaded_rows() {
+        let (mut s, api, tx) = setup();
+        s.stage = Stage::Browse;
+        feed(&mut s, &api, &tx, browse_loaded(rust_topics(), 1, 25, 3)).await;
+        // A live query (as if `/rust` had been applied server-side and the
+        // matching rows returned) — `n`/`N` step within the loaded set.
+        s.search.query = "rust".into();
+        s.browse_state.select(Some(0));
+        feed(&mut s, &api, &tx, Action::ReviewBrowseMatchStep(1)).await;
+        assert_eq!(s.browse_state.selected(), Some(2), "n jumps to next match");
+        feed(&mut s, &api, &tx, Action::ReviewBrowseMatchStep(1)).await;
+        assert_eq!(s.browse_state.selected(), Some(0), "n wraps to the first");
+        feed(&mut s, &api, &tx, Action::ReviewBrowseMatchStep(-1)).await;
+        assert_eq!(s.browse_state.selected(), Some(2), "N steps back with wrap");
+    }
+
+    #[tokio::test]
+    async fn browse_empty_with_a_live_query_shows_the_no_matches_line() {
+        let (mut s, api, tx) = setup();
+        s.stage = Stage::Browse;
+        s.search.query = "zzz".into();
+        // The server matched the query to nothing.
+        feed(&mut s, &api, &tx, browse_loaded(vec![], 1, 25, 0)).await;
+        let text = render(&mut s);
+        assert!(
+            text.contains("no other matches for \"zzz\""),
+            "no-matches line: {text}"
+        );
+        assert!(
+            !text.contains("✖"),
+            "empty is never dressed up as a failure: {text}"
+        );
     }
 
     // ---- the rate keystroke → server → advance path ----

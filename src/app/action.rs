@@ -246,6 +246,10 @@ pub enum Action {
 
     // Timer settings — the view-only knobs screen (`:settings`).
     SettingsLoaded(Box<TimerSettings>),
+    /// The settings read failed — carries the Tier-2 reason line (built from
+    /// `messages::fail_reason`). Replaces the old bare notify-on-error that left
+    /// a failed read looking like a blank, still-loading panel.
+    SettingsLoadFailed(String),
     SettingsReload,
 
     // Week board (`src/app/screens/week.rs`, `:week`, `g w`) — the planned-vs-
@@ -418,6 +422,9 @@ pub enum Action {
         total: u32,
     },
     ReviewBrowseMove(i32),
+    /// `n`/`N` — step to the next/previous loaded topic matching the live query
+    /// (client-side; `/` still owns the server re-query). Inert with no query.
+    ReviewBrowseMatchStep(i32),
     ReviewBrowseJumpStart,
     ReviewBrowseJumpEnd,
     ReviewBrowsePageNext,
