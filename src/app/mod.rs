@@ -542,8 +542,19 @@ impl App {
                 let cfg = self.config.clone();
                 let tx = self.tx.clone();
                 tokio::spawn(async move {
+                    // A discover() failure means the identity server is
+                    // unreachable / 5xx — the flow can't even start (Tier 3,
+                    // retry). A failure *after* discover (cancelled callback,
+                    // timeout, keyring) is recoverable in place: back to idle
+                    // with a notify tile.
+                    let discovery = match crate::auth::discover(&cfg).await {
+                        Ok(d) => d,
+                        Err(e) => {
+                            let _ = tx.send(Action::LoginServerError(e.to_string()));
+                            return;
+                        }
+                    };
                     let result = async {
-                        let discovery = crate::auth::discover(&cfg).await?;
                         let issued = crate::auth::login(&cfg, &discovery, false).await?;
                         if let Some(refresh) = &issued.refresh {
                             crate::auth::store_refresh(&cfg, refresh)?;
@@ -567,6 +578,29 @@ impl App {
                     s.set_idle();
                 }
                 self.notify(Level::Error, format!("login failed: {e}"));
+            }
+            Action::LoginServerError(e) => {
+                // The flow couldn't reach the identity server (Tier 3). Make
+                // sure we're on Login (a re-auth may have triggered the retry
+                // from elsewhere), then raise its blocking server-error state.
+                if !matches!(self.current, Screen::Login(_)) {
+                    self.current = Screen::new(ScreenKind::Login);
+                }
+                if let Screen::Login(s) = &mut self.current {
+                    s.set_server_error(e);
+                }
+            }
+            Action::SessionExpired => {
+                // A 401 from some authenticated read/write invalidated the
+                // stored session. Route to Login in re-auth mode; `⏎` re-runs
+                // the OAuth flow. Guard against re-entrancy — a burst of 401s
+                // (several screens polling) must not stack Login screens.
+                if !matches!(self.current, Screen::Login(_)) {
+                    self.current = Screen::new(ScreenKind::Login);
+                }
+                if let Screen::Login(s) = &mut self.current {
+                    s.set_expired();
+                }
             }
             Action::Goto(kind) => {
                 self.current = Screen::new(kind);
@@ -945,6 +979,38 @@ mod tests {
     async fn header_shows_signed_in_user() {
         let (mut app, _rx) = test_app(Some("alice@example.com".into()));
         assert!(rendered_text(&mut app).contains("alice@example.com"));
+    }
+
+    #[tokio::test]
+    async fn a_401_from_any_screen_routes_to_reauth() {
+        // The global interceptor: a session expiry replaces whatever screen is
+        // up with the Tier-3 re-auth prompt.
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        assert!(matches!(app.current, Screen::Home(_)));
+        app.handle(Action::SessionExpired).await;
+        assert!(matches!(app.current, Screen::Login(_)), "routed to Login");
+        let text = rendered_text(&mut app);
+        assert!(text.contains("session expired"), "re-auth prompt: {text}");
+    }
+
+    #[tokio::test]
+    async fn a_burst_of_401s_does_not_stack_login_screens() {
+        // Several screens polling can each surface a 401 — the guard keeps a
+        // single re-auth screen rather than re-entering.
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.handle(Action::SessionExpired).await;
+        app.handle(Action::SessionExpired).await;
+        assert!(matches!(app.current, Screen::Login(_)));
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_identity_server_raises_the_blocking_screen() {
+        let (mut app, _rx) = test_app(None);
+        app.handle(Action::LoginServerError("identity.dev → HTTP 500".into()))
+            .await;
+        assert!(matches!(app.current, Screen::Login(_)));
+        let text = rendered_text(&mut app);
+        assert!(text.contains("can't reach the identity server"), "{text}");
     }
 
     #[tokio::test]

@@ -25,6 +25,14 @@ pub enum Action {
     Login,
     LoginSucceeded,
     LoginFailed(String),
+    /// The pre-flight `discover()` couldn't reach the identity server (auth
+    /// unreachable / 5xx) — the sign-in flow can't even start. Renders the
+    /// Tier-3 blocking screen (§SIGN IN · SERVER ERROR), `⏎` to retry.
+    LoginServerError(String),
+    /// A 401 from any authenticated read/write — the stored session is no longer
+    /// valid. Routes to Login in re-auth mode (Tier 3, `⏎` to sign in). The one
+    /// cross-cutting behavioural addition of the error-model epic.
+    SessionExpired,
 
     // Home
     /// The composed daily-loop aggregate (`GET /api/v1/today`) — the whole Home

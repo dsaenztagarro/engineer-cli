@@ -1,3 +1,4 @@
+pub mod blocking;
 pub mod fuzzy;
 pub mod layout;
 pub mod notify;
