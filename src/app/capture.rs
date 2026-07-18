@@ -25,9 +25,12 @@ use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 use tui_textarea::{CursorMove, TextArea};
 
-use crate::api::{derive_title_content, Anchor, AnchorData, ApiClient, Book, Note, NoteInput};
+use crate::api::{
+    derive_title_content, Anchor, AnchorData, ApiClient, ApiError, Book, Note, NoteInput,
+};
 use crate::app::action::Action;
 use crate::app::screens::{open_queued, QueuePaths};
+use crate::messages;
 use crate::queue::WriteOutcome;
 use crate::ui::notify::Level;
 use crate::ui::picker::{Picker, PickerItem};
@@ -70,6 +73,11 @@ pub struct QuickCapture {
     /// The book's fetched chapter/section tree, `None` until first needed.
     /// Invalidated (set `None`) whenever the book changes.
     anchor_data: Option<AnchorData>,
+    /// Tier-2 state scoped to the anchor field: set when the `anchor_data` read
+    /// failed, so the field reads a loud `✖ couldn't load chapters` + retry
+    /// rather than a silently-stuck spinner. The draft is never touched — capture
+    /// is sacred. Cleared on a retry or a successful load.
+    anchor_failure: Option<String>,
     /// `true` while an `anchor_data` fetch is in flight to open the picker as
     /// soon as it arrives (the first Enter on the anchor field).
     anchor_loading: bool,
@@ -106,6 +114,7 @@ impl Default for QuickCapture {
             section_id: None,
             anchor_echo: None,
             anchor_data: None,
+            anchor_failure: None,
             anchor_loading: false,
             anchor_picker: None,
             anchor_touched: false,
@@ -336,9 +345,17 @@ impl QuickCapture {
             Action::CaptureAnchorDataLoaded(data) => {
                 self.anchor_data = Some(*data);
                 self.anchor_loading = false;
+                self.anchor_failure = None;
                 // The first Enter on the anchor field kicked the fetch; open the
                 // picker now the tree has arrived.
                 return self.mount_anchor_picker();
+            }
+            Action::CaptureAnchorDataFailed(reason) => {
+                // Tier 2, scoped to the anchor field: the read failed, so the
+                // field reads loud (with a retry) — never a stuck spinner, and
+                // never at the cost of the draft.
+                self.anchor_loading = false;
+                self.anchor_failure = Some(reason);
             }
             Action::CaptureAnchorInput(c) => {
                 if let Some(p) = self.anchor_picker.as_mut() {
@@ -386,6 +403,9 @@ impl QuickCapture {
         if self.anchor_data.is_some() {
             return self.mount_anchor_picker();
         }
+        // A fresh attempt clears any prior failure — Enter on a failed anchor
+        // field retries the fetch.
+        self.anchor_failure = None;
         self.anchor_loading = true;
         spawn_anchor_data(api, tx, book_id);
         Some((Level::Info, "loading chapters…".into()))
@@ -610,20 +630,40 @@ impl QuickCapture {
             )),
             rows[1],
         );
-        let anchor_value = match (&self.anchor_echo, self.book_id.is_some()) {
-            (Some(echo), _) => echo.clone(),
-            (None, true) => "none — Enter to pick".to_string(),
-            (None, false) => "— pick a book first".to_string(),
-        };
-        frame.render_widget(
-            Paragraph::new(field_line(
-                self.field == Field::Anchor,
-                "chapter/§",
-                anchor_value,
-                false,
-            )),
-            rows[2],
-        );
+        // The anchor field's own Tier-2 state: when the chapter tree failed to
+        // load, the field reads loud + retriable while the rest of the draft
+        // stays live and editable (capture is sacred).
+        if let Some(reason) = &self.anchor_failure {
+            let danger = Style::default()
+                .fg(theme::DANGER)
+                .add_modifier(Modifier::BOLD);
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("  chapter/§  ", theme::muted()),
+                    Span::styled("✖ couldn't load chapters", danger),
+                    Span::styled("  ⏎ retry", theme::focused()),
+                    // The reason trails so the headline + retry always show; it
+                    // truncates gracefully in the narrow modal field.
+                    Span::styled(format!("  ·  {reason}"), theme::muted()),
+                ])),
+                rows[2],
+            );
+        } else {
+            let anchor_value = match (&self.anchor_echo, self.book_id.is_some()) {
+                (Some(echo), _) => echo.clone(),
+                (None, true) => "none — Enter to pick".to_string(),
+                (None, false) => "— pick a book first".to_string(),
+            };
+            frame.render_widget(
+                Paragraph::new(field_line(
+                    self.field == Field::Anchor,
+                    "chapter/§",
+                    anchor_value,
+                    false,
+                )),
+                rows[2],
+            );
+        }
         frame.render_widget(
             Paragraph::new(field_line(
                 self.field == Field::Page,
@@ -759,11 +799,18 @@ fn spawn_anchor_data(api: &ApiClient, tx: &UnboundedSender<Action>, book_id: i64
             Ok(data) => {
                 let _ = tx.send(Action::CaptureAnchorDataLoaded(Box::new(data)));
             }
+            // A 401 is a session problem, not an anchor problem — route to
+            // re-auth (which dismisses the overlay).
+            Err(ApiError::Unauthorized) => {
+                let _ = tx.send(Action::SessionExpired);
+            }
             Err(e) => {
-                let _ = tx.send(Action::Notify {
-                    level: Level::Error,
-                    text: format!("chapters unavailable: {e}"),
-                });
+                // Tier 2, scoped to the anchor field (§C one spelling), not a
+                // vanishing tile — and the draft stays put.
+                let _ = tx.send(Action::CaptureAnchorDataFailed(messages::fail_reason(
+                    api.host(),
+                    &e,
+                )));
             }
         }
     });
@@ -895,6 +942,19 @@ mod tests {
         for c in text.chars() {
             s.handle(Action::CaptureKey(key(c)), api, tx).await;
         }
+    }
+
+    fn render_capture(s: &mut QuickCapture) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut t = Terminal::new(TestBackend::new(90, 24)).unwrap();
+        t.draw(|f| s.render(f, f.area())).unwrap();
+        t.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
     }
 
     #[tokio::test]
@@ -1121,6 +1181,49 @@ mod tests {
         .await;
         assert!(!s.anchor_loading);
         assert!(s.anchor_picker.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_failed_anchor_read_marks_the_field_and_keeps_the_draft() {
+        let (mut s, api, tx, _rx) = setup();
+        type_content(&mut s, &api, &tx, "MVCC keeps one version").await;
+        s.book_id = Some(11);
+        s.handle(Action::CaptureAnchorPickerOpen, &api, &tx).await;
+        assert!(s.anchor_loading, "the fetch is in flight");
+        // The fetch fails → the field goes loud, the spinner clears, and the
+        // draft is untouched (capture is sacred).
+        s.handle(
+            Action::CaptureAnchorDataFailed("identity.test → HTTP 500".into()),
+            &api,
+            &tx,
+        )
+        .await;
+        assert!(!s.anchor_loading, "the stuck-spinner bug is fixed");
+        assert!(s.anchor_failure.is_some(), "the failure is recorded");
+        assert_eq!(
+            s.content_text(),
+            "MVCC keeps one version",
+            "the draft survives an anchor failure"
+        );
+        assert!(s.anchor_picker.is_none());
+        let text = render_capture(&mut s);
+        assert!(
+            text.contains("✖ couldn't load chapters"),
+            "scoped Tier-2 in the anchor field: {text}"
+        );
+        assert!(text.contains("retry"), "offers a retry: {text}");
+    }
+
+    #[tokio::test]
+    async fn reopening_a_failed_anchor_retries_and_clears_the_failure() {
+        let (mut s, api, tx, _rx) = setup();
+        s.book_id = Some(11);
+        s.anchor_failure = Some("boom".into());
+        // Enter on the failed field retries: the failure clears and the fetch
+        // is back in flight.
+        s.handle(Action::CaptureAnchorPickerOpen, &api, &tx).await;
+        assert!(s.anchor_failure.is_none(), "retry clears the prior failure");
+        assert!(s.anchor_loading, "retry re-kicks the fetch");
     }
 
     #[tokio::test]
