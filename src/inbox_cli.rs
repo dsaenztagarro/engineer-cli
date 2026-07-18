@@ -15,6 +15,7 @@ use jiff::Timestamp;
 use crate::api::{ApiClient, ApiError, CaptureSource, Task};
 use crate::auth::TokenProvider;
 use crate::config::Config;
+use crate::messages;
 
 /// The past-tense outcome word each triage verb confirms. Shared with the TUI
 /// inbox screen (`src/app/screens/inbox.rs`) so the headless verbs and the
@@ -562,7 +563,7 @@ fn to_json<T: serde::Serialize>(value: &T) -> String {
 
 fn refuse_problem(e: ApiError) -> Outcome {
     match e {
-        ApiError::Unauthorized => Outcome::refuse("not authenticated — run `engineer login`"),
+        ApiError::Unauthorized => Outcome::refuse(messages::not_authenticated()),
         ApiError::Problem { status: 404, .. } => Outcome::refuse("no such task"),
         ApiError::Problem { detail, .. } if !detail.is_empty() => Outcome::refuse(detail),
         ApiError::Problem { title, .. } => Outcome::refuse(title),
@@ -575,7 +576,7 @@ fn refuse_problem(e: ApiError) -> Outcome {
 /// offline line for a transport failure (the flow is live-only).
 fn problem_reason(e: ApiError) -> String {
     match e {
-        ApiError::Unauthorized => "not authenticated — run `engineer login`".to_string(),
+        ApiError::Unauthorized => messages::not_authenticated().to_string(),
         ApiError::Transport(_) => "offline — the server is unreachable; retry online".to_string(),
         ApiError::Problem { detail, .. } if !detail.is_empty() => detail,
         ApiError::Problem { title, .. } => title,

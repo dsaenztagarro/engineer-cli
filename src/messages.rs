@@ -12,9 +12,8 @@ use crate::api::ApiError;
 
 /// The refusal a read/write prints when there is no session. One spelling
 /// wherever auth is missing — the notify tile, the CLI stderr, the login hint.
-/// Adopted by the Tier-3 / write-refusal tickets; recorded here so the whole
-/// catalogue lives in one place (cf. `api::error::codes`).
-#[allow(dead_code)]
+/// Recorded here so the whole catalogue lives in one place (cf.
+/// `api::error::codes`).
 pub fn not_authenticated() -> &'static str {
     "not authenticated — run `engineer login`"
 }
@@ -63,6 +62,15 @@ pub fn fail_reason(host: &str, e: &ApiError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_auth_outcome_has_one_spelling_across_the_error_type_and_the_catalogue() {
+        // `ApiError::Unauthorized`'s own Display (a thiserror literal) and the
+        // catalogue must agree — the §C guarantee that a 401 reads the same
+        // whether printed as `{e}` on stderr or drawn from `messages`. If one
+        // side is edited, this pins the other to follow.
+        assert_eq!(ApiError::Unauthorized.to_string(), not_authenticated());
+    }
 
     #[test]
     fn auth_and_offline_copy_is_stable() {

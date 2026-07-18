@@ -18,6 +18,7 @@ use color_eyre::eyre::Result;
 use crate::api::{ApiClient, ApiError, TargetCreate, TargetRef, TargetScope, TargetState};
 use crate::auth::TokenProvider;
 use crate::config::Config;
+use crate::messages;
 use crate::queue::QueuedClient;
 
 #[derive(Args)]
@@ -365,7 +366,7 @@ fn refuse_problem(e: ApiError) -> Outcome {
     match e {
         ApiError::Problem { status: 404, .. } => Outcome::refuse("no such target"),
         ApiError::Problem { title, detail, .. } => Outcome::refuse(problem_text(&title, &detail)),
-        ApiError::Unauthorized => Outcome::refuse("not authenticated — run `engineer login`"),
+        ApiError::Unauthorized => Outcome::refuse(messages::not_authenticated()),
         other => Outcome::refuse(other.to_string()),
     }
 }
