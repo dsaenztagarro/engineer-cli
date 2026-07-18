@@ -10,15 +10,20 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::api::{ApiClient, TimerSettings};
+use crate::api::{ApiClient, ApiError, TimerSettings};
 use crate::app::action::Action;
+use crate::messages;
 use crate::ui::notify::Level;
+use crate::ui::panel::{render_panel_state, PanelFailure, PanelState};
 use crate::ui::{layout::bordered, theme, widgets};
 
 #[derive(Default)]
 pub struct Settings {
     settings: Option<TimerSettings>,
     loading: bool,
+    /// Tier-2 state: set when the read failed, so an absent-and-failed panel and
+    /// an absent-and-still-loading panel read differently. Cleared on load.
+    failure: Option<PanelFailure>,
 }
 
 impl Settings {
@@ -36,7 +41,17 @@ impl Settings {
         match action {
             Action::SettingsLoaded(s) => {
                 self.loading = false;
+                self.failure = None;
                 self.settings = Some(*s);
+            }
+            Action::SettingsLoadFailed(reason) => {
+                self.loading = false;
+                self.failure = Some(PanelFailure {
+                    headline: messages::load_failed("settings"),
+                    reason,
+                    retry_key: "r",
+                    cached: false,
+                });
             }
             Action::SettingsReload => {
                 self.loading = true;
@@ -49,14 +64,21 @@ impl Settings {
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
         let block = bordered("Your timer · read-only — edit on the web");
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
 
+        // No knobs yet → a Tier-2 state, not a blank panel: a failed read is
+        // loud and distinct from the calm loading spinner.
         let Some(s) = self.settings.as_ref() else {
-            let text = if self.loading { "loading…" } else { "" };
-            frame.render_widget(Paragraph::new(text), inner);
+            let state = if let Some(f) = &self.failure {
+                PanelState::Failed(f.clone())
+            } else {
+                PanelState::Loading
+            };
+            render_panel_state(frame, area, block, &state);
             return;
         };
+
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
 
         let row = |label: &str, value: String| {
             Line::from(vec![
@@ -117,11 +139,18 @@ fn spawn_load(api: &ApiClient, tx: &UnboundedSender<Action>) {
             Ok(s) => {
                 let _ = tx.send(Action::SettingsLoaded(Box::new(s)));
             }
+            // A 401 is a session problem, not a settings problem — route to
+            // re-auth (Tier 3) rather than a Tier-2 settings panel.
+            Err(ApiError::Unauthorized) => {
+                let _ = tx.send(Action::SessionExpired);
+            }
+            // Tier 2: report the failure as itself. The reason is spelled once
+            // (§C) so the panel matches the catalogue.
             Err(e) => {
-                let _ = tx.send(Action::Notify {
-                    level: Level::Error,
-                    text: format!("settings load failed: {e}"),
-                });
+                let _ = tx.send(Action::SettingsLoadFailed(messages::fail_reason(
+                    api.host(),
+                    &e,
+                )));
             }
         }
     });
@@ -180,5 +209,41 @@ mod tests {
         assert!(content.contains("15m without input"), "idle threshold");
         assert!(content.contains("≥ 6h · < 60s"), "audit fences");
         assert!(content.contains("edit on the web"), "web pointer");
+    }
+
+    #[tokio::test]
+    async fn a_load_failure_renders_the_tier2_panel_not_a_blank() {
+        let config = Config::for_environment(Environment::Development);
+        let api = ApiClient::with_token(config.api_url.clone(), "tok".into());
+        let (tx, rx) = mpsc::unbounded_channel();
+        Box::leak(Box::new(rx));
+
+        let mut screen = Settings::default();
+        screen
+            .handle(
+                Action::SettingsLoadFailed("identity.test → HTTP 500".into()),
+                &api,
+                &tx,
+            )
+            .await;
+        assert!(screen.failure.is_some(), "the failure is recorded");
+        assert!(screen.settings.is_none(), "no knobs invented on failure");
+
+        let mut terminal = Terminal::new(TestBackend::new(84, 26)).unwrap();
+        terminal
+            .draw(|frame| screen.render(frame, frame.area()))
+            .unwrap();
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            content.contains("✖ couldn't load settings"),
+            "loud failure: {content}"
+        );
+        assert!(content.contains("HTTP 500"), "names the reason: {content}");
     }
 }

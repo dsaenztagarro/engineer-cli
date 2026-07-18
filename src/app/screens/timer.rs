@@ -27,6 +27,7 @@ use crate::api::{
     TimerStopped,
 };
 use crate::app::action::Action;
+use crate::messages;
 use crate::queue::{
     Intent, IntentKind, IntentState, QueueStore, Resolution, Resolved, WriteOutcome,
 };
@@ -2295,9 +2296,18 @@ fn spawn_today(api: &ApiClient, tx: &UnboundedSender<Action>) {
             started_before: end,
             ..Default::default()
         };
-        if let Ok(list) = api.list_activities(&filters).await {
-            let total: u32 = list.data.iter().filter_map(|a| a.duration_minutes).sum();
-            let _ = tx.send(Action::TimerTodayLoaded(total));
+        match api.list_activities(&filters).await {
+            Ok(list) => {
+                let total: u32 = list.data.iter().filter_map(|a| a.duration_minutes).sum();
+                let _ = tx.send(Action::TimerTodayLoaded(total));
+            }
+            // A 401 is a session problem — route to re-auth. Any other error
+            // leaves the rail's number stale rather than tiling noise for a
+            // background read.
+            Err(ApiError::Unauthorized) => {
+                let _ = tx.send(Action::SessionExpired);
+            }
+            Err(_) => {}
         }
     });
 }
@@ -2309,10 +2319,19 @@ fn spawn_load(api: &ApiClient, tx: &UnboundedSender<Action>) {
             Ok(t) => {
                 let _ = tx.send(Action::TimerLoaded(Box::new(t)));
             }
+            // A 401 is a session problem, not a timer problem — route to re-auth.
+            Err(ApiError::Unauthorized) => {
+                let _ = tx.send(Action::SessionExpired);
+            }
+            // The tile copy is spelled once (§C) so it matches the catalogue and
+            // the headless `engineer timer` stderr word for word.
             Err(e) => {
                 let _ = tx.send(Action::Notify {
                     level: Level::Error,
-                    text: format!("timer load failed: {e}"),
+                    text: messages::tile_load_failed(
+                        "timer",
+                        &messages::fail_reason(api.host(), &e),
+                    ),
                 });
             }
         }
@@ -2928,8 +2947,16 @@ async fn drain_behind(queued: &crate::queue::QueuedClient, tx: &UnboundedSender<
 fn spawn_week(api: &ApiClient, tx: &UnboundedSender<Action>) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
-        if let Ok(progress) = api.get_progress(None).await {
-            let _ = tx.send(Action::TimerWeekLoaded(progress.by_day));
+        match api.get_progress(None).await {
+            Ok(progress) => {
+                let _ = tx.send(Action::TimerWeekLoaded(progress.by_day));
+            }
+            // A 401 routes to re-auth; any other error leaves the sparkline
+            // stale rather than tiling noise for a background read.
+            Err(ApiError::Unauthorized) => {
+                let _ = tx.send(Action::SessionExpired);
+            }
+            Err(_) => {}
         }
     });
 }
@@ -2975,8 +3002,16 @@ fn spawn_candidates(api: &ApiClient, tx: &UnboundedSender<Action>, query: String
         } else {
             Some(query.trim())
         };
-        if let Ok(list) = api.timer_candidates(q).await {
-            let _ = tx.send(Action::TimerCandidatesLoaded(list));
+        match api.timer_candidates(q).await {
+            Ok(list) => {
+                let _ = tx.send(Action::TimerCandidatesLoaded(list));
+            }
+            // A 401 routes to re-auth; any other error leaves the bind picker's
+            // candidate list as it was rather than tiling noise.
+            Err(ApiError::Unauthorized) => {
+                let _ = tx.send(Action::SessionExpired);
+            }
+            Err(_) => {}
         }
     });
 }
@@ -3030,6 +3065,31 @@ mod tests {
         action: Action,
     ) {
         s.handle(action, api, tx).await;
+    }
+
+    #[tokio::test]
+    async fn a_401_from_the_timer_read_routes_to_reauth() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let api = ApiClient::with_token(url::Url::parse(&server.uri()).unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        spawn_load(&api, &tx);
+
+        // The read's 401 becomes SessionExpired (re-auth), never a timer-load
+        // notify tile — the one cross-cutting behaviour of the error-model epic.
+        let got = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("a message arrives")
+            .expect("channel open");
+        assert!(matches!(got, Action::SessionExpired), "got {got:?}");
     }
 
     #[tokio::test]
