@@ -18,8 +18,10 @@ use crate::api::{
     TargetCreate, TargetScope,
 };
 use crate::app::action::Action;
+use crate::messages;
 use crate::queue::WriteOutcome;
 use crate::ui::notify::Level;
+use crate::ui::panel::{render_panel_state, PanelFailure, PanelState};
 use crate::ui::picker::{Picker, PickerItem};
 use crate::ui::{layout::bordered, theme, widgets};
 
@@ -102,7 +104,10 @@ pub struct Progress {
     /// Weeks relative to the current week: 0 = this week, -1 = last week.
     offset: i32,
     loading: bool,
-    error: Option<String>,
+    /// Tier-2 state: set when the read failed, so an absent aggregate reads as a
+    /// loud failure (with a retry key) rather than a blank/loading body. Cleared
+    /// on the next successful load.
+    failure: Option<PanelFailure>,
     /// Cursor over `data.targets` — the row `e` (adjust) / `x` (retire) act on.
     selected: usize,
     /// `Some` while the inline hours editor is open for the selected target.
@@ -189,12 +194,19 @@ impl Progress {
                 Ok(progress) => {
                     let _ = tx.send(Action::ProgressLoaded(Box::new(progress)));
                 }
+                // A 401 is a session problem, not a progress problem — route to
+                // re-auth (Tier 3) rather than a Tier-2 progress panel.
+                Err(ApiError::Unauthorized) => {
+                    let _ = tx.send(Action::SessionExpired);
+                }
+                // Tier 2: report the failure as itself — never a blank meter set.
+                // The reason is spelled once (§C) so the panel matches a headless
+                // `engineer pace`'s stderr.
                 Err(e) => {
-                    let _ = tx.send(Action::Notify {
-                        level: Level::Error,
-                        text: format!("progress load failed: {e}"),
-                    });
-                    let _ = tx.send(Action::ProgressLoadFailed(e.to_string()));
+                    let _ = tx.send(Action::ProgressLoadFailed(messages::fail_reason(
+                        api.host(),
+                        &e,
+                    )));
                 }
             }
         });
@@ -210,7 +222,7 @@ impl Progress {
             Action::ProgressLoaded(progress) => {
                 self.data = Some(*progress);
                 self.loading = false;
-                self.error = None;
+                self.failure = None;
                 // Keep the cursor in range as the target set changes week to week.
                 let n = self.data.as_ref().map_or(0, |d| d.targets.len());
                 self.selected = self.selected.min(n.saturating_sub(1));
@@ -218,9 +230,14 @@ impl Progress {
                 // An authoritative reading supersedes any queued-declare stand-ins.
                 self.provisional.clear();
             }
-            Action::ProgressLoadFailed(e) => {
+            Action::ProgressLoadFailed(reason) => {
                 self.loading = false;
-                self.error = Some(e);
+                self.failure = Some(PanelFailure {
+                    headline: messages::load_failed("progress"),
+                    reason,
+                    retry_key: "r",
+                    cached: false,
+                });
             }
             Action::ProgressWeekStep(delta) => {
                 self.offset += delta;
@@ -420,15 +437,15 @@ impl Progress {
         let block = bordered("Progress · engineer pace");
 
         let Some(data) = &self.data else {
-            let body = if let Some(err) = &self.error {
-                Paragraph::new(Line::from(Span::styled(
-                    format!("could not load progress: {err}"),
-                    Style::default().fg(theme::DANGER),
-                )))
+            // No aggregate → the whole body is a Tier-2 state: a loud failure
+            // (with a retry key) when the read failed, else the calm loading
+            // state. The header/footer nav lives outside this block.
+            let state = if let Some(f) = &self.failure {
+                PanelState::Failed(f.clone())
             } else {
-                Paragraph::new("loading…")
+                PanelState::Loading
             };
-            frame.render_widget(body.block(block), area);
+            render_panel_state(frame, area, block, &state);
             return;
         };
 
@@ -1064,6 +1081,50 @@ mod tests {
         assert_eq!(p.selected, 1, "clamped at the last row");
         p.handle(Action::ProgressSelectMove(-9), &api, &tx).await;
         assert_eq!(p.selected, 0, "clamped at the first row");
+    }
+
+    #[tokio::test]
+    async fn a_load_failure_records_the_panel_and_renders_it_loud() {
+        let (api, tx) = ctx();
+        let mut p = Progress {
+            loading: true,
+            ..Default::default()
+        };
+        p.handle(
+            Action::ProgressLoadFailed("identity.test → HTTP 500".into()),
+            &api,
+            &tx,
+        )
+        .await;
+        assert!(p.failure.is_some(), "the failure is recorded");
+        assert!(!p.loading, "the spinner is cleared");
+        assert!(
+            p.data.is_none(),
+            "no blank aggregate is invented on failure"
+        );
+        let text = render_text(&mut p);
+        assert!(
+            text.contains("✖ couldn't load progress"),
+            "loud Tier-2 failure: {text}"
+        );
+        assert!(text.contains("HTTP 500"), "names the reason: {text}");
+    }
+
+    #[tokio::test]
+    async fn a_loaded_aggregate_clears_a_prior_failure_and_renders_the_meters() {
+        let (api, tx) = ctx();
+        let mut p = Progress {
+            loading: true,
+            ..Default::default()
+        };
+        p.handle(Action::ProgressLoadFailed("boom".into()), &api, &tx)
+            .await;
+        p.handle(Action::ProgressLoaded(Box::new(sample())), &api, &tx)
+            .await;
+        assert!(p.failure.is_none(), "a good read clears the Tier-2 failure");
+        let text = render_text(&mut p);
+        assert!(!text.contains("✖"), "no failure glyph once loaded: {text}");
+        assert!(text.contains("2026-W27"), "the meters render: {text}");
     }
 
     #[tokio::test]

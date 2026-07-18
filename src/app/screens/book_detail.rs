@@ -7,8 +7,10 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::{ApiClient, Book, BookChapter, BookStatus, BookUpdate};
 use crate::app::action::Action;
+use crate::messages;
 use crate::queue::WriteOutcome;
 use crate::ui::notify::Level;
+use crate::ui::panel::{render_panel_state, PanelFailure, PanelState};
 use crate::ui::{layout::bordered, theme, widgets};
 
 use super::{notify_seam_error, open_queued, QueuePaths};
@@ -27,6 +29,11 @@ const STATUSES: [BookStatus; 5] = [
 pub struct BookDetail {
     book: Option<Book>,
     chapters: Vec<BookChapter>,
+    /// Tier-2 state: set when the detail read (its chapters) failed. Since the
+    /// book was going to arrive alongside the chapters, a failure means there's
+    /// no payload at all — so the whole body renders the failed panel. Cleared
+    /// on the next successful load.
+    chapters_failure: Option<PanelFailure>,
     state: ListState,
     edit_page: Option<String>,
     /// The status picker modal's cursor, `Some` while it's open.
@@ -43,6 +50,7 @@ impl Default for BookDetail {
         Self {
             book: None,
             chapters: vec![],
+            chapters_failure: None,
             state,
             edit_page: None,
             status_picker: None,
@@ -94,7 +102,17 @@ impl BookDetail {
             Action::BookDetailLoaded { book, chapters } => {
                 self.book = Some(*book);
                 self.chapters = chapters;
+                self.chapters_failure = None;
                 self.state.select(self.current_chapter_index().or(Some(0)));
+            }
+            Action::BookDetailLoadFailed(reason) => {
+                // No book, no chapters — the whole detail is a Tier-2 failure.
+                self.chapters_failure = Some(PanelFailure {
+                    headline: messages::load_failed("the book"),
+                    reason,
+                    retry_key: "r",
+                    cached: false,
+                });
             }
             Action::ChapterMove(d) => self.move_cursor(d),
             Action::BeginEditPage => self.edit_page = Some(String::new()),
@@ -221,7 +239,16 @@ impl BookDetail {
             .split(area);
 
         let Some(book) = self.book.clone() else {
-            frame.render_widget(Paragraph::new("loading…").block(bordered("Book")), area);
+            // No payload yet → the whole body is a Tier-2 state: a loud failure
+            // (with a retry key) when the read failed, else the calm loading
+            // state while the chapters fetch is in flight.
+            let block = bordered("Book");
+            let state = if let Some(f) = &self.chapters_failure {
+                PanelState::Failed(f.clone())
+            } else {
+                PanelState::Loading
+            };
+            render_panel_state(frame, area, block, &state);
             return;
         };
 
@@ -521,6 +548,53 @@ mod tests {
         assert_eq!(wire(BookStatus::Unread), "unread");
         assert_eq!(wire(BookStatus::OnHold), "on_hold");
         assert_eq!(wire(BookStatus::Abandoned), "abandoned");
+    }
+
+    #[tokio::test]
+    async fn a_chapters_load_failure_renders_the_failed_panel_not_a_blank_book() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let api = dev_api();
+        let mut s = BookDetail::default();
+        s.handle(
+            Action::BookDetailLoadFailed("identity.test → HTTP 500".into()),
+            &api,
+            &tx,
+        )
+        .await;
+        assert!(s.chapters_failure.is_some(), "the failure is recorded");
+        assert!(s.book.is_none(), "no book payload is invented on failure");
+        let text = render_to_string(&mut s);
+        assert!(
+            text.contains("✖ couldn't load the book"),
+            "loud Tier-2 failure: {text}"
+        );
+        assert!(text.contains("HTTP 500"), "names the reason: {text}");
+    }
+
+    #[tokio::test]
+    async fn a_loaded_book_clears_a_prior_failure() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let api = dev_api();
+        let mut s = BookDetail::default();
+        s.handle(Action::BookDetailLoadFailed("boom".into()), &api, &tx)
+            .await;
+        s.handle(
+            Action::BookDetailLoaded {
+                book: Box::new(make_book(7, "reading")),
+                chapters: vec![],
+            },
+            &api,
+            &tx,
+        )
+        .await;
+        assert!(
+            s.chapters_failure.is_none(),
+            "a good read clears the Tier-2 failure"
+        );
+        assert!(
+            !render_to_string(&mut s).contains("✖"),
+            "no failure glyph once loaded"
+        );
     }
 
     #[tokio::test]

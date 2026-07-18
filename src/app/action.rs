@@ -80,6 +80,13 @@ pub enum Action {
         book: Box<Book>,
         chapters: Vec<BookChapter>,
     },
+    /// The book detail read (its chapters) failed — carries the Tier-2 reason
+    /// line (built from `messages::fail_reason`). Replaces the old
+    /// `BookDetailLoaded { chapters: vec![] }`-on-error that made a failed
+    /// chapters fetch indistinguishable from a book with no chapters. Dispatched
+    /// from `Books::BooksOpen`'s spawned task; the detail renders the whole-body
+    /// failed panel since without the payload there's nothing else to show.
+    BookDetailLoadFailed(String),
     ChapterMove(i32),
     ToggleChapterDone,
     BeginEditPage,
@@ -298,6 +305,10 @@ pub enum Action {
 
     // Segment audit (`Progress ▸ audit`, `:audit`).
     AuditLoaded(Box<AuditRead>),
+    /// The audit read failed — carries the Tier-2 reason line (built from
+    /// `messages::fail_reason`). Replaces the old swallow (a bare notify + no
+    /// state change) that left a failed read looking like a clean, empty log.
+    AuditLoadFailed(String),
     AuditReload,
     AuditMove(i32),
     /// `a` — looks right: acknowledge, clearing the duration flags for good.

@@ -174,25 +174,31 @@ impl Books {
                 if let Some(book) = self.selected().cloned() {
                     let api = api.clone();
                     let tx = tx.clone();
+                    // Navigate first so the failure (or the payload) lands on the
+                    // detail screen, which is now current.
                     let _ = tx.send(Action::Goto(ScreenKind::BookDetail));
                     tokio::spawn(async move {
-                        let chapters = match api.list_chapters(book.id).await {
-                            Ok(list) => list.data,
-                            Err(e) => {
-                                let _ = tx.send(Action::Notify {
-                                    level: Level::Error,
-                                    text: messages::tile_load_failed(
-                                        "chapters",
-                                        &messages::fail_reason(api.host(), &e),
-                                    ),
+                        match api.list_chapters(book.id).await {
+                            Ok(list) => {
+                                let _ = tx.send(Action::BookDetailLoaded {
+                                    book: Box::new(book),
+                                    chapters: list.data,
                                 });
-                                vec![]
                             }
-                        };
-                        let _ = tx.send(Action::BookDetailLoaded {
-                            book: Box::new(book),
-                            chapters,
-                        });
+                            // A 401 is a session problem — route to re-auth (Tier
+                            // 3) rather than a Tier-2 detail panel.
+                            Err(ApiError::Unauthorized) => {
+                                let _ = tx.send(Action::SessionExpired);
+                            }
+                            // Tier 2: the detail read failed — surface it as a
+                            // failed panel on the detail screen, never a book with
+                            // a silently-empty chapter list.
+                            Err(e) => {
+                                let _ = tx.send(Action::BookDetailLoadFailed(
+                                    messages::fail_reason(api.host(), &e),
+                                ));
+                            }
+                        }
                     });
                 }
             }
