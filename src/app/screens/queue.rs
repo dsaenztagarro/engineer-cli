@@ -21,7 +21,7 @@
 //! deep-link; navigation is the way in.
 
 use crossterm::event::KeyEvent;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState};
@@ -31,8 +31,10 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::api::ApiClient;
 use crate::app::action::Action;
 use crate::app::screens::ScreenKind;
+use crate::messages;
 use crate::queue::{self, view, Intent, IntentState, QueueStore, QueuedClient};
 use crate::ui::notify::Level;
+use crate::ui::panel::{render_panel_state, PanelFailure, PanelState};
 use crate::ui::{layout::bordered, theme, widgets};
 
 use super::{notify_seam_error, open_queued, QueuePaths};
@@ -44,7 +46,10 @@ pub struct Queue {
     intents: Vec<Intent>,
     selected: usize,
     loading: bool,
-    error: Option<String>,
+    /// Tier-2 state: set when the queue file couldn't be read, so a corrupt /
+    /// unreadable queue is loud (never a calm "everything synced" over stuck
+    /// writes). Distinct from an empty-but-synced queue. Cleared on reload.
+    failure: Option<PanelFailure>,
     /// A first `x` on a diverged row arms this; only the very next `x` drops —
     /// the confirmed delete is never a single keystroke. Any move / other
     /// gesture disarms it.
@@ -77,16 +82,23 @@ impl Queue {
             Action::QueueLoaded(intents) => {
                 self.intents = intents;
                 self.loading = false;
-                self.error = None;
+                self.failure = None;
                 self.draining = false;
                 self.confirm_drop = false;
                 self.clamp_selection();
             }
-            Action::QueueLoadFailed(e) => {
+            Action::QueueLoadFailed(reason) => {
                 self.loading = false;
                 self.draining = false;
-                self.error = Some(e.clone());
-                return Some((Level::Error, e));
+                // The read failure is both a loud Tier-2 panel (below) and a
+                // notify tile — a queue that can't be read is never quiet.
+                self.failure = Some(PanelFailure {
+                    headline: messages::load_failed("the queue"),
+                    reason: reason.clone(),
+                    retry_key: "r",
+                    cached: false,
+                });
+                return Some((Level::Error, reason));
             }
             Action::QueueRefresh => {
                 self.loading = true;
@@ -185,15 +197,19 @@ impl Queue {
         let block = bordered(title);
 
         if self.intents.is_empty() {
-            if let Some(e) = &self.error {
-                // A queue that can't be read is loud — never a calm "synced"
-                // over stuck writes (the CLI exits 5 on the same failure).
-                render_error(frame, area, block, e);
+            // The loud-vs-calm distinction rides the shared Tier-2 atom: a read
+            // failure is loud (never a calm "synced" over stuck writes — the CLI
+            // exits 5 on the same failure), an empty-but-synced queue stays calm.
+            let state = if let Some(f) = &self.failure {
+                PanelState::Failed(f.clone())
             } else if self.loading {
-                frame.render_widget(Paragraph::new("loading…").block(block), area);
+                PanelState::Loading
             } else {
-                render_empty(frame, area, block);
-            }
+                PanelState::Empty {
+                    hint: Some("queue empty · everything synced".into()),
+                }
+            };
+            render_panel_state(frame, area, block, &state);
             return;
         }
 
@@ -245,53 +261,6 @@ impl Queue {
             ("q", "close"),
         ])
     }
-}
-
-/// §Queue inspector · empty — the calm zero state: a synced queue is a success,
-/// not a void.
-fn render_empty(frame: &mut Frame, area: Rect, block: ratatui::widgets::Block<'static>) {
-    let lines = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            "queue empty · everything synced",
-            Style::default()
-                .fg(theme::SUCCESS)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Offline writes land here and replay in order when the wire returns.",
-            theme::muted(),
-        )),
-    ];
-    frame.render_widget(
-        Paragraph::new(lines)
-            .alignment(Alignment::Center)
-            .block(block),
-        area,
-    );
-}
-
-/// The loud read-failure state: a corrupt / unreadable queue is never a silent
-/// "everything synced" over stuck writes (the CLI exits 5 on the same failure).
-fn render_error(frame: &mut Frame, area: Rect, block: ratatui::widgets::Block<'static>, e: &str) {
-    let lines = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            "✗ the queue could not be read",
-            Style::default()
-                .fg(theme::DANGER)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(e.to_string(), theme::muted())),
-    ];
-    frame.render_widget(
-        Paragraph::new(lines)
-            .alignment(Alignment::Center)
-            .block(block),
-        area,
-    );
 }
 
 /// One intent as a table row: the shared `# INTENT TARGET AGE` cells, plus a
@@ -592,7 +561,12 @@ mod tests {
             .await;
         assert!(matches!(out, Some((Level::Error, _))), "surfaced loudly");
         let text = render(&mut s);
-        assert!(text.contains("could not be read"), "loud state: {text}");
+        // The shared Tier-2 atom copy: the loud headline + the failure reason,
+        // never the calm "everything synced" over stuck writes.
+        assert!(
+            text.contains("couldn't load the queue"),
+            "loud atom headline: {text}"
+        );
         assert!(text.contains("corrupt"), "names the failure: {text}");
         assert!(!text.contains("everything synced"), "never a calm lie");
     }
