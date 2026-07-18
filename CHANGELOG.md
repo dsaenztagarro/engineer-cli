@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The error/notification model, tier 2 — an inline "failed" state that never lies as "empty".** The design system (`design-system.dc.html` §ERROR & NOTIFICATION MODEL) splits a bordered region's no-rows body into distinct states: **loading**, **empty** (calm, muted), and **failed** (loud, red — the reason plus an `r` retry key). New shared atoms carry it: `ui::panel` (the Tier-2 body), `ui::search` (the `/…▊` query caret, substring highlight, and `n`/`N` match stepping), and `messages` — the one-spelling catalogue so the notify tile, the inline panel line, and headless `stderr` share the same words (design §C). **Books** is the reference adopter: a failed load now renders `✖ couldn't load books · identity… → HTTP 500 · r retry` instead of silently collapsing to an empty shelf, and `/rust` highlights matches while `n`/`N` step between them.
+
 ## [0.10.0] - 2026-07-17
 
 ### Added

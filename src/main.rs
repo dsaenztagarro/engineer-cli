@@ -8,6 +8,7 @@ mod config;
 mod editor;
 mod inbox_cli;
 mod log_cli;
+mod messages;
 mod note_cli;
 mod progress_cli;
 mod queue;
