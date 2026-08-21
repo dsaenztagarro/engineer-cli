@@ -162,8 +162,8 @@ impl QuickCapture {
             editing: Some(note.id),
             book_id: note.book_id,
             book_label: note.book_title,
-            chapter_id: cite.and_then(|c| c.book_chapter_id),
-            section_id: cite.and_then(|c| c.book_section_id),
+            chapter_id: cite.and_then(|c| c.chapter_id),
+            section_id: cite.and_then(|c| c.section_id),
             anchor_echo: cite.and_then(|c| c.address_label.clone()),
             ..Self::default()
         };
@@ -1279,7 +1279,7 @@ mod tests {
         let note: Note = serde_json::from_value(serde_json::json!({
             "id": 55, "title": "MVCC", "content": "MVCC keeps one version",
             "book_id": 3, "book_title": "SICP",
-            "citations": [{ "id": 1, "book_chapter_id": 3, "page": 142 }]
+            "citations": [{ "id": 1, "chapter_id": 3, "page": 142 }]
         }))
         .unwrap();
         let s = QuickCapture::for_edit(note);
@@ -1317,7 +1317,7 @@ mod tests {
         let note: Note = serde_json::from_value(serde_json::json!({
             "id": 7, "title": "t", "book_id": 11, "book_title": "SICP",
             "citations": [{
-                "id": 1, "book_chapter_id": 3, "book_section_id": 32,
+                "id": 1, "chapter_id": 3, "section_id": 32,
                 "page": 294, "address_label": "ch 3 · §3.2 · p.294"
             }]
         }))
