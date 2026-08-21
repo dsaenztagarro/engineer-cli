@@ -10,11 +10,13 @@ use super::{ApiClient, ApiError, List};
 pub struct Citation {
     pub id: i64,
     #[serde(default)]
-    pub book_edition_id: Option<i64>,
+    pub edition_id: Option<i64>,
     #[serde(default)]
-    pub book_chapter_id: Option<i64>,
+    pub chapter_id: Option<i64>,
     #[serde(default)]
-    pub book_section_id: Option<i64>,
+    pub section_id: Option<i64>,
+    #[serde(default)]
+    pub end_section_id: Option<i64>,
     #[serde(default)]
     pub page: Option<u32>,
     #[serde(default)]
