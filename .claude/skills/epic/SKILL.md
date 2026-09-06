@@ -186,7 +186,11 @@ follows the neovim grammar and the footer must advertise the active keys. When t
 changes the API layer, update `docs/api-layer.md`; when it changes commands or flags, update
 `README.md`'s Commands section; every user-visible change adds a `CHANGELOG.md` `[Unreleased]`
 entry. If the ticket ships the last surface of a `docs/designs/briefs/proposed/*.brief.md`,
-`git mv` the brief to `shipped/` and flip its index row (the move is the status signal).
+**delete the consumed brief** — a brief is an input and its lifecycle ends at ship (`AGENTS.md`).
+Delete it only once its durable half has landed: the decisions in an ADR (step 3.5), the look in
+the area's `.dc.html`, the behaviour in a test, and any residual gap or deferral as its own
+issue. Drop its index row from `docs/designs/briefs/README.md` in the same commit, and re-point
+anything that cited it at the ADR or the test — never at another brief.
 
 ### 3.5 Decision-record gate (architecture-level decisions only)
 If this ticket made a decision that's architecturally meaningful (a data/sync contract such
@@ -298,7 +302,7 @@ When every ticket is shipped or consciously skipped:
   gets its **own** log — don't edit the closed epic's.
 - **Design ↔ backend sync gate:** before decomposing, sanity-check the design against what
   the Engineer API actually serves (`docs/api-layer.md`, `src/api/`). If the design shows
-  workflows the backend can't power yet, surface that as a gap-analysis note under
-  `docs/designs/briefs/` (e.g. `timer-gaps.brief.md`) for Claude Design / the web repo instead
+  workflows the backend can't power yet, surface that as a gap-analysis note in the area's brief
+  under `docs/designs/briefs/proposed/` for Claude Design / the web repo instead
   of silently narrowing scope — designed-but-unbuildable
   surfaces become skip-rule tickets (step 3.2) so they stay visible on the epic.

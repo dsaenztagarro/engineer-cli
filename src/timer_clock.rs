@@ -1,5 +1,5 @@
 //! Pure timer arithmetic and state transitions — the controlling local clock
-//! (offline-write.brief.md §3 "one clock, offline too").
+//! (ADR 0004 — "one clock, offline too").
 //!
 //! Two halves, one contract:
 //!

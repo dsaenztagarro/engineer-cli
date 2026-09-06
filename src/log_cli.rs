@@ -1,5 +1,5 @@
 //! Headless `engineer log` — record a completed session without the timer
-//! (activities.brief.md §8). Two shapes: log a **new** completed activity
+//! (the TUI ↔ headless contract, ADR 0003). Two shapes: log a **new** activity
 //! (`engineer log '<title>' --minutes N --kind K`), or **append** the minutes to
 //! an existing activity by fuzzy match (`engineer log --activity '<match>'
 //! --minutes N`). `--json` for machines; plain otherwise; exit 0 on success, 1

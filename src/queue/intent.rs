@@ -6,7 +6,7 @@ use crate::api::{ActivityCreate, BookUpdate, ConflictInfo, FieldError, NoteInput
 
 /// A single deferred write: a mutation the user performed while the wire was
 /// down, persisted until it replays. Stored only until it syncs — the queue is
-/// never a second ledger (offline-write.brief.md §3).
+/// never a second ledger (ADR 0004).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Intent {
     /// Monotonic queue sequence — the replay order.

@@ -1,6 +1,6 @@
 //! Headless `engineer queue` — the offline write queue, observable
-//! (offline-write.brief.md §8 Foundation; the §Queue inspector / headless-twin
-//! boards). The bare read prints one row per unsynced intent; `sync` runs a
+//! (ADR 0004; the §Queue inspector board in `docs/designs/offline-write.dc.html`).
+//! The bare read prints one row per unsynced intent; `sync` runs a
 //! replay pass now; `resolve` picks a side on a waiting divergence — the
 //! headless twin of the Timer screen's reconcile panel; `drop <id>` is the
 //! standalone spelling of the reconcile board's `x` (the same engine as

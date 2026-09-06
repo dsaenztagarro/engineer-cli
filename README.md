@@ -136,3 +136,8 @@ So you might keep custom URLs in `config.toml` for everyday work and still redir
 Per-key env vars: `ENGINEER_IDENTITY_URL`, `ENGINEER_API_URL`, `ENGINEER_CLIENT_ID`, `ENGINEER_SCOPES`.
 
 In development Identity must be allowed to fetch the HTTP (non-HTTPS) metadata document — it sets `config.x.cimd_allow_http = true` in its development environment for exactly this.
+
+## Contributing
+
+[`AGENTS.md`](AGENTS.md) is the entry point for anyone — human or agent — changing this repo: the input lifecycle, the decision records a change is measured against, and the house conventions.
+The architecture itself is [`docs/README.md`](docs/README.md).

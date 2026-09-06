@@ -1,9 +1,10 @@
 //! Headless `engineer week` (the planned-vs-done readout), `engineer week
 //! reflect` (the `$EDITOR` retro reflection write), and `engineer plan` (declare
-//! a plan item) — week-planning.brief.md's core: a readout, a one-liner, and one
-//! stored line, not a planning canvas. The reflection persists through the v1
-//! week-note route (dsaenztagarro/engineer#805, engineer PR #807), routed through
-//! `QueuedClient` so an offline write queues like every other mutation.
+//! a plan item): a readout, a one-liner, and one stored line — not a planning
+//! canvas (ADR 0002), each bound by the headless contract (ADR 0003). The
+//! reflection persists through the v1 week-note route (dsaenztagarro/engineer#805,
+//! engineer PR #807), routed through `QueuedClient` so an offline write queues
+//! like every other mutation (ADR 0004).
 
 use std::io::{IsTerminal, Read};
 

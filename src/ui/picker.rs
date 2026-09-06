@@ -1,4 +1,5 @@
-//! A reusable Telescope-flavoured fuzzy picker overlay (`cross-cutting.brief.md` §B).
+//! A reusable Telescope-flavoured fuzzy picker overlay — the kit's "fuzzy over
+//! navigate" rule (`docs/designs/README.md`, `cross-cutting-concerns.dc.html`).
 //!
 //! One source-agnostic widget any screen mounts over its content: `j`/`k` move,
 //! type to filter, `⏎` picks, `Esc` cancels — the neovim grammar the footer

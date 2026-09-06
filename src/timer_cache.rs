@@ -1,11 +1,11 @@
-//! A last-known timer cache — the offline read fallback (cross-cutting.brief.md
-//! §A). The headless timer read writes the live snapshot here on success; when a
+//! A last-known timer cache — the offline read fallback (ADR 0004, the read
+//! half). The headless timer read writes the live snapshot here on success; when a
 //! later read can't reach the network, it renders the cached value with a
 //! staleness marker rather than going blank in the status bar.
 //!
-//! This is the *read* half of offline-tolerance only — a bounded slice. The full
-//! local clock (control offline) and the optimistic write queue are their own
-//! follow-up; nothing here pretends to reconcile writes.
+//! This is the *read* half of offline-tolerance only — a bounded slice: nothing
+//! here reconciles writes. The write half is its sibling — the controlling local
+//! clock (`crate::timer_clock`) and the optimistic write queue (`crate::queue`).
 
 use std::path::{Path, PathBuf};
 

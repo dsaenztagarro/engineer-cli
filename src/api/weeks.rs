@@ -1,4 +1,4 @@
-//! `GET /api/v1/weeks/:iso_week` — the week aggregate (week-planning.brief.md) —
+//! `GET /api/v1/weeks/:iso_week` — the week aggregate —
 //! and `PATCH /api/v1/weeks/:iso_week/note`, the one stored write.
 //!
 //! Plan, actuals, and the planned-vs-done comparison for one ISO week, derived

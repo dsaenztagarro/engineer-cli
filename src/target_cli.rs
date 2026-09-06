@@ -1,5 +1,5 @@
 //! Headless `engineer target` — the one-shot twin of the Progress screen's
-//! target verbs (docs/designs/briefs/proposed/progress.brief.md §6).
+//! target verbs (the TUI ↔ headless contract, ADR 0003).
 //!
 //! `list` / `declare` / `adjust` / `retire`, with `--json` (machine) and a plain
 //! per-line form (pipe). Output is plain when piped: ANSI colour is applied only
