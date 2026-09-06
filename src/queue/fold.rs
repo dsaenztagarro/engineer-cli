@@ -1,5 +1,5 @@
 //! The fold: server truth ⊕ pending intents → the *effective* picture every
-//! offline read renders (offline-write.brief.md §3 — the queue is not a
+//! offline read renders (ADR 0004 — the queue is not a
 //! second ledger; the fold of it over the last server truth is what the user
 //! sees). [`fold_timer`] composes the effective local clock; its sibling
 //! [`fold_activities`] mixes still-queued activity/segment writes into a

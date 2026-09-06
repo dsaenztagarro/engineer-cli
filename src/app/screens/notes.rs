@@ -1,5 +1,5 @@
 //! Notes browser — the "findable later" half of the notes daily loop
-//! (daily-loop.brief.md §5, notes.html). Quick-capture (the "five-second"
+//! (`docs/designs/notes.dc.html`). Quick-capture (the "five-second"
 //! half) is the app-level overlay in `src/app/capture.rs`; this screen lists,
 //! searches, reads, archives, and hands a note back to that overlay for edits.
 //!

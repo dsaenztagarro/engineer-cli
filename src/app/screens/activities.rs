@@ -1,5 +1,6 @@
-//! Activities table — the core domain surface (daily-loop.brief.md §5,
-//! the web `Activities.html` IA translated to a character grid). A dense,
+//! Activities table — the core domain surface (the web `Activities.html` IA
+//! translated to a character grid, and the one deliberate concession to a
+//! web-shaped surface — capped by ADR 0002). A dense,
 //! scannable ledger of recent activities: a semantic status pill, kind, title,
 //! domain (by name — the terminal palette has no per-domain colours), duration,
 //! and a relative "when". It is the first screen to expose `meta.page`

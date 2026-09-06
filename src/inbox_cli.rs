@@ -1,5 +1,5 @@
 //! Headless `engineer inbox` — triage the assisted-capture drafts
-//! (assisted-capture.brief.md). Bare `inbox` lists the pending drafts;
+//! (the TUI ↔ headless contract, ADR 0003). Bare `inbox` lists pending drafts;
 //! `accept` / `reject` / `ack` act on one; `show` reads one in full. `--json`
 //! for machines, plain otherwise, exit 0 on success, 1 on refusal — the
 //! `engineer timer`/`target` contract. Accepting writes the activity (the

@@ -1,7 +1,7 @@
 //! The `:` command grammar — a single source of truth for the palette.
 //!
-//! One static table (`ENTRIES`) pins the verb inventory from the daily-loop
-//! brief (§5, command-palette.html): navigation (`:home` `:books`
+//! One static table (`ENTRIES`) pins the whole verb inventory: navigation
+//! (`:home` `:books`
 //! `:activities` `:notes` `:review` `:progress` `:week` `:timer`), actions
 //! (`:timer start|pause|resume|stop`, `:note <text>`, `:log` the activity
 //! capture form, `:target` the Progress declare flow) and housekeeping (`:q`
@@ -24,7 +24,7 @@ use crate::app::screens::timer::TimerVerb;
 use crate::app::screens::ScreenKind;
 use crate::ui::theme;
 
-/// The three verb families the brief groups the grammar into.
+/// The three verb families the grammar groups its verbs into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Nav,
@@ -453,8 +453,8 @@ pub fn complete(input: &str) -> String {
     }
 }
 
-/// The inline tail shown after the cursor while typing — the four line states
-/// from the brief: empty (top verbs), partial (matches / completion), a resolved
+/// The inline tail shown after the cursor while typing — the four line states:
+/// empty (top verbs), partial (matches / completion), a resolved
 /// verb (its help + argument shape), and unknown (helpful, not hostile).
 pub struct Hint {
     pub text: String,

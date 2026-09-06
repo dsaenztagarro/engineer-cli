@@ -1,9 +1,9 @@
 //! Quick-capture overlay — the "five-second capture" half of the notes daily
-//! loop (daily-loop.brief.md §5, notes.html). Reachable from *any* screen via
+//! loop (`docs/designs/notes.dc.html`). Reachable from *any* screen via
 //! the `<Space>c` leader and rendered as a centered modal over whatever screen
 //! is showing, so a thought never costs a navigation.
 //!
-//! **Capture is sacred** (brief §3): the overlay never loses input. An
+//! **Capture is sacred** (ADR 0005): the overlay never loses input. An
 //! accidental `Esc` on a non-empty draft only *arms* a discard — a second `Esc`
 //! confirms, any other key cancels the warning and resumes editing. The draft
 //! lives in `App::capture` until the note is saved or explicitly discarded.

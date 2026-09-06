@@ -8,8 +8,9 @@
 //! state, and three verbs behind a modal prompt:
 //!
 //!   connect     — `c` opens the trust statement (`reads` / `never_reads` /
-//!                 `promise`, rendered **verbatim before connecting** — the
-//!                 brief's hard requirement), then a confirm. The git source
+//!                 `promise`, rendered **verbatim before connecting** — a
+//!                 contract obligation, engineer ADR 0035: changing the copy
+//!                 is an API change), then a confirm. The git source
 //!                 takes no body; the calendar captures a feed URL first.
 //!   disconnect  — `d` arms the confirm; disconnect turns the source *off*
 //!                 without deleting captured drafts (disconnect ≠ delete).

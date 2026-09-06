@@ -1,5 +1,5 @@
 //! The replay pass — pending intents re-send in order when the wire returns
-//! (offline-write.brief.md §8 Foundation, "a replay-on-reconnect pass").
+//! (ADR 0004 — "a replay-on-reconnect pass").
 //!
 //! **The ordering contract (per-stream FIFO, #109 — relaxing #101's global
 //! halt).** Intents replay one at a time in global queue order (`id`), but a
@@ -806,7 +806,7 @@ mod tests {
         }
     }
 
-    /// §Diverged · duplicate (offline-write.brief.md): the same intent re-sent
+    /// §Diverged · duplicate (`offline-write.dc.html`): the same intent re-sent
     /// after a lost ack. The server answers from its idempotency store —
     /// byte-identical body, `Idempotency-Replayed: true` — and the intent is
     /// consumed as confirmed, silently: it leaves the queue, no divergence, no

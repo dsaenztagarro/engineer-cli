@@ -1,6 +1,7 @@
 //! Resolving a divergence — the pick-a-side engine behind the Timer screen's
-//! reconcile panel and `engineer queue resolve` (offline-write.brief.md job 4;
-//! the §Diverged boards). One module, one spelling of every outcome: both
+//! reconcile panel and `engineer queue resolve` (ADR 0004; the §Diverged boards
+//! in `docs/designs/offline-write.dc.html`). One module, one spelling of every
+//! outcome: both
 //! surfaces call [`resolve`], so a TUI gesture and a headless flag cannot
 //! drift apart.
 //!

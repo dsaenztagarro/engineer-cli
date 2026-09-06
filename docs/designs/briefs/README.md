@@ -1,51 +1,48 @@
 # Design briefs — engineer-cli
 
-Handoff briefs for the **terminal** client, mirroring the structure of [`engineer/docs/designs/briefs/`](../../../engineer/docs/designs/briefs/). A brief is a problem-first **input** to design; the rendered terminal mockups (`docs/designs/*.html`, ratatui-faithful) and the shipped Rust screens are the **outputs**.
+Handoff briefs for the **terminal** client. A brief is a problem-first **input** to design; the rendered terminal mockups (`../*.dc.html`, ratatui-faithful) and the shipped Rust screens are the **outputs**.
 
-Read [`../README.md`](../README.md) first — it is the terminal **design kit** (palette mapping, chrome conventions, translate/don't-translate rules, and the `design-system.dc.html` style anchor). A brief here says *what to build and why*; the kit says *how it must look and feel in a character grid*. The two are read together.
+Read [`../README.md`](../README.md) first — it is the terminal **design kit** (palette mapping, chrome conventions, translate/don't-translate rules, and the `design-system.dc.html` style anchor). A brief says *what to build and why*; the kit says *how it must look and feel in a character grid*. The two are read together.
 
-Briefs are organised **one per engineer-cli module** (timer, progress, home, …), so a brief maps to the surface a reader is working on. Each module brief carries the same house format — workflow → jobs → binding principles → orientation (shipped reality) → the API it consumes (verified routes) → visual-language pointer → phasing — and folds in any earlier focused brief for that module (e.g. the timer brief absorbed the standalone timer gap analysis). This replaces the earlier single omnibus brief, which scoped the whole client at once and went stale in both directions as the CLI and the `engineer` API each shipped ahead of it.
+Every brief is measured against the governing principle — **sterling, not a replica** — before it is designed: the terminal owns the study loop's high-frequency core as *glances and gestures*, not a port of the `engineer` web UI. Depth stays on the web. That law, the six-point glance-or-gesture test, and the standing non-goals live in [ADR 0002](../../architecture/decisions/0002-sterling-not-a-replica.md).
 
-Every module brief is measured against one **governing principle — sterling, not a replica**: the terminal owns the study loop's high-frequency core as *glances and gestures* (the shipped timer is the exemplar), not a port of the `engineer` web UI. Depth stays on the web. It is the lead section of [`shipped/cross-cutting.brief.md`](shipped/cross-cutting.brief.md) — read it before designing or growing any surface.
-
-## Lifecycle — where a brief lives tells you its status
+## Lifecycle — a brief is an input, and it ends at ship
 
 ```
-proposed/  ->  (Claude Design produces the .html screens, the CLI implements them)  ->  shipped/
+proposed/  ->  (Claude Design produces the screens, the CLI implements them)  ->  deleted
 ```
 
-- **`proposed/`** — written, awaiting design and/or implementation.
-- **`shipped/`** — designed and live in the CLI. Kept, not deleted, so the reasoning stays next to the code.
+**An artefact written to *produce* something is an input, and its lifecycle ends when the thing it produced ships.**
+A design brief is deleted once the surface it asked for is live.
 
-When a proposed brief ships, `git mv` it `proposed/ -> shipped/` and flip its row below. The move is the status signal.
+Everything in a brief is written in the future tense — *design this, draw that, here is what it must do* — so the moment the surface exists, every sentence is a claim about the past in the wrong tense, and the document starts telling its reader to do work already done. An archive of shipped briefs is not a reference; it is a set of instructions to rebuild what you already have.
+
+**Deleting is not losing.** Before a brief goes, its durable half must already have a home:
+
+| What the brief carried | Where it lives afterwards |
+|---|---|
+| A decision — a trade-off weighed, a path chosen, a thing deliberately *not* built | An ADR in [`../../architecture/decisions/`](../../architecture/decisions/) |
+| What a surface looks like | The area's `.dc.html` board, and the kit in [`../README.md`](../README.md) |
+| What a surface does | A test |
+| Work that is still open — a residual gap, a deferral, a server ask | A GitHub issue |
+
+Only then delete it. The prose itself stays recoverable — `git log --diff-filter=D -- docs/designs/briefs/` finds the commit, `git show <sha>:<path>` prints the file.
+
+**Status belongs on the issue tracker, not in a folder name.** A brief's directory says one thing: it is still an open input. Nothing here records what shipped — the CHANGELOG, the issues, and the tags do that.
+
+**Code cites a decision or a test — never a brief.** A brief is an input, so a source comment pointing at one is pointing at something scheduled for deletion. Cite the ADR for *why* and the test for *what*.
 
 ## Index
 
-One brief per module. Folder tells status: `proposed/` = has open design/implementation work; `shipped/` = designed and live (kept for the reasoning, and still the place to note residual gaps).
-
-### Proposed
-
-*Nothing proposed — every module brief has shipped. The roadmap (EPIC #126) is closed and `proposed/` is empty. New work starts here: write the brief, drop it in `proposed/`, add its row, and `git mv` it to `shipped/` when it lands — the move is the status signal.*
-
-### Shipped
-
-| Module brief | What it covers | Shipped in |
-|---|---|---|
-| [`shipped/timer.brief.md`](shipped/timer.brief.md) | Run the timer without leaving your work + ambient status-bar presence; the full timer face, states, focus rhythm, idle reclaim, overrun, segment audit, and the headless verb suite. Absorbs the earlier timer gap analysis (Section C now resolved). | timer v2 (v0.3.0), guards & rhythm (v0.4.0) |
-| [`shipped/activities.brief.md`](shipped/activities.brief.md) | The core activities table (list/filter/sort/complete/archive/duplicate) and the segment drill + audit. | epic #7 daily-loop |
-| [`shipped/review.brief.md`](shipped/review.brief.md) | The spaced-repetition dashboard, the due triage, the rate sitting, and browse-all. | epic #7 daily-loop |
-| [`shipped/command-palette.brief.md`](shipped/command-palette.brief.md) | The `:` verb line — nav, timer actions, `:note` capture, `:log` (the activity form) + `:target` (the Progress declare flow), completion and unknown-verb handling. | epic #7 daily-loop; `:log`/`:target` #97 (v0.9.0) |
-| [`shipped/progress.brief.md`](shipped/progress.brief.md) | The Measure pillar: pace meters, `engineer target` declare/adjust/retire, interactive declare, the where-it-went fold + `engineer progress --json` rollup, and the `:log`/`:target` palette verbs. | meters v0.2–v0.4; targets-write #85/#86 (v0.7.0); epic #119 (v0.9.0) |
-| [`shipped/home.brief.md`](shipped/home.brief.md) | Home, enriched — lead with the running timer + this week's pace over one `GET /api/v1/today` read, with a global `g`-goto grammar and the `engineer today` headless twin. | epic #61 (v0.6.0) |
-| [`shipped/week-planning.brief.md`](shipped/week-planning.brief.md) | Plan the week + the retro (planned-vs-done) via `GET /api/v1/weeks/:iso_week`; planning writes go through the activities API, the reflection through the v1 week-note route. | epic #113 (v0.9.0) |
-| [`shipped/assisted-capture.brief.md`](shipped/assisted-capture.brief.md) | The draft-triage inbox over `/api/v1/automations/tasks` + a terminal-native git-source connect flow over the `/api/v1/capture/sources` contract (ADR 0035); both with headless twins. | headless inbox #90 (v0.7.0); epic #118 (v0.9.0) |
-| [`shipped/notes.brief.md`](shipped/notes.brief.md) | Five-second capture + the notes browser + one-line anchor read-back, the `$EDITOR`-for-prose long-form path, the headless `engineer note` twin, and the deliberate delete / unlink / chapter-section anchor-picker faces. | `$EDITOR` #88 (v0.7.0); headless twin + the deliberate faces epic #120 (v0.9.0) |
-| [`shipped/offline-write.brief.md`](shipped/offline-write.brief.md) | The **write** half of offline-tolerance: the timer as a controlling local clock + a persisted optimistic write queue every mutation rides (`src/queue/`, `src/timer_clock.rs`), reconciled on reconnect with divergence surfaced, plus the Queue inspector. Read half shipped in #91. | EPIC #98 (v0.8.0 + v0.10.0) |
-| [`shipped/cross-cutting.brief.md`](shipped/cross-cutting.brief.md) | Concerns every module inherits: the governing sterling-not-a-replica law (still the permanent standard), offline-tolerance's shared principle, the reusable fuzzy picker, the TUI↔headless contract, the accent-hue decision, and the `$EDITOR` handoff. | ratified across #83/#84/#88/#91/EPIC #98 |
-| [`shipped/terminal-client.brief.md`](shipped/terminal-client.brief.md) | The retired omnibus tombstone — scoped the whole client at once, since decomposed into the per-module briefs above. Kept so inbound links resolve. | retired — superseded by the module briefs |
-
-*(Some of the CLI's earliest screens — Login, Books, Book detail — predate the briefs workflow; see the kit README's screen inventory. The retired omnibus — `terminal-client.brief.md`, now the shipped tombstone row above — and the pre-lifecycle `daily-loop.brief.md` were decomposed into the module set above.)*
+*Nothing proposed. New work starts here: write the brief, drop it in `proposed/`, and delete it at close-out once its durable half has landed in an ADR, a board, a test, or an issue.*
 
 ## Writing a brief
 
-Match the house format the module briefs share (For / Produces / Do-not-edit / Status header; a first-person workflow; jobs-as-outcomes; binding principles; an orientation section that states the *shipped reality*; the API the module consumes with **verified** routes; a hard visual-language constraint; out-of-scope; phasing) — but bind the visual language to **this repo's kit** (`../README.md`, `../design-system.dc.html`), not the web design system. Keep it problem-first and non-prescriptive: name existing screens, widgets, and the pre-built API client as *reuse context*, never as the prescribed answer. When a module is new or growing, put its brief in `proposed/`; when a proposed brief's work ships, `git mv` it to `shipped/` and flip its row above — the move is the status signal.
+Match the house format: a For / Produces / Status header; a first-person workflow; jobs-as-outcomes; the principles that genuinely bind; an orientation section that states the *shipped reality*; the API the module consumes with **verified** routes; a hard visual-language constraint; out-of-scope; and phasing. Bind the visual language to **this repo's kit** ([`../README.md`](../README.md), [`../design-system.dc.html`](../design-system.dc.html)), not the web design system.
+
+Keep it problem-first and non-prescriptive: name existing screens, widgets, and the pre-built API client as *reuse context*, never as the prescribed answer.
+
+Two things a brief must do so it can be deleted cleanly at close-out:
+
+- **Name the ADR carrying any decision its surface depends on** — write the record as the decision is made, not at delete time. This is the backstop that keeps the reasoning when the brief goes.
+- **Record open work as issues, not as prose notes.** A "residual gap" or "deferred for now" line inside a brief is work status hiding in a document nobody re-reads; file it.

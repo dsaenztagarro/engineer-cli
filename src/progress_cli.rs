@@ -1,5 +1,5 @@
 //! Headless `engineer progress` (alias `pace`) — the one-shot twin of the pace
-//! meters (progress.brief.md §8.2, cross-cutting.brief.md §C).
+//! meters (the TUI ↔ headless contract, ADR 0003).
 //!
 //! Reuses the shipped `GET /api/v1/progress` read. Three shapes, like the timer:
 //! the bare form prints one greppable line per target plus a summary; `--json`

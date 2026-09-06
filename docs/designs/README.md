@@ -2,8 +2,7 @@
 
 Design references for the **terminal** client, organized by app area (mirroring `engineer/docs/designs/`).
 Mockups are Claude Design **canvas docs** (`*.dc.html`, rendered by the bundled `support.js` runtime): each is a board of [ratatui](https://ratatui.rs)-faithful screens for one app area.
-`design-system.dc.html` is the shared palette and component legend they all follow;
-the timer gap analysis (mockups vs the timer engineer shipped) that drove `timer.dc.html`'s design passes is now absorbed into `briefs/shipped/timer.brief.md`.
+`design-system.dc.html` is the shared palette and component legend they all follow.
 
 This directory is also the **reference kit** to seed a *new* Claude Design project for the terminal app. The terminal is a sibling surface to the web app — it shares the brand and the domain, but **not** the visual medium. A TUI is a character grid: one monospace font, no shadows/radii/web-fonts, an ANSI/256-colour palette, keyboard-driven, dark-first. So we design it in its own project, fed the *transferable* slice of the web design system (information architecture, colour semantics, brand) rather than its pixel/CSS chrome.
 
@@ -11,7 +10,8 @@ This directory is also the **reference kit** to seed a *new* Claude Design proje
 
 The **`engineer-cli`** Claude Design project is live (seeded from this kit's original `books.html` anchor + `terminal-tokens.css`, both since retired);
 its outputs land here as `*.dc.html` canvas docs — `design-system.dc.html` (the style anchor) and one doc per app area (`timer.dc.html`, …).
-To iterate on an area: give the project the area's current `.dc.html`, `design-system.dc.html`, this `README.md`, and the relevant brief or gap analysis from `briefs/`, and ask for the gaps to be closed within the palette mapping, chrome conventions, and translate/don't-translate rules below.
+To iterate on an area: give the project the area's current `.dc.html`, `design-system.dc.html`, this `README.md`, and — if one is open for the work — the area's brief from `briefs/proposed/`, and ask for the gaps to be closed within the palette mapping, chrome conventions, and translate/don't-translate rules below.
+A brief is an *input* and is deleted once the surface it asked for ships (`briefs/README.md`), so for a surface that is already live the durable references are this kit, the area's `.dc.html`, and `../architecture/decisions/`.
 
 > Why a new project, not the web one: the web project carries ~50 files of web-CSS iteration. For a TUI, most of that is the wrong medium and biases output toward shadows/rounded/pixel idioms a grid can't render. Seed only what transfers; design in a clean, terminal-shaped frame.
 
@@ -31,7 +31,7 @@ Web tokens (`engineer/docs/designs/tokens.css`) mapped to terminal values, cross
 | warning | `#F59E0B` | `179 / #D7AF5F` | `179 / #D7AF5F` | matches — keep |
 | danger | `#EF4444` | `167 / #D75F5F` | `167 / #D75F5F` | matches — keep |
 
-**The accent decision — ratified (#83 → v0.7.0).** The web brand is indigo (`#3B40CC`, a blue-violet), too dark to read on a dark terminal, so it must be lightened. The shipped `theme.rs` originally lightened it all the way to a *sky blue* (`256 #75 = #5FAFFF`), a different **hue** (~210°/cyan vs indigo's ~237°/violet) that read as a different brand colour than the web. The kit recommended lightening *along the indigo hue* instead — `256 #105 = #8787FF` (periwinkle), which keeps the brand identity while staying bright on dark — and that recommendation was **ratified and shipped**: `theme.rs` now sets `ACCENT` to `105` and `ACCENT_DIM` to `61`, matching the mockups. The one-line change is landed, not pending (`briefs/shipped/cross-cutting.brief.md` §D).
+**The accent decision — ratified (#83 → v0.7.0).** The web brand is indigo (`#3B40CC`, a blue-violet), too dark to read on a dark terminal, so it must be lightened. The shipped `theme.rs` originally lightened it all the way to a *sky blue* (`256 #75 = #5FAFFF`), a different **hue** (~210°/cyan vs indigo's ~237°/violet) that read as a different brand colour than the web. The kit recommended lightening *along the indigo hue* instead — `256 #105 = #8787FF` (periwinkle), which keeps the brand identity while staying bright on dark — and that recommendation was **ratified and shipped**: `theme.rs` now sets `ACCENT` to `105` and `ACCENT_DIM` to `61`, matching the mockups. The one-line change is landed, not pending.
 
 The semantic colours (success/warn/danger), border, and muted already track the web hues well — no change.
 
@@ -47,7 +47,7 @@ What transfers from the web app is the **information architecture** (which scree
 | Log activity (form) | `Activities.html` + `Forms v2.html` | built (`screens/activity_new.rs`) |
 | Sign in | identity / auth | built (`screens/login.rs`) |
 | Activities table | `Activities.html` | built (`screens/activities.rs`) |
-| Timer + header cell | `navigation-bar.html` §M + `timer-hygiene.html` | built (`screens/timer.rs`) — v2 redesign shipped (`timer.dc.html`; gap analysis absorbed into `briefs/shipped/timer.brief.md`), now a local clock offline (`offline-write.dc.html`) |
+| Timer + header cell | `navigation-bar.html` §M + `timer-hygiene.html` | built (`screens/timer.rs`) — v2 redesign shipped (`timer.dc.html`), now a local clock offline (`offline-write.dc.html`) |
 | Notes capture + browser + `$EDITOR`/headless/faces | `notes.dc.html` (from `notes.html`) | built — capture (`app/capture.rs`), browser + delete/unlink faces (`screens/notes.rs`), `$EDITOR` (`editor.rs`), headless twin (`note_cli.rs`); epic #120 |
 | Review (dashboard / browse / sitting) | `review.html` | built (`screens/review.rs`) |
 | Progress (pace meters) | `progress.html` | built (`screens/progress.rs`) |
@@ -60,7 +60,9 @@ What transfers from the web app is the **information architecture** (which scree
 
 ## Translate / don't-translate
 
-**Governing principle — sterling, not a replica.** A full terminal replica of the `engineer` web UI is a non-goal. The terminal is an *Apple Watch for the study loop*: it owns the high-frequency, high-value core, distilled into **glances (complications) and gestures (one-keystroke verbs)** — quiet, honest, and composable (every read pipes, every action is a headless verb). Depth — rich filtering, bulk edit, dashboards, planning canvases, settings forms — stays on the web. The shipped **timer** is the exemplar of the bar; the full **glance-or-gesture test**, and where each module sits against it, is the governing section of [`briefs/shipped/cross-cutting.brief.md`](briefs/shipped/cross-cutting.brief.md). Every brief is measured against it before it is designed.
+**Governing principle — sterling, not a replica.** A full terminal replica of the `engineer` web UI is a non-goal. The terminal is an *Apple Watch for the study loop*: it owns the high-frequency, high-value core, distilled into **glances (complications) and gestures (one-keystroke verbs)** — quiet, honest, and composable (every read pipes, every action is a headless verb). Depth — rich filtering, bulk edit, dashboards, planning canvases, settings forms — stays on the web. The shipped **timer** is the exemplar of the bar.
+
+A feature earns its place in the terminal only if it is **a glance or a gesture, not a session · ambient & quiet · distilled, not ported · honest · composable · one-hand keyboard-only**. The six criteria in full, the module map, the one deliberate concession (the Activities table, and its cap), and the standing non-goals — the Review heatmap, a Progress pivot grid, a week planning canvas, a sync console, an inbox manager — are [ADR 0002 — Sterling, not a replica](../architecture/decisions/0002-sterling-not-a-replica.md). Every surface is measured against it before it is designed; that record says *what* earns a surface, and the rules below say *how* to draw it.
 
 - **Drop entirely** (no terminal equivalent): shadows, border-radius, Inter/web-fonts, gradients, pixel spacing, hover states, responsive breakpoints.
 - **Replace with a terminal idiom:**
@@ -72,6 +74,7 @@ What transfers from the web app is the **information architecture** (which scree
   - progress -> the block-bar in `widgets::progress_bar` (`███▍·····  42%`)
 - **Keep:** colour *semantics*, information density, the domain vocabulary.
 - **Interaction:** keyboard-only, neovim-flavoured — `j`/`k`, `gg`/`G`, `/`, `n`/`N`, `:cmd`, `<Space>` leader, `i`/`Esc` for insert/normal in forms. No mouse. The footer always shows the active screen's keys.
+- **Fuzzy over navigate.** Choosing one thing out of many — a book to bind, a domain for a target, a chapter to anchor — is a Telescope-flavoured overlay with a subsequence fuzzy rank (so `dda` finds "**D**esigning **D**ata-Intensive **A**pplications"), never an arrow-through list or an axis-first radio step. One reusable widget serves every mount point (`../../src/ui/picker.rs`, illustrated in `cross-cutting-concerns.dc.html`): a screen supplies a source — a local slice or a server candidate stream — and a callback, and gets the same `j`/`k` · type-to-filter · `⏎` · `Esc` grammar and the shipped selection atoms. Never re-implement it per screen.
 
 ## Chrome conventions (already shipped — match these)
 
@@ -95,10 +98,10 @@ Layout is three stacked rows (`../../src/ui/layout.rs::render_chrome`):
 
 | File | What |
 |---|---|
-| `README.md` | This brief — the kit's entry point |
+| `README.md` | This file — the kit's entry point (a durable reference, not a brief) |
 | `design-system.dc.html` | Palette & component legend — the canvas kit's style anchor |
 | `timer.dc.html` | Timer screens — hero, status-line, start picker, idle reclaim, focus, audit, headless |
 | `week-planning.dc.html` | Week board — plan ⇄ retro, the planned-vs-done readout, the `$EDITOR` reflection, headless twins |
 | `assisted-capture.dc.html` | Draft-triage inbox (pending / draft / reject / zero) + the ambient count + the git-source connect flow (sources list, trust gate, requirement pointer) + headless twins |
 | `support.js` | Claude Design canvas runtime the `.dc.html` docs load |
-| `briefs/` | Problem-first design briefs and gap analyses (`proposed/` → `shipped/` lifecycle) |
+| `briefs/` | Problem-first design briefs — *inputs*, deleted once the surface they asked for ships (`proposed/` → deleted) |

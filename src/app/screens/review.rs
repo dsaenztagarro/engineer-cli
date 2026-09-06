@@ -1,5 +1,5 @@
-//! Review screen — spaced repetition over topics (daily-loop.brief.md §5,
-//! the web `review.html` IA translated to a character grid). One screen, three
+//! Review screen — spaced repetition over topics (the web `review.html` IA
+//! translated to a character grid). One screen, three
 //! stages:
 //!
 //!   dashboard — the read: the due-queue count + estimated minutes, the streak
@@ -14,10 +14,11 @@
 //!               the API's sort ring on `s` and a server-side `q` search on `/`;
 //!               `↵` opens a topic detail read with a one-off rate option.
 //!
-//! No ASCII heatmap: the epic's brief keeps the terminal dashboard a minimal
-//! read — the streak and this-month counts already convey review cadence, and
-//! the web app owns the heatmap. The `Dashboard.heatmap` payload is parsed by
-//! the API layer but deliberately not rendered here.
+//! No ASCII heatmap — a **decided non-goal**, not a gap (ADR 0002). The
+//! dashboard stays a minimal read: the streak and this-month counts already
+//! convey review cadence, and the web app owns the heatmap. The
+//! `Dashboard.heatmap` payload is parsed by the API layer but deliberately not
+//! rendered here; a future pass must not "add it back" as a fix.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Rect};
