@@ -1,7 +1,4 @@
-//! The segment audit (`Progress ▸ Segment audit`): flagged segments derived on
-//! read — implausibly long, zero/near-zero, missing metadata — plus the
-//! acknowledge action that stamps `audit_acknowledged_at`. Trim and delete are
-//! ordinary segment PATCH/DELETE (`src/api/segments.rs`), not audit verbs.
+//! The segment audit read and its acknowledge; trim and delete are plain segment calls (`api::segments`).
 #![allow(dead_code)]
 
 use serde::Deserialize;
@@ -10,7 +7,7 @@ use super::{ApiClient, ApiError};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AuditRead {
-    /// The user's total flagged rows — the badge number.
+    /// The user's total flagged rows.
     pub audit_count: u32,
     /// Newest-first flagged segments.
     pub segments: Vec<AuditSegment>,
@@ -35,9 +32,8 @@ pub struct AuditSegment {
     pub flags: Vec<String>,
 }
 
-/// The acknowledge response: the segment's remaining flags (the duration
-/// flags clear permanently; missing-metadata flags survive until fixed) and
-/// the user's new flagged total.
+/// `flags` are the segment's remaining flags — missing-metadata flags survive
+/// an acknowledge.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AuditAcknowledged {
     pub acknowledged: bool,
@@ -52,8 +48,7 @@ impl ApiClient {
         self.get("/api/v1/progress/audit", &[]).await
     }
 
-    /// "Looks right" — stamps the segment acknowledged, clearing its
-    /// duration-shape flags for good.
+    /// "Looks right": the server clears the segment's duration flags for good.
     pub async fn acknowledge_audit_segment(
         &self,
         segment_id: i64,

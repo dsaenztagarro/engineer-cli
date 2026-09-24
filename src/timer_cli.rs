@@ -1,11 +1,4 @@
-//! Headless `engineer timer` — the one-shot twin of every timer verb
-//! (docs/designs/timer.dc.html §Headless / §Headless contract).
-//!
-//! Exit codes answer "is the clock counting?": 0 counting (running, focus
-//! work) · 1 nothing running · 3 idle, reclaim pending · 4 not counting
-//! (paused / focus break). Write verbs exit 0 on success and 1 on refusal,
-//! with the reason on stderr. Output is plain when piped: ANSI colour is
-//! applied only on a TTY and never when NO_COLOR is set.
+//! Headless `engineer timer` — the one-shot twin of every timer verb (ADR 0003).
 
 use std::io::IsTerminal;
 
@@ -135,8 +128,7 @@ async fn dispatch(
     }
 }
 
-/// `reclaim <verb>` — the §Idle reclaim rows, piped. Also the engine behind
-/// `stop --reclaim=…`.
+/// Also the engine behind `stop --reclaim=…`.
 async fn reclaim(api: &ApiClient, verb_name: &str, json: bool) -> Result<Outcome, ApiError> {
     let Some(verb) = ReclaimVerb::from_name(verb_name) else {
         return Ok(Outcome::refuse(format!(
@@ -188,8 +180,6 @@ async fn reclaim(api: &ApiClient, verb_name: &str, json: bool) -> Result<Outcome
     }
 }
 
-/// The knobs read, mirroring the server payload 1:1 in `--json` and as an
-/// aligned table for humans.
 async fn settings(api: &ApiClient, json: bool) -> Result<Outcome, ApiError> {
     let s = api.timer_settings().await?;
     if json {
@@ -242,16 +232,7 @@ async fn settings(api: &ApiClient, json: bool) -> Result<Outcome, ApiError> {
 
 // ---------------------------------------------------------------- reads
 
-/// Read the live timer, caching it on success; on a *transport* failure fall
-/// back to the *effective* local timer — the cached snapshot with the pending
-/// queue folded over it (`queue::fold_timer`), its elapsed computed with the
-/// server's own `started_at`/`paused_seconds` arithmetic. So offline, the
-/// rendered clock keeps advancing, a queued pause freezes it, and a queued
-/// resume advances it again; a dropped or synced intent is reflected on the
-/// very next read (the fold re-reads the queue every time). Auth and other
-/// errors propagate. The returned age keeps its shipped meaning: seconds since
-/// the last *server* snapshot, `None` on a live read. Only live server reads
-/// are ever written back to the cache — the fold is not.
+/// The age is seconds since the last *server* snapshot — `None` on a live read.
 async fn fetch_timer(
     api: &ApiClient,
     queued: &QueuedClient,
@@ -259,10 +240,6 @@ async fn fetch_timer(
     match api.timer().await {
         Ok(t) => {
             crate::timer_cache::store(&t);
-            // A successful read proves the wire is back — the one-shot's
-            // chance to drain the queue. Inline and best-effort: it skips
-            // instantly when the queue is empty, and a failed drain never
-            // spoils the read the user asked for.
             queued.drain_best_effort().await;
             Ok((t, None))
         }
@@ -282,8 +259,6 @@ async fn read(
 ) -> Result<Outcome, ApiError> {
     let (timer, stale) = fetch_timer(api, queued).await?;
     let summary = queued.queue_summary();
-    // Parked intents are kept for review, not waiting to sync — they never
-    // count as queued writes.
     let depth = summary.in_play();
     let diverged = summary.diverged > 0;
     let code = exit_code(&timer);
@@ -293,10 +268,6 @@ async fn read(
             v["stale"] = true.into();
             v["stale_age_s"] = age.into();
         }
-        // Unsynced local writes are a different honesty state than a stale
-        // read — both machine fields ship on every read (#100). `diverged`
-        // flags the one loud state: a replay the server refused is waiting on
-        // a choice (`engineer queue resolve`).
         v["queued"] = (depth > 0).into();
         v["queue_depth"] = depth.into();
         v["diverged"] = diverged.into();
@@ -338,11 +309,9 @@ async fn status(
     let code = exit_code(&timer);
     let line = if short {
         let mut l = short_status(&timer, colored);
-        // A stale status-bar clock wears a `~` so a glance still reads "offline".
         if !l.is_empty() && stale.is_some() {
             l.push_str(" ~");
         }
-        // `↑N` — unsynced local writes, the quiet queued complication.
         if !l.is_empty() && depth > 0 {
             l.push(' ');
             l.push_str(&paint(&format!("↑{depth}"), COLOR_FOCUS, colored));
@@ -358,8 +327,6 @@ async fn status(
         if depth > 0 {
             l.push_str(&format!(" queued={depth}"));
         }
-        // The one loud state, as a machine extra: a divergence waits on a
-        // choice, so the status can't claim the queue will drain on its own.
         if diverged {
             l.push_str(" diverged=1");
         }
@@ -372,7 +339,6 @@ async fn status(
     })
 }
 
-/// `  · offline (last known 2m ago)` — the muted staleness tail on the human read.
 fn stale_suffix(age_secs: i64, colored: bool) -> String {
     let ago = if age_secs >= 60 {
         format!("{}m", age_secs / 60)
@@ -395,10 +361,6 @@ async fn start(
     switch: bool,
     colored: bool,
 ) -> Result<Outcome, ApiError> {
-    // Resolving a query to an activity is a *live* candidates read. Offline we
-    // can't fuzzy-match, and guessing would bind the wrong thing — so refuse
-    // with the way forward (start bare, or wait for the wire). A *bare* start
-    // needs no read and rides the queue below (the #103 offline-start decision).
     let activity_id = match &query {
         None => None,
         Some(q) => match api.timer_candidates(Some(q)).await {
@@ -415,11 +377,8 @@ async fn start(
         },
     };
 
-    // The saved-segment details of a switch live server-side; read the current
-    // timer first so the output can at least name what was stopped. Offline,
-    // fall back to the effective (folded) timer, or skip the line when nothing
-    // is locally known — the switch still rides the intent and replays as a
-    // stop & save.
+    // The switch's saved segment is server-side; read the timer first so the
+    // output can at least name what was stopped.
     let previous = if switch {
         let running_label = |t: Timer| {
             t.running
@@ -479,9 +438,6 @@ async fn toggle(
     queued: &QueuedClient,
     colored: bool,
 ) -> Result<Outcome, ApiError> {
-    // Toggle needs to know the direction (paused → resume, else pause). Offline,
-    // read it off the effective (folded) timer so the same keystroke flips the
-    // local clock; with nothing locally known there is no direction to pick.
     let timer = match api.timer().await {
         Ok(t) => t,
         Err(ApiError::Transport(_)) => match queued.effective_timer(jiff::Timestamp::now()) {
@@ -500,8 +456,6 @@ async fn toggle(
     }
 }
 
-/// `· queued (offline)` — the provisional tail on a write that landed in the
-/// queue instead of on the server. Same honesty family as `stale_suffix`.
 fn queued_suffix(colored: bool) -> String {
     paint("  · queued (offline)", COLOR_MUTED, colored)
 }
@@ -555,11 +509,8 @@ async fn stop(
     reclaim_verb: Option<String>,
     colored: bool,
 ) -> Result<Outcome, ApiError> {
-    // `--reclaim` decides the idle tail first: `stop` maps straight to the
-    // reclaim endpoint (segment ends at last input); `trim`/`keep` settle the
-    // tail, then the plain stop below saves to now. Reclaim is the server's
-    // idle verdict — it can't be synthesized locally, so it stays live-only and
-    // refuses clearly offline rather than queueing a half-decided stop.
+    // Reclaim is the server's idle verdict and can't be synthesized locally, so
+    // it stays live-only rather than queueing a half-decided stop.
     match reclaim_verb.as_deref() {
         None => {}
         Some(verb) => {
@@ -568,8 +519,6 @@ async fn stop(
                 Err(ApiError::Transport(_)) => return Ok(Outcome::refuse(RECLAIM_OFFLINE)),
                 Err(e) => return Err(e),
             };
-            // `stop` ends the segment at the reclaim endpoint; a failed trim/keep
-            // stops here too. Only a clean trim/keep falls through to save now.
             if verb == "stop" || settled.code != 0 {
                 return Ok(settled);
             }
@@ -577,8 +526,7 @@ async fn stop(
     }
     match queued.stop_timer().await {
         Ok(out) => {
-            // Provisional stop carries no segment id — it's server-minted on
-            // replay (the negative sentinel stays a private side channel).
+            // The provisional stop's negative `segment_id` is a private sentinel.
             let mut line = if out.is_provisional() {
                 format!("■ saved {}m", out.value().minutes)
             } else {
@@ -601,8 +549,6 @@ async fn stop(
     }
 }
 
-/// One spelling of the offline-reclaim refusal — `--reclaim` needs a live idle
-/// verdict from the server, so it can't be settled from a tunnel.
 const RECLAIM_OFFLINE: &str = "offline — reclaim needs the server's idle verdict; retry online";
 
 async fn bind(
@@ -611,9 +557,6 @@ async fn bind(
     query: &str,
     colored: bool,
 ) -> Result<Outcome, ApiError> {
-    // Resolving the query is a live candidates read (same constraint as a
-    // query'd start). Offline we can't match it, so refuse with the way forward
-    // rather than bind the wrong activity.
     let candidate = match api.timer_candidates(Some(query)).await {
         Ok(list) => match list.first().cloned() {
             Some(c) => c,
@@ -641,8 +584,6 @@ async fn bind(
     }
 }
 
-/// Discards ask twice in the TUI past ~2 minutes; headless, the second ask is
-/// `--force`. One shared fence with the Timer screen.
 use crate::app::screens::timer::DISCARD_CONFIRM_SECS;
 
 async fn discard(
@@ -651,8 +592,6 @@ async fn discard(
     force: bool,
     colored: bool,
 ) -> Result<Outcome, ApiError> {
-    // The elapsed the force fence guards comes from the effective (folded) local
-    // clock offline, so `--force` reads the same "how much work" the user sees.
     let timer = match api.timer().await {
         Ok(t) => t,
         Err(ApiError::Transport(_)) => match queued.effective_timer(jiff::Timestamp::now()) {
@@ -681,8 +620,6 @@ async fn discard(
 
 // ---------------------------------------------------------------- shapes
 
-/// One word per state, the first token of the status contract. Precedence:
-/// gone > idle > paused > focus phase > running.
 fn state_word(t: &Timer) -> &'static str {
     if !t.running {
         return "none";
@@ -710,9 +647,7 @@ fn exit_code(t: &Timer) -> i32 {
     }
 }
 
-/// `<state> <elapsed_s> <mode> <activity_id> <kind> "<title>" [extras]` —
-/// field order never changes; unbound uses `-` placeholders. The API read
-/// carries no activity kind, so that column is always `-` until it does.
+/// The API read carries no activity kind, so that column is always `-`.
 fn plain_status(t: &Timer) -> String {
     let word = state_word(t);
     if word == "none" {
@@ -806,7 +741,7 @@ fn json_read(t: &Timer) -> serde_json::Value {
     })
 }
 
-// Terminal-palette 256 colours (docs/designs/README.md palette mapping).
+// Terminal-palette 256 colours.
 const COLOR_RUNNING: u8 = 108; // success green
 const COLOR_FOCUS: u8 = 105; // accent indigo
 const COLOR_ATTENTION: u8 = 179; // warn amber
@@ -1210,6 +1145,145 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_non_transport_read_error_propagates_instead_of_the_offline_fallback() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let api = client(&server);
+        let dir = scratch();
+        crate::timer_cache::store_at(
+            &dir.join("timer-cache.json"),
+            &timer(serde_json::json!({ "running": true, "elapsed_seconds": 60 })),
+        );
+        let queued = queued_at(&api, &dir);
+
+        assert!(dispatch(&api, &queued, None, true, false).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn start_switch_names_the_timer_it_stopped() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "bound": true, "label": "Read DDIA ch.7", "elapsed_seconds": 3134
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer"))
+            .and(body_json(serde_json::json!({ "switch": true })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "running": true, "bound": false
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let outcome = run_dispatch(
+            &client(&server),
+            Some(TimerCmd::Start {
+                query: None,
+                switch: true,
+            }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, 0);
+        assert_eq!(outcome.out[0], "■ stopped & saved Read DDIA ch.7");
+        assert!(outcome.out[1].contains("started"), "{:?}", outcome.out);
+    }
+
+    /// `stop --reclaim` against a live server, returning the outcome and the
+    /// request paths in the order they arrived.
+    async fn stop_with_reclaim(verb: &str, reclaim: ResponseTemplate) -> (Outcome, Vec<String>) {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/reclaim"))
+            .and(body_json(serde_json::json!({ "verb": verb })))
+            .respond_with(reclaim)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/stop"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "stopped": true, "activity_id": 9, "segment_id": 41, "minutes": 25
+            })))
+            .mount(&server)
+            .await;
+
+        let outcome = run_dispatch(
+            &client(&server),
+            Some(TimerCmd::Stop {
+                reclaim: Some(verb.into()),
+            }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        let paths = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.url.path().to_string())
+            .collect();
+        (outcome, paths)
+    }
+
+    #[tokio::test]
+    async fn stop_with_reclaim_trim_settles_the_idle_tail_before_saving() {
+        let (outcome, paths) = stop_with_reclaim(
+            "trim",
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "bound": true, "paused_seconds": 5220, "idle": false
+            })),
+        )
+        .await;
+        assert_eq!(outcome.code, 0);
+        assert_eq!(paths, vec!["/api/v1/timer/reclaim", "/api/v1/timer/stop"]);
+        assert!(outcome.out[0].contains("segment 41"), "{:?}", outcome.out);
+    }
+
+    #[tokio::test]
+    async fn stop_with_reclaim_stop_saves_once_at_the_last_input() {
+        let (outcome, paths) = stop_with_reclaim(
+            "stop",
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "stopped": true, "activity_id": 9, "segment_id": 40, "minutes": 74
+            })),
+        )
+        .await;
+        assert_eq!(outcome.code, 0);
+        assert_eq!(paths, vec!["/api/v1/timer/reclaim"], "no second save");
+        assert!(
+            outcome.out[0].contains("ended at the last input"),
+            "{:?}",
+            outcome.out
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_reclaim_never_falls_through_to_a_save() {
+        let (outcome, paths) = stop_with_reclaim(
+            "trim",
+            ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "title": "Not Found", "detail": ""
+            })),
+        )
+        .await;
+        assert_eq!(outcome.code, 1);
+        assert_eq!(paths, vec!["/api/v1/timer/reclaim"]);
+    }
+
+    #[tokio::test]
     async fn stop_unbound_refuses_with_a_hint() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1233,7 +1307,7 @@ mod tests {
         assert!(outcome.err[0].contains("bind or discard first"));
     }
 
-    // ------------------------------------------------- offline writes (#100)
+    // ------------------------------------------------- offline writes
 
     fn dead_api() -> ApiClient {
         ApiClient::with_token(Url::parse("http://127.0.0.1:1/").unwrap(), "tok".into())
@@ -1435,7 +1509,7 @@ mod tests {
         );
     }
 
-    // ------------------------------------------- offline headless verbs (#104)
+    // ------------------------------------------- offline headless verbs
 
     use crate::queue::{IntentKind, QueueStore};
 
@@ -1487,6 +1561,44 @@ mod tests {
         let intents = pending(&dir);
         assert_eq!(intents.len(), 1);
         assert_eq!(intents[0].kind.word(), "start");
+    }
+
+    #[tokio::test]
+    async fn an_offline_switch_names_the_folded_timer_it_stops() {
+        let api = dead_api();
+        let dir = scratch();
+        seed_running(&dir, 600, false);
+        let queued = queued_at(&api, &dir);
+
+        let outcome = dispatch(
+            &api,
+            &queued,
+            Some(TimerCmd::Start {
+                query: None,
+                switch: true,
+            }),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, 0);
+        assert_eq!(outcome.out[0], "■ stopped & saved systems");
+    }
+
+    #[tokio::test]
+    async fn the_human_read_offline_says_how_old_the_last_known_clock_is() {
+        let api = dead_api();
+        let dir = scratch();
+        seed_running(&dir, 600, false);
+        let queued = queued_at(&api, &dir);
+
+        let outcome = dispatch(&api, &queued, None, false, false).await.unwrap();
+        assert!(
+            outcome.out[0].contains("· offline (last known "),
+            "{}",
+            outcome.out[0]
+        );
     }
 
     #[tokio::test]
@@ -1711,7 +1823,7 @@ mod tests {
         }
     }
 
-    // -------------------------------------------- divergence surfacing (#106)
+    // -------------------------------------------- divergence surfacing
 
     /// Seed the queue with a diverged pause and a pending resume behind it.
     fn diverged_seed(dir: &std::path::Path) {
