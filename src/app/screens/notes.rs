@@ -1,12 +1,5 @@
-//! Notes browser — the "findable later" half of the notes daily loop
-//! (`docs/designs/notes.dc.html`). Quick-capture (the "five-second"
-//! half) is the app-level overlay in `src/app/capture.rs`; this screen lists,
-//! searches, reads, archives, and hands a note back to that overlay for edits.
-//!
-//! A loose thought and an anchored one sit side by side: an anchored note reads
-//! its place back in one line of grid text (`SICP · ch 3 · p.142`); a loose one
-//! is a single row with no anchor line. Archived notes (revealed with `t`) are
-//! dimmed in place rather than hidden, so the ledger stays legible.
+//! Notes browser — lists, searches, reads and archives notes; edits hand back to
+//! the capture overlay in `src/app/capture.rs`.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
@@ -30,23 +23,13 @@ use super::{notify_seam_error, open_queued, QueuePaths};
 pub struct Notes {
     items: Vec<Note>,
     state: ListState,
-    /// The `/` search buffer. Submitting re-queries the server (`q=`); `n`/`N`
-    /// step matches within the loaded rows (search atom).
     search: SearchBox,
-    /// When set, archived notes are folded back in (dimmed) via the `archived=all`
-    /// server filter; otherwise the list is active-only.
     show_archived: bool,
     loading: bool,
-    /// Tier-2 state: set when the read failed, so an empty ledger and a failed
-    /// fetch render differently. Cleared on the next successful load.
     failure: Option<PanelFailure>,
-    /// `Some` while the full-content detail read is open, over the list.
     detail: Option<Note>,
-    /// A permanent-delete caught its first press on the detail; the next press
-    /// of the same key confirms, any other key disarms (guarded, live-only).
     delete_armed: bool,
-    /// Queue + read-cache locations for the offline write seam — `None`
-    /// (production) uses the shared XDG paths, tests inject a scratch dir.
+    /// `None` = the shared XDG queue; tests inject a scratch dir.
     queue_paths: QueuePaths,
 }
 
@@ -82,8 +65,6 @@ impl Notes {
             } else {
                 Some(self.search.query.clone())
             },
-            // "all" keeps active notes and folds archived ones back in (dimmed);
-            // None is active-only. We never request archived-only here.
             archived: self.show_archived.then(|| "all".to_string()),
             ..Default::default()
         };
@@ -92,8 +73,6 @@ impl Notes {
                 Ok(list) => {
                     let _ = tx.send(Action::NotesLoaded(list.data));
                 }
-                // A 401 routes to re-auth; every other failure surfaces as
-                // itself in the Tier-2 panel — never a swallowed empty list.
                 Err(ApiError::Unauthorized) => {
                     let _ = tx.send(Action::SessionExpired);
                 }
@@ -107,12 +86,8 @@ impl Notes {
         });
     }
 
-    /// The detail read and the search prompt own keys before the global keymap.
     pub fn intercept_key(&mut self, key: KeyEvent) -> Option<Action> {
         if self.detail.is_some() {
-            // A pending delete confirmation intercepts the very next key: the
-            // same `X` confirms, anything else cancels (guarded gesture — the
-            // note is only destroyed on the deliberate second press).
             if self.delete_armed {
                 return Some(if key.code == KeyCode::Char('X') {
                     Action::NotesDeleteConfirm
@@ -124,10 +99,7 @@ impl Notes {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('h') | KeyCode::Char('q') => {
                     Some(Action::NotesCloseDetail)
                 }
-                // `u` = detach from book (unlink), distinct from `a` archive.
                 KeyCode::Char('u') => Some(Action::NotesUnlinkSelected),
-                // `X` (shift) arms the permanent delete — deliberate, far from
-                // `a`, and never a bare key in the browse list.
                 KeyCode::Char('X') => Some(Action::NotesDeleteArm),
                 _ => None,
             };
@@ -140,7 +112,6 @@ impl Notes {
                     text: "search: type then Enter".into(),
                 });
             }
-            // `n`/`N` step matches once a query is live (applied, not capturing).
             if !self.search.is_empty() {
                 match key.code {
                     KeyCode::Char('n') => return Some(Action::NotesMatchStep(1)),
@@ -221,8 +192,6 @@ impl Notes {
             }
             Action::NotesOpenDetail => {
                 if let Some(note) = self.selected().cloned() {
-                    // Open instantly from the list row, then refine with the full
-                    // record (content + citations the list may omit).
                     let id = note.id;
                     self.detail = Some(note);
                     let (api, tx) = (api.clone(), tx.clone());
@@ -291,14 +260,10 @@ impl Notes {
             }
             Action::NotesEditSelected => {
                 if let Some(note) = self.selected().cloned() {
-                    // Hand the note to the app-level quick-capture overlay,
-                    // pre-filled for a PATCH — one editor for new and existing.
                     let _ = tx.send(Action::CaptureOpenEdit(Box::new(note)));
                 }
             }
             Action::NotesUnlinkSelected => {
-                // Detach the open note from its book — the note survives, only
-                // its book anchor is severed (a different intent from archive).
                 let note = self.detail.as_ref().or_else(|| self.selected());
                 match note {
                     Some(n) if n.book_id.is_some() || n.book_title.is_some() => {
@@ -354,11 +319,8 @@ impl Notes {
             }
             Action::NotesDeleteConfirm => {
                 self.delete_armed = false;
-                // Delete is destructive and terminal — the one note write kept
-                // live-only (edit/archive/unarchive/unlink now ride the queue,
-                // #111), with an honest offline refusal (the #94/#95
-                // triage/connect precedent): a synthesized offline "deleted" would
-                // be a lie the queue can't walk back, so it needs the server.
+                // Live-only on purpose: a queued "deleted" would be a lie the
+                // queue could never walk back.
                 if let Some(note) = self.detail.as_ref().or_else(|| self.selected()) {
                     let id = note.id;
                     let (api, tx) = (api.clone(), tx.clone());
@@ -406,8 +368,6 @@ impl Notes {
         self.state.selected().and_then(|i| self.items.get(i))
     }
 
-    /// `n`/`N` — move the cursor to the next/previous loaded row whose headline
-    /// matches the live query, wrapping around (the search atom's stepper).
     fn step_match(&mut self, dir: i32) {
         let labels: Vec<String> = self.items.iter().map(note_headline).collect();
         let matches = search::match_indices(labels.iter().map(String::as_str), &self.search.query);
@@ -431,8 +391,6 @@ impl Notes {
         let title = search::title_with_query(&base, &self.search);
         let block = bordered(title);
 
-        // No rows → a Tier-2 state, not a list. Failed (loud) and empty (calm)
-        // are deliberately distinct; loading is its own calm state.
         if self.items.is_empty() {
             let state = if let Some(f) = &self.failure {
                 PanelState::Failed(f.clone())
@@ -478,8 +436,6 @@ impl Notes {
             lines.push(Line::from(Span::styled("archived", theme::muted())));
         }
         if self.delete_armed {
-            // The destructive gesture reads red and unmistakable — never the
-            // quiet dim of archive.
             lines.push(Line::from(Span::styled(
                 "✖ delete (permanent) — X again to confirm, cannot be undone",
                 Style::default()
@@ -531,7 +487,6 @@ impl Notes {
             return search::search_hints();
         }
         let mut hints: Vec<(&str, &str)> = vec![("j/k", "move"), ("↵", "open"), ("/", "search")];
-        // Advertise match-stepping only while a query is live.
         if !self.search.is_empty() {
             hints.push(("n/N", "match"));
         }
@@ -545,8 +500,6 @@ impl Notes {
     }
 }
 
-/// The one-line preview: the note's title, falling back to the first non-empty
-/// line of its content for a note that was captured content-first.
 pub(crate) fn note_headline(note: &Note) -> String {
     let title = note.title.trim();
     if !title.is_empty() {
@@ -562,9 +515,6 @@ pub(crate) fn note_headline(note: &Note) -> String {
         .to_string()
 }
 
-/// The one-line anchor read-back for an anchored note — `book · ch 3 · p.142`.
-/// `None` for a loose thought (no book). The place is the first citation's
-/// server-rendered `address_label`, falling back to a bare `p.N` from its page.
 pub(crate) fn anchor_line(note: &Note) -> Option<String> {
     if note.book_id.is_none() && note.book_title.is_none() {
         return None;
@@ -588,8 +538,6 @@ fn note_list_item(note: &Note, query: &str) -> ListItem<'static> {
     } else {
         Style::default().add_modifier(Modifier::BOLD)
     };
-    // Highlight the live query inside the headline (search atom); an empty query
-    // returns one head-styled span, so the row reads exactly as before.
     let mut head_spans = search::highlight(&note_headline(note), query, head_style);
     if archived {
         head_spans.push(Span::styled("  (archived)", theme::muted()));
@@ -965,7 +913,7 @@ mod tests {
         assert!(s.detail.is_some());
     }
 
-    // --- offline write seam (#111): archive / unlink queue through QueuedClient ---
+    // --- offline write seam: archive / unlink queue through QueuedClient ---
 
     /// A base URL nothing listens on — reqwest fails before any response, which
     /// is exactly `ApiError::Transport`, the offline seam's trigger.

@@ -1,24 +1,5 @@
-//! Review screen — spaced repetition over topics (the web `review.html` IA
-//! translated to a character grid). One screen, three
-//! stages:
-//!
-//!   dashboard — the read: the due-queue count + estimated minutes, the streak
-//!               stats, and the due queue in urgency order (a preview; the
-//!               sitting drives the actual order).
-//!   sitting   — the payoff: the queue head → rate with a single keystroke
-//!               (`f`/`z`/`s`/`i` = forgot/fuzzy/solid/instant) → the server
-//!               returns the next due topic → advance automatically → the queue
-//!               drains to a quiet "done" view. `Esc` exits mid-sitting cleanly
-//!               (each rating is committed per topic, so no confirmation).
-//!   browse    — a secondary state: the full topic catalogue, paginated, with
-//!               the API's sort ring on `s` and a server-side `q` search on `/`;
-//!               `↵` opens a topic detail read with a one-off rate option.
-//!
-//! No ASCII heatmap — a **decided non-goal**, not a gap (ADR 0002). The
-//! dashboard stays a minimal read: the streak and this-month counts already
-//! convey review cadence, and the web app owns the heatmap. The
-//! `Dashboard.heatmap` payload is parsed by the API layer but deliberately not
-//! rendered here; a future pass must not "add it back" as a fix.
+//! Review screen — spaced repetition over topics: the dashboard, the sitting,
+//! and the browse catalogue.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Rect};
@@ -36,10 +17,6 @@ use crate::ui::panel::{render_panel_state, PanelFailure, PanelState};
 use crate::ui::search::{self, SearchBox};
 use crate::ui::{layout::bordered, theme, widgets};
 
-/// The four spaced-repetition ratings, each a single keystroke. `f`/`z`/`s`/`i`
-/// sidesteps the collision `r` would cause (the global refresh key) while
-/// staying mnemonic — a distinct letter of each word (forgot / fuZZy / solid /
-/// instant).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rating {
     Forgot,
@@ -49,7 +26,6 @@ pub enum Rating {
 }
 
 impl Rating {
-    /// The wire value the rate endpoint expects (also the display label).
     pub fn as_str(self) -> &'static str {
         match self {
             Rating::Forgot => "forgot",
@@ -59,7 +35,6 @@ impl Rating {
         }
     }
 
-    /// The keystroke that selects this rating.
     fn key(self) -> char {
         match self {
             Rating::Forgot => 'f',
@@ -69,9 +44,8 @@ impl Rating {
         }
     }
 
-    /// Map a rating keystroke to its rating. `s` is solid — in the rating
-    /// contexts (the sitting, the browse detail) it never means the dashboard's
-    /// "start", which those stages have moved past.
+    /// `s` is solid here — the rating contexts have moved past the dashboard's
+    /// `s` start.
     pub fn from_char(c: char) -> Option<Rating> {
         [
             Rating::Forgot,
@@ -91,8 +65,6 @@ pub enum Stage {
     Browse,
 }
 
-/// The browse sort ring cycled by `s` (the `TopicFilters` `sort` values).
-/// Urgency first, so it opens in the dashboard-queue order.
 const SORTS: [(&str, &str); 6] = [
     ("urgency", "urgency"),
     ("recent", "recent"),
@@ -102,8 +74,7 @@ const SORTS: [(&str, &str); 6] = [
     ("az", "a–z"),
 ];
 
-/// Fallback divisor for "page N of M" when the server omits `per_page`. The
-/// topics endpoint controls its own page size, echoed back in `meta`.
+/// Fallback divisor for "page N of M" when the server omits `per_page`.
 const PER_PAGE: u32 = 25;
 
 pub struct Review {
@@ -112,17 +83,13 @@ pub struct Review {
     // ---- dashboard ----
     dashboard: Option<Dashboard>,
     loading: bool,
-    /// Tier-2 state shared by the dashboard and browse bodies: set when a read
-    /// failed, so an absent-and-failed panel reads loud and distinct from the
-    /// calm loading/empty states. Cleared on the next successful load.
+    /// Shared by the dashboard and browse bodies.
     failure: Option<PanelFailure>,
 
     // ---- sitting ----
-    /// The topic currently being rated; `None` once the queue drains.
     current: Option<Topic>,
     rated: u32,
     done: bool,
-    /// A rate request is in flight — guards against double-rating one topic.
     rating_in_flight: bool,
 
     // ---- browse ----
@@ -132,11 +99,8 @@ pub struct Review {
     per_page: u32,
     total: u32,
     sort_idx: usize,
-    /// The `/` search buffer (query + capturing flag). `/` re-queries the
-    /// server (`q`); `n`/`N` step matches within the loaded rows (search atom).
     search: SearchBox,
     browse_loading: bool,
-    /// `Some` while the topic detail read is open, over the browse table.
     detail: Option<Topic>,
 }
 
@@ -183,13 +147,9 @@ impl Review {
                 Ok(d) => {
                     let _ = tx.send(Action::ReviewDashboardLoaded(Box::new(d)));
                 }
-                // A 401 is a session problem, not a review problem — route to
-                // re-auth (Tier 3) rather than a Tier-2 review panel.
                 Err(ApiError::Unauthorized) => {
                     let _ = tx.send(Action::SessionExpired);
                 }
-                // Tier 2: report the failure as itself. The reason is spelled
-                // once (§C) so the panel matches the catalogue.
                 Err(e) => {
                     let _ = tx.send(Action::ReviewLoadFailed(messages::fail_reason(
                         api.host(),
@@ -218,8 +178,6 @@ impl Review {
                         total: list.meta.total,
                     });
                 }
-                // A 401 routes to re-auth (Tier 3); any other failure surfaces
-                // inline as a Tier-2 browse panel, never a silently-empty table.
                 Err(ApiError::Unauthorized) => {
                     let _ = tx.send(Action::SessionExpired);
                 }
@@ -248,11 +206,8 @@ impl Review {
                     let _ = tx.send(Action::ReviewRated(Box::new(res)));
                 }
                 Err(e) => {
-                    // A rating is deliberately live-only (recorded on #111): the
-                    // server computes the next-due interval a rating sets, so an
-                    // offline synthesis would lie about the schedule — the same
-                    // honesty tension as inbox accept. Offline, refuse with the
-                    // way forward rather than queue a fabricated outcome.
+                    // Live-only on purpose: the server computes the interval a
+                    // rating sets, so a queued rating would lie about the schedule.
                     let text = match e {
                         crate::api::ApiError::Transport(_) => {
                             "offline — a rating needs the server to schedule the next review; retry online".into()
@@ -263,15 +218,12 @@ impl Review {
                         level: Level::Error,
                         text,
                     });
-                    // Release the guard so the topic can be re-rated.
                     let _ = tx.send(Action::ReviewRateFailed);
                 }
             }
         });
     }
 
-    /// The rating contexts (the sitting, the browse detail) and the browse
-    /// search prompt own keys before the global keymap.
     pub fn intercept_key(&mut self, key: KeyEvent) -> Option<Action> {
         match self.stage {
             Stage::Sitting => {
@@ -317,8 +269,6 @@ impl Review {
                         text: "search topics · Enter to run · Esc clears".into(),
                     });
                 }
-                // `n`/`N` step matches once a query is live (applied, not
-                // capturing). Only claim the keys when there's a query to step.
                 if !self.search.is_empty() {
                     match key.code {
                         KeyCode::Char('n') => return Some(Action::ReviewBrowseMatchStep(1)),
@@ -347,16 +297,11 @@ impl Review {
             Action::ReviewLoadFailed(reason) => {
                 self.loading = false;
                 self.browse_loading = false;
-                // The browse read and the dashboard read share this arm; name
-                // the noun by the stage that was reading so the headline is
-                // honest ("couldn't load topics" vs "couldn't load review").
                 let noun = if self.stage == Stage::Browse {
                     "topics"
                 } else {
                     "review"
                 };
-                // Tier 2: the failure surfaces inline in the body panel, not as a
-                // Tier-1 notify tile — reporting it twice would double-count it.
                 self.failure = Some(PanelFailure {
                     headline: messages::load_failed(noun),
                     reason,
@@ -370,8 +315,6 @@ impl Review {
             }
             Action::ReviewOpenDashboard => {
                 self.stage = Stage::Dashboard;
-                // Drop any browse failure so it can't bleed into the dashboard
-                // body (both stages read the one `failure` field).
                 self.failure = None;
                 self.loading = true;
                 self.fetch_dashboard(api, tx);
@@ -380,7 +323,6 @@ impl Review {
                 self.stage = Stage::Browse;
                 self.detail = None;
                 self.search.cancel();
-                // Drop any dashboard failure for the same reason.
                 self.failure = None;
                 self.page = 1;
                 self.browse_state.select(Some(0));
@@ -410,7 +352,6 @@ impl Review {
                 self.current = None;
                 self.done = false;
                 self.rating_in_flight = false;
-                // Reflect the topics just rated (queue shrinks, streak grows).
                 self.loading = true;
                 self.fetch_dashboard(api, tx);
             }
@@ -442,8 +383,6 @@ impl Review {
                         }
                     }
                     Stage::Browse => {
-                        // A one-off rate from the detail read: close it and
-                        // refetch the page so freshness/state mirror the server.
                         self.detail = None;
                         self.browse_loading = true;
                         self.fetch_browse(api, tx);
@@ -520,8 +459,6 @@ impl Review {
             }
             Action::ReviewBrowseOpenDetail => {
                 if let Some(t) = self.selected_topic() {
-                    // Open instantly from the row, then refine with the full
-                    // record (the prompts/forecasts the list omits).
                     let id = t.subdomain_id;
                     self.detail = Some(t);
                     let (api, tx) = (api.clone(), tx.clone());
@@ -543,11 +480,7 @@ impl Review {
         None
     }
 
-    /// Shared reset when the browse page changes (paging or sorting): close the
-    /// search prompt (the `q` text persists across pages/sorts), park the cursor
-    /// at the top, and refetch.
     fn enter_browse_page(&mut self, api: &ApiClient, tx: &UnboundedSender<Action>) {
-        // Stop capturing but keep the `q` text — it persists across pages/sorts.
         self.search.apply();
         self.browse_state.select(Some(0));
         self.browse_loading = true;
@@ -578,9 +511,6 @@ impl Review {
         self.browse_state.select(Some(next as usize));
     }
 
-    /// `n`/`N` — move the cursor to the next/previous loaded topic whose title
-    /// matches the live query, wrapping around. `/` still owns the server
-    /// re-query; this steps within the rows already on screen.
     fn step_match(&mut self, dir: i32) {
         let names: Vec<String> = self.topics.iter().map(topic_name).collect();
         let matches = search::match_indices(names.iter().map(String::as_str), &self.search.query);
@@ -615,8 +545,8 @@ impl Review {
 
     fn render_dashboard(&self, frame: &mut Frame, area: Rect) {
         let block = bordered("Review");
-        // No dashboard yet → a Tier-2 state, not a bare line: a failed read is
-        // loud and distinct from the calm loading spinner.
+        // No heatmap, though the payload carries one — a decided non-goal
+        // (ADR 0002), not a gap to fill.
         let Some(d) = &self.dashboard else {
             let state = if let Some(f) = &self.failure {
                 PanelState::Failed(f.clone())
@@ -750,9 +680,6 @@ impl Review {
         let block =
             bordered(self.browse_title()).title_bottom(self.browse_status().right_aligned());
 
-        // No rows → a Tier-2 body. Failed (loud) and empty (calm) never collapse;
-        // loading is its own calm state, and a live query the server matched to
-        // nothing reads as the muted no-matches line.
         if self.topics.is_empty() {
             if let Some(f) = &self.failure {
                 render_panel_state(frame, area, block, &PanelState::Failed(f.clone()));
@@ -886,7 +813,6 @@ impl Review {
                         ("[ ]", "page"),
                         ("/", "find"),
                     ];
-                    // Advertise match-stepping only while a query is live.
                     if !self.search.is_empty() {
                         hints.push(("n/N", "match"));
                     }
@@ -898,7 +824,6 @@ impl Review {
     }
 }
 
-/// `streak 3 days · best 9 · 12 this month · avg 21d interval`.
 fn stats_line(d: &Dashboard) -> Line<'static> {
     let s = &d.stats;
     let mut parts = vec![
@@ -916,7 +841,6 @@ fn stats_line(d: &Dashboard) -> Line<'static> {
     Line::from(Span::styled(parts.join("  ·  "), theme::muted()))
 }
 
-/// One queue preview row: `Consensus            distributed systems   due · 3×`.
 fn queue_line(t: &Topic, name_w: usize) -> Line<'static> {
     let name = pad_or_truncate(&topic_name(t), name_w);
     let domain = pad_or_truncate(&t.domain_name.clone().unwrap_or_default(), 18);
@@ -929,8 +853,6 @@ fn queue_line(t: &Topic, name_w: usize) -> Line<'static> {
 
 fn topic_row(t: &Topic, query: &str) -> Row<'static> {
     let iv = t.interval_days.map(|d| format!("{d}d")).unwrap_or_default();
-    // Highlight the live query inside the topic title (search atom); the muted
-    // trailing columns stay plain.
     let title = Line::from(search::highlight(&topic_name(t), query, Style::default()));
     Row::new(vec![
         Cell::from(title),
@@ -941,8 +863,6 @@ fn topic_row(t: &Topic, query: &str) -> Row<'static> {
     ])
 }
 
-/// The four rating keys as black-on-accent caps with labels and, when the
-/// payload carries them, the interval each rating would set (`→21d`).
 fn rating_hints_line(t: &Topic) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     for (i, r) in [
@@ -969,7 +889,6 @@ fn rating_hints_line(t: &Topic) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The sitting/detail context line: interval, reviews, and last-reviewed date.
 fn context_line(t: &Topic) -> String {
     if t.review_count == 0 {
         return "new topic · not yet reviewed".to_string();
@@ -989,7 +908,6 @@ fn context_line(t: &Topic) -> String {
     parts.join("  ·  ")
 }
 
-/// A compact queue freshness read: the state and review count, plus interval.
 fn freshness(t: &Topic) -> String {
     let mut parts = vec![t.state.clone(), format!("{}×", t.review_count)];
     if let Some(iv) = t.interval_days {

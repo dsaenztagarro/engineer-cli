@@ -1,8 +1,4 @@
-//! Progress screen — weekly targets rendered as `engineer pace` meters
-//! (progress.html §F). Read-only: one meter row per target (behind-first), the
-//! week header line, a behind-total footer, and the "where it went" fold — a
-//! muted glance `Tab`-cycles through by kind → by domain → by intent (§Where it
-//! went). Step weeks with `[` / `]`; `t` returns to the current week.
+//! Progress screen — the week's targets as pace meters, and the target verbs.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jiff::ToSpan;
@@ -27,17 +23,12 @@ use crate::ui::{layout::bordered, theme, widgets};
 
 use super::{notify_seam_error, open_queued, QueuePaths};
 
-/// The shared "the server moved on — re-read" copy for a target write that hits
-/// a `target-version-closed` conflict live (ADR 0026): a soft re-fetch, never a
-/// hard error. The Inbox screen speaks the same idiom for a stale draft.
 const TARGET_MOVED_ON: &str = "this target moved on — re-fetching the live pace";
 
-/// Meter bar width in cells (matches the design mock's ten-block bar).
 const BAR_WIDTH: usize = 10;
 
-/// The activity kinds and intents a target can scope to — mirrors engineer's
-/// `Activity.kinds` / `Activity.intents` enums (Target reuses them). Domains are
-/// fetched; these are fixed, so the declare picker offers them without a call.
+/// Mirrors the server's activity kind and intent enums — fixed, so the declare
+/// picker offers them without a call (domains are fetched).
 const KINDS: &[&str] = &[
     "deep_work",
     "reading",
@@ -49,10 +40,6 @@ const KINDS: &[&str] = &[
 ];
 const INTENTS: &[&str] = &["implement", "challenge", "follow", "study"];
 
-/// The "where it went" fold's facet (§Where it went) — the shipped kind-mix line
-/// grown into a `Tab`-cycled glance. Only `Kind` has data in the pace read; the
-/// server carries no by-domain / by-intent rollup, so those two render as absent
-/// (the backend-gap rule — no client-derived second ledger; see #122).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Facet {
     #[default]
@@ -62,7 +49,6 @@ enum Facet {
 }
 
 impl Facet {
-    /// Advance the fold one step: kind → domain → intent → kind.
     fn next(self) -> Self {
         match self {
             Self::Kind => Self::Domain,
@@ -71,7 +57,6 @@ impl Facet {
         }
     }
 
-    /// The active-facet label, mirroring the panel's axis tabs.
     fn label(self) -> &'static str {
         match self {
             Self::Kind => "by kind",
@@ -81,15 +66,9 @@ impl Facet {
     }
 }
 
-/// The `n`-to-declare flow: fetch domains, fuzzy-pick any scope, then hours.
 enum Declare {
-    /// Fetching domains before the scope picker can open.
     Loading,
-    /// Fuzzy-picking the scope — any domain, kind, or intent — in one list.
     Scope(Picker<TargetScope>),
-    /// Entering the weekly hours for the chosen scope. Keeps the scope picker so
-    /// `Esc` steps *back* to it — query and all — instead of cancelling the whole
-    /// flow (§Declare · hours: "⏎ declare · Esc back").
     Hours {
         scope: TargetScope,
         label: String,
@@ -104,28 +83,16 @@ pub struct Progress {
     /// Weeks relative to the current week: 0 = this week, -1 = last week.
     offset: i32,
     loading: bool,
-    /// Tier-2 state: set when the read failed, so an absent aggregate reads as a
-    /// loud failure (with a retry key) rather than a blank/loading body. Cleared
-    /// on the next successful load.
     failure: Option<PanelFailure>,
-    /// Cursor over `data.targets` — the row `e` (adjust) / `x` (retire) act on.
     selected: usize,
-    /// `Some` while the inline hours editor is open for the selected target.
     edit: Option<String>,
-    /// The target id armed for retire; a second `x` on the same row confirms.
     retire_armed: Option<i64>,
-    /// `Some` while the `n`-declare flow (scope pick → hours) is open.
     declare: Option<Declare>,
-    /// Which facet the "where it went" fold shows, cycled by `Tab`. Derived
-    /// presentation only — the rollup is recomputed from the read, never stored.
     fold: Facet,
-    /// Targets declared offline this session — rendered as provisional `◔ …
-    /// queued` lines under the meters until the create replays and a live
-    /// refetch returns the real reading. Only the render of what's pending
-    /// (the queue is the ledger); cleared on any authoritative reload or week step.
+    /// Offline declares awaiting replay — only their render; the queue is the
+    /// ledger.
     provisional: Vec<String>,
-    /// Queue + read-cache paths for the write seam (`None` = shared XDG; tests
-    /// inject a scratch dir so a spawned write never touches the real queue).
+    /// `None` = the shared XDG queue; tests inject a scratch dir.
     queue_paths: QueuePaths,
 }
 
@@ -135,15 +102,10 @@ impl Progress {
         self.fetch(api, tx);
     }
 
-    /// While the inline hours editor is open it owns every relevant key, so a
-    /// digit edits the buffer rather than firing the global keymap.
     pub fn intercept_key(&mut self, key: KeyEvent) -> Option<Action> {
-        // The declare flow (scope picker / hours input) is modal — while open it
-        // owns every key so a typed letter filters rather than firing the keymap.
         if self.declare.is_some() {
             return Some(Action::ProgressDeclareKey(key));
         }
-        // The inline hours editor owns digits/./Enter/Esc while open.
         self.edit.as_ref()?;
         match key.code {
             KeyCode::Esc => Some(Action::ProgressAdjustCancel),
@@ -156,8 +118,6 @@ impl Progress {
         }
     }
 
-    /// Build the one-list scope picker: every domain, then the kind and intent
-    /// enums — each labeled by axis, valued as the `TargetScope` to create.
     fn scope_picker(domains: &[Domain]) -> Picker<TargetScope> {
         let mut items = Vec::new();
         for d in domains {
@@ -194,14 +154,9 @@ impl Progress {
                 Ok(progress) => {
                     let _ = tx.send(Action::ProgressLoaded(Box::new(progress)));
                 }
-                // A 401 is a session problem, not a progress problem — route to
-                // re-auth (Tier 3) rather than a Tier-2 progress panel.
                 Err(ApiError::Unauthorized) => {
                     let _ = tx.send(Action::SessionExpired);
                 }
-                // Tier 2: report the failure as itself — never a blank meter set.
-                // The reason is spelled once (§C) so the panel matches a headless
-                // `engineer pace`'s stderr.
                 Err(e) => {
                     let _ = tx.send(Action::ProgressLoadFailed(messages::fail_reason(
                         api.host(),
@@ -223,11 +178,9 @@ impl Progress {
                 self.data = Some(*progress);
                 self.loading = false;
                 self.failure = None;
-                // Keep the cursor in range as the target set changes week to week.
                 let n = self.data.as_ref().map_or(0, |d| d.targets.len());
                 self.selected = self.selected.min(n.saturating_sub(1));
                 self.retire_armed = None;
-                // An authoritative reading supersedes any queued-declare stand-ins.
                 self.provisional.clear();
             }
             Action::ProgressLoadFailed(reason) => {
@@ -242,8 +195,6 @@ impl Progress {
             Action::ProgressWeekStep(delta) => {
                 self.offset += delta;
                 self.loading = true;
-                // A different week's readings are coming — drop this week's queued
-                // stand-ins so they never bleed across the step.
                 self.provisional.clear();
                 self.fetch(api, tx);
             }
@@ -270,7 +221,6 @@ impl Progress {
                 self.retire_armed = None;
             }
             Action::ProgressAdjustBegin => {
-                // Prefill with the current hours so the edit starts from the truth.
                 if let Some(r) = self.selected_target() {
                     self.edit = Some(fmt_hours(r.target.hours_per_week));
                 }
@@ -307,7 +257,6 @@ impl Progress {
             Action::ProgressRetire => {
                 let id = self.selected_target().map(|r| r.target.id)?;
                 if self.retire_armed == Some(id) {
-                    // Second press on the same row — confirm.
                     self.retire_armed = None;
                     spawn_retire_target(api, tx, self.queue_paths.clone(), id);
                 } else {
@@ -325,15 +274,12 @@ impl Progress {
                     let api = api.clone();
                     let tx = tx.clone();
                     tokio::spawn(async move {
-                        // Domains failing shouldn't block declaring a kind/intent
-                        // target — fall back to an empty domain list.
                         let domains = api.list_domains().await.unwrap_or_default();
                         let _ = tx.send(Action::ProgressDeclareReady(domains));
                     });
                 }
             }
             Action::ProgressDeclareReady(domains) => {
-                // Only open the picker if the user is still in the flow.
                 if matches!(self.declare, Some(Declare::Loading)) {
                     self.declare = Some(Declare::Scope(Self::scope_picker(&domains)));
                 }
@@ -345,9 +291,8 @@ impl Progress {
         None
     }
 
-    /// Route a key while the declare flow is open. Matches the taken state by
-    /// value so a stage transition can move the picker into (and back out of)
-    /// the hours step; every continuing arm puts the state back.
+    /// Takes the state by value so a stage transition can move the picker into
+    /// (and back out of) the hours step; every continuing arm puts it back.
     fn declare_key(&mut self, key: KeyEvent, api: &ApiClient, tx: &UnboundedSender<Action>) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let Some(state) = self.declare.take() else {
@@ -366,7 +311,6 @@ impl Progress {
                         .selected()
                         .cloned()
                         .zip(picker.selected_label().map(str::to_string));
-                    // The picker rides into the hours step so Esc can walk back.
                     self.declare = Some(match choice {
                         Some((scope, label)) => Declare::Hours {
                             scope,
@@ -374,7 +318,6 @@ impl Progress {
                             buf: String::new(),
                             picker,
                         },
-                        // Everything filtered out — nothing to pick; stay put.
                         None => Declare::Scope(picker),
                     });
                 }
@@ -397,8 +340,6 @@ impl Progress {
                 mut buf,
                 picker,
             } => match key.code {
-                // Back to the scope picker, query and cursor intact — the
-                // design's hours footer is "⏎ declare · Esc back".
                 KeyCode::Esc => self.declare = Some(Declare::Scope(picker)),
                 KeyCode::Enter if matches!(buf.trim().parse::<f64>(), Ok(h) if h > 0.0) => {
                     let hours = buf.trim().parse::<f64>().expect("guard just parsed it");
@@ -406,8 +347,6 @@ impl Progress {
                         scope,
                         hours_per_week: hours,
                     };
-                    // The picker label is `axis · scope`; the queued line
-                    // shows the scope + hours, lowercased like the meters.
                     let scope_name = label.rsplit(" · ").next().unwrap_or(&label).to_lowercase();
                     let desc = format!("{scope_name} · {}h/wk", fmt_hours(hours));
                     spawn_declare_target(api, tx, self.queue_paths.clone(), create, desc);
@@ -437,9 +376,6 @@ impl Progress {
         let block = bordered("Progress · engineer pace");
 
         let Some(data) = &self.data else {
-            // No aggregate → the whole body is a Tier-2 state: a loud failure
-            // (with a retry key) when the read failed, else the calm loading
-            // state. The header/footer nav lives outside this block.
             let state = if let Some(f) = &self.failure {
                 PanelState::Failed(f.clone())
             } else {
@@ -454,9 +390,6 @@ impl Progress {
         lines.push(Line::from(""));
 
         if data.targets.is_empty() {
-            // The teaching empty state points at the keystroke first, the honest
-            // headless verb second (§Progress · empty; the design drew `d`, the
-            // shipped binding is `n` — the "new" mnemonic the footer advertises).
             lines.push(Line::from(Span::styled(
                 "No weekly targets yet.",
                 theme::muted(),
@@ -497,8 +430,6 @@ impl Progress {
             }
         }
 
-        // Offline declares this session — a `◔ … queued` stand-in per target,
-        // until the create replays and a live refetch returns the real reading.
         for desc in &self.provisional {
             lines.push(Line::from(vec![
                 Span::styled("  ◔ ", Style::default().fg(theme::ACCENT)),
@@ -510,9 +441,6 @@ impl Progress {
         lines.push(Line::from(""));
         lines.push(behind_footer(data));
 
-        // The "where it went" fold sits with the meters: shown whenever the week
-        // has targets or logged time, cycled by `Tab`. A truly empty week keeps
-        // its teaching state uncluttered.
         if !data.targets.is_empty() || !data.kind_mix.is_empty() {
             lines.push(fold_line(data, self.fold));
         }
@@ -525,7 +453,6 @@ impl Progress {
 
         frame.render_widget(Paragraph::new(lines).block(block), area);
 
-        // The declare flow draws over the meters when open.
         match &self.declare {
             Some(Declare::Loading) => declare_overlay(
                 frame,
@@ -575,10 +502,6 @@ impl Progress {
     }
 }
 
-/// Declare a weekly target through the queue seam (`n` → scope → hours). A
-/// confirmed create refetches the pace (the server now has the row); an offline
-/// one queues and the screen renders `desc` as a `◔ … queued` line until it
-/// replays.
 fn spawn_declare_target(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
@@ -616,10 +539,8 @@ fn spawn_declare_target(
     });
 }
 
-/// Adjust the selected target's weekly hours through the queue seam (`e`). A
-/// confirmed adjust refetches — the returned LIVE row's id may differ (a same-day
-/// edit mints a successor), so the screen re-reads rather than patch in place;
-/// an offline adjust queues.
+/// Refetches rather than patching in place: the live row's id may differ from
+/// `id`, since an adjust can mint a successor version.
 fn spawn_adjust_target(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
@@ -652,9 +573,6 @@ fn spawn_adjust_target(
     });
 }
 
-/// Retire the selected target through the queue seam (`x`, second press).
-/// Confirmed refetches; offline queues. Retire closes the lineage — history is
-/// kept, never deleted.
 fn spawn_retire_target(api: &ApiClient, tx: &UnboundedSender<Action>, paths: QueuePaths, id: i64) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
@@ -681,11 +599,8 @@ fn spawn_retire_target(api: &ApiClient, tx: &UnboundedSender<Action>, paths: Que
     });
 }
 
-/// Route a live target-write failure: a `target-version-closed` conflict (ADR
-/// 0026 — the version you addressed was superseded) is not an error but a soft
-/// re-read — render the shared "moved on" copy and refetch, so the live lineage's
-/// current pace comes back (the user re-adjusts the fresh row). Every other
-/// failure is the loud seam error.
+/// A `target-version-closed` conflict (engineer ADR 0026) is a soft re-read,
+/// not an error.
 fn notify_target_write_error(tx: &UnboundedSender<Action>, context: &str, e: ApiError) {
     if e.code() == Some(codes::TARGET_VERSION_CLOSED) {
         let _ = tx.send(Action::Notify {
@@ -698,7 +613,6 @@ fn notify_target_write_error(tx: &UnboundedSender<Action>, context: &str, e: Api
     }
 }
 
-/// A small centered box for the declare flow's non-picker stages (loading, hours).
 fn declare_overlay(frame: &mut Frame, area: Rect, title: &str, body: Span<'static>) {
     let width = area.width.saturating_sub(6).clamp(24, 64);
     let rect = Rect {
@@ -714,10 +628,8 @@ fn declare_overlay(frame: &mut Frame, area: Rect, title: &str, body: Span<'stati
     );
 }
 
-/// `2026-W27 · sat · day 5 of 7 · now = 57%` — the week frame and now-tick.
 fn week_header(data: &ProgressData) -> Line<'static> {
     let week = &data.week;
-    // The current day being lived; clamp so a closed week reads "day 7 of 7".
     let day_offset = week.elapsed_days.min(6);
     let weekday = week
         .monday
@@ -734,8 +646,6 @@ fn week_header(data: &ProgressData) -> Line<'static> {
     ])
 }
 
-/// One meter row: `▌ systems     █████·╎···  2.2/6h   -2.1h behind`. A `▌`
-/// marker (accent) flags the selected row that `e`/`x` act on.
 fn meter_line(reading: &ProgressReading, label_w: usize, selected: bool) -> Line<'static> {
     let name = reading.target.scope.name().to_lowercase();
     let label = super::pad_or_truncate(&name, label_w);
@@ -748,8 +658,6 @@ fn meter_line(reading: &ProgressReading, label_w: usize, selected: bool) -> Line
     ];
     spans.extend(widgets::pace_bar(
         reading.progress_fraction(),
-        // The now-tick marks where the week expects you to be (expected/target).
-        // Skipped on met rows, whose bar is already full.
         reading.now_tick_fraction(),
         BAR_WIDTH,
         color,
@@ -773,8 +681,6 @@ fn meter_line(reading: &ProgressReading, label_w: usize, selected: bool) -> Line
     Line::from(spans)
 }
 
-/// The inline hours editor shown under the selected row while adjusting:
-/// `  adjust systems → 6█ h/wk  (⏎ save · Esc cancel)`.
 fn edit_line(reading: &ProgressReading, buf: &str) -> Line<'static> {
     Line::from(vec![
         Span::styled("  adjust ".to_string(), theme::muted()),
@@ -785,7 +691,6 @@ fn edit_line(reading: &ProgressReading, buf: &str) -> Line<'static> {
     ])
 }
 
-/// `behind 3.3h total · largest gap "systems"` — or a quiet on-pace confirmation.
 fn behind_footer(data: &ProgressData) -> Line<'static> {
     let behind: Vec<&ProgressReading> = data
         .targets
@@ -809,11 +714,6 @@ fn behind_footer(data: &ProgressData) -> Line<'static> {
     ))
 }
 
-/// The "where it went" fold (§Where it went): one muted line whose active facet
-/// (`Tab`-cycled) reads `where it went · by kind   coding 3.0h · reading 2.5h`.
-/// Only the kind facet has data in the pace read — the server carries no
-/// by-domain / by-intent rollup, so those render as an honest absent note rather
-/// than a client-derived second ledger (the backend-gap rule; #122).
 fn fold_line(data: &ProgressData, facet: Facet) -> Line<'static> {
     let mut spans = vec![
         Span::styled("where it went · ", theme::muted()),
@@ -853,7 +753,6 @@ fn state_color(state: PaceState) -> Color {
     }
 }
 
-/// Format target hours without a trailing `.0`: `6h`, but `2.5h` when fractional.
 fn fmt_hours(hours: f64) -> String {
     if (hours.fract()).abs() < 1e-9 {
         format!("{hours:.0}")
@@ -863,8 +762,6 @@ fn fmt_hours(hours: f64) -> String {
 }
 
 impl ProgressReading {
-    /// Where the now-tick sits on the bar: the week's elapsed fraction, derived
-    /// per-reading as `expected / target` (equal to the week's `now_fraction`).
     fn now_tick_fraction(&self) -> f64 {
         let target_minutes = self.hours_per_week * 60.0;
         if target_minutes <= 0.0 {
@@ -975,8 +872,6 @@ mod tests {
         let kind = spans_text(&fold_line(&data, Facet::Kind));
         assert!(kind.contains("where it went · by kind"), "{kind}");
         assert!(kind.contains("coding 2.0h"), "{kind}");
-        // The pace read carries no by-domain / by-intent rollup — the fold says
-        // so rather than deriving a second ledger (the backend-gap rule).
         let domain = spans_text(&fold_line(&data, Facet::Domain));
         assert!(domain.contains("by domain"), "{domain}");
         assert!(domain.contains("doesn't roll up by domain"), "{domain}");
@@ -998,7 +893,6 @@ mod tests {
         let mut p = loaded();
         let text = render_text(&mut p);
         assert!(text.contains("where it went"), "the fold renders: {text}");
-        // The footer advertises the toggle so it's discoverable (quiet, not loud).
         let hint = spans_text(&p.hints());
         assert!(
             hint.contains("where it went"),
@@ -1200,8 +1094,6 @@ mod tests {
             }
             other => panic!("expected Hours, got {:?}", other.is_some()),
         }
-        // Type hours, then Esc steps *back* to the scope picker (§Declare ·
-        // hours: "Esc back"), filter intact — the same pick lands again.
         p.handle(
             Action::ProgressDeclareKey(key(KeyCode::Char('6'))),
             &api,
@@ -1243,9 +1135,7 @@ mod tests {
 
     #[tokio::test]
     async fn offline_declare_enqueues_and_renders_the_provisional_line() {
-        // The full wiring, offline: the hours `⏎` → the declare helper →
-        // `QueuedClient` → the persisted queue, plus the `◔ … queued` line the
-        // screen renders until the create replays. A dead port forces offline.
+        // A dead port forces the offline arm.
         use crate::queue::{IntentKind, QueueStore};
 
         let (queue_path, cache_path) = scratch_paths();
@@ -1273,7 +1163,6 @@ mod tests {
             .await;
         assert!(p.declare.is_none(), "the flow closed on submit");
 
-        // The spawned write lands in the queue (the dead port refuses fast).
         let store = QueueStore::at(&queue_path);
         let mut pending = store.pending().unwrap();
         for _ in 0..100 {
@@ -1312,7 +1201,6 @@ mod tests {
         assert!(text.contains("◔"), "the queued marker renders: {text}");
         assert!(text.contains("coding · 4h/wk"), "{text}");
 
-        // An authoritative reload clears the stand-in.
         p.handle(Action::ProgressLoaded(Box::new(sample())), &api, &tx)
             .await;
         assert!(p.provisional.is_empty(), "a fresh reading supersedes it");
