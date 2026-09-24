@@ -1,6 +1,4 @@
-//! OAuth2 (RFC 6749) Authorization Code + PKCE (RFC 7636) flow over a loopback
-//! redirect URI (RFC 8252) against the Identity server. Refresh tokens live in
-//! the OS keyring; access tokens stay in memory only.
+//! OAuth2 against the Identity server: the refresh token lives in the OS keyring, the access token only in memory.
 
 use color_eyre::eyre::{eyre, Result};
 use std::sync::Arc;
@@ -13,7 +11,6 @@ mod storage;
 
 pub use oauth::{discover, login, logout, refresh, Discovery};
 
-/// Provides a valid access token to API calls, refreshing transparently.
 #[derive(Clone)]
 pub struct TokenProvider {
     inner: Arc<Mutex<State>>,
@@ -39,7 +36,6 @@ impl TokenProvider {
         })
     }
 
-    /// Returns a non-expired access token, refreshing via the stored refresh token if needed.
     pub async fn access_token(&self) -> Result<String> {
         {
             let s = self.inner.lock().await;
@@ -62,14 +58,11 @@ impl TokenProvider {
     }
 }
 
-/// Whether a refresh token is present in the keyring (used at TUI startup to
-/// pick the Login vs Home screen). Keyring errors are treated as "not logged in".
+/// Keyring errors read as "not logged in".
 pub fn is_logged_in(cfg: &Config) -> bool {
     matches!(storage::load(&cfg.keyring_account()), Ok(Some(_)))
 }
 
-/// Persist a refresh token. Exposed so the TUI login flow can store the token
-/// without reaching into the private `storage` module.
 pub fn store_refresh(cfg: &Config, refresh_token: &str) -> Result<()> {
     storage::store(&cfg.keyring_account(), refresh_token)
 }

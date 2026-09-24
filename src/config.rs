@@ -5,19 +5,13 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use url::Url;
 
-/// Built-in URL presets. The target environment is chosen at runtime (see
-/// `Environment`); there is no separate dev/prod build.
 const PROD_IDENTITY_URL: &str = "https://identity.dsaenz.dev";
 const PROD_API_URL: &str = "https://engineer.dsaenz.dev";
 const DEV_IDENTITY_URL: &str = "http://localhost:4000";
 const DEV_API_URL: &str = "http://localhost:4001";
 
-/// Path, relative to the api host, where the Engineer app serves engineer-cli's
-/// OAuth Client ID Metadata Document. The full URL is this client's `client_id`.
 const CIMD_PATH: &str = ".well-known/oauth-client/engineer-cli.json";
 
-/// Which set of servers to talk to. Selected explicitly via `--env` /
-/// `ENGINEER_ENV`; defaults to production.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Environment {
     Production,
@@ -42,18 +36,10 @@ impl FromStr for Environment {
 pub struct Config {
     pub identity_url: Url,
     pub api_url: Url,
-    /// Optional explicit client_id. When unset, it is derived from `api_url` as
-    /// the CIMD document URL (see `client_id`).
     pub client_id: Option<String>,
     pub scopes: String,
 }
 
-/// Partial, file-shaped config: every field optional so `config.toml` overrides
-/// only the keys it sets, leaving the rest of the chosen environment's preset.
-///
-/// `deny_unknown_fields` makes a typo (e.g. the `ENGINEER_API_URL` env-var name
-/// used as a key instead of `api_url`) a hard error at load, rather than being
-/// silently ignored and falling back to the production preset.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FileConfig {
@@ -74,7 +60,6 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Baseline config for an environment, before file/env overrides.
     pub fn for_environment(env: Environment) -> Self {
         let (identity, api) = match env {
             Environment::Production => (PROD_IDENTITY_URL, PROD_API_URL),
@@ -88,9 +73,6 @@ impl Config {
         }
     }
 
-    /// Layered config: environment preset < `config.toml` (if present) < env vars.
-    /// A missing config file is not an error — the preset plus CIMD make a fresh
-    /// run zero-config.
     pub fn load(env: Environment) -> Result<Self> {
         let mut cfg = Self::for_environment(env);
 
@@ -136,10 +118,8 @@ impl Config {
         Ok(())
     }
 
-    /// Resolve the config file path. Honors `XDG_CONFIG_HOME`, otherwise
-    /// `~/.config/engineer-cli/config.toml` on every platform — notably also on
-    /// macOS, where the platform-native dir would be buried under
-    /// `~/Library/Application Support`.
+    /// XDG-style on every platform, macOS included, where the native config dir
+    /// would be buried under `~/Library/Application Support`.
     pub fn path() -> Result<PathBuf> {
         if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
             if !xdg.is_empty() {
@@ -154,10 +134,8 @@ impl Config {
             .join("config.toml"))
     }
 
-    /// Directory for application logs (including the API-communication log).
-    /// Honors `XDG_STATE_HOME`, otherwise `~/.local/state/engineer-cli/` on every
-    /// platform — mirroring `path()`'s XDG-everywhere policy so the log location
-    /// is predictable for `tail -f` even on macOS.
+    /// XDG-style on every platform for the same reason as `path()`, so `tail -f`
+    /// finds the logs on macOS too.
     pub fn log_dir() -> Result<PathBuf> {
         if let Some(xdg) = std::env::var_os("XDG_STATE_HOME") {
             if !xdg.is_empty() {
@@ -172,10 +150,8 @@ impl Config {
             .join("engineer-cli"))
     }
 
-    /// The OAuth `client_id`. Returns the explicit value if configured, else the
-    /// CIMD document URL derived from `api_url` — Identity fetches that URL to
-    /// resolve the client, so it doubles as the client identity. Keeping it
-    /// derived means dev (localhost) and prod stay in sync with `api_url`.
+    /// Identity fetches this URL to resolve the client, so it doubles as the
+    /// client identity.
     pub fn client_id(&self) -> String {
         if let Some(id) = &self.client_id {
             if !id.is_empty() {
@@ -188,7 +164,6 @@ impl Config {
             .unwrap_or_else(|_| format!("{}{CIMD_PATH}", self.api_url))
     }
 
-    /// Identity host string used as the keyring account name. Stable across ports.
     pub fn keyring_account(&self) -> String {
         self.identity_url.as_str().trim_end_matches('/').to_string()
     }
@@ -271,8 +246,6 @@ mod tests {
 
     #[test]
     fn file_config_rejects_unknown_keys() {
-        // The env-var name used as a key (a common mistake) must error, not be
-        // silently ignored.
         let err = toml::from_str::<FileConfig>(r#"ENGINEER_API_URL = "http://localhost:4001""#);
         assert!(err.is_err());
     }
