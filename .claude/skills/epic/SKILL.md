@@ -1,12 +1,12 @@
 ---
 name: epic
-description: Turn a docs/designs/*.dc.html design doc into a GitHub epic — decompose the design into self-contained sub-issues with a phased plan, then implement them one ticket at a time (branch → tests → PR → squash-merge), carrying every pragmatic decision forward on the epic issue so later tickets inherit the context. User-invoked only; the user reviews the work at the very end. Run `/epic docs/designs/<file>.dc.html` to start, or `/epic resume #<epic>` to continue.
-argument-hint: "<docs/designs/file.dc.html> | resume #<epic>"
+description: Turn an engineer-cli-ds page (pages/*.dc.html, read from a sibling checkout) into a GitHub epic — decompose the design into self-contained sub-issues with a phased plan, then implement them one ticket at a time (branch → tests → PR → squash-merge), carrying every pragmatic decision forward on the epic issue so later tickets inherit the context. User-invoked only; the user reviews the work at the very end. Run `/epic <file>.dc.html` to start, or `/epic resume #<epic>` to continue.
+argument-hint: "<file.dc.html> | resume #<epic>"
 ---
 
 # Run an epic from a design doc
 
-When the user invokes this skill, take one design document from `docs/designs/`
+When the user invokes this skill, take one design page from `engineer-cli-ds`
 and drive it end-to-end: open a GitHub **epic** issue, split the design into meaningful
 self-contained **sub-issues** with a phased plan, then implement the sub-issues **one at a
 time** until the epic is done. The user reviews the work only at the very end — so the
@@ -34,9 +34,13 @@ never auto-trigger it; run it only when the user types `/epic`.
     and reuse the chrome/widgets in `src/ui/`.
   - `docs/api-layer.md` — API client conventions: typed models per resource module, the
     `envelope`/`List` wrappers, `ApiError`, tracing of every call, wiremock tests.
-  - `docs/designs/README.md` — the terminal design kit: palette, chrome (header/body/footer),
-    widget idioms, keyboard grammar (`j/k`, `gg/G`, `/`, `:`, `Space` leader, `i`/`Esc`).
-    Mockups are ratatui-faithful; implement what they show, in these idioms.
+  - `$DS/references/terminal-design-kit.md` — the terminal design kit: chrome
+    (header/body/footer), widget idioms, keyboard grammar (`j/k`, `gg/G`, `/`, `:`, `Space`
+    leader, `i`/`Esc`). Mockups are ratatui-faithful; implement what they show, in these idioms.
+  - `docs/architecture/decisions/0006-the-design-boundary.md` — a page is the **surface**. A
+    behaviour it draws that this repository has not decided is an open question for the epic's
+    Decisions Log, not a ruling; the decision lands as a test (and an ADR when it is
+    architectural), never as a comment citing the page.
   - `CHANGELOG.md` — Keep a Changelog; every user-visible ticket adds to `[Unreleased]`.
   - Conventional Commits (`type(scope): subject`), as the git log shows.
 - **Design fidelity is verified, not assumed.** Every interactive workflow shown in the design
@@ -50,10 +54,16 @@ never auto-trigger it; run it only when the user types `/epic`.
 
 | Argument | Mode |
 |---|---|
-| a `docs/designs/*.dc.html` path the codebase has **never** built against | **new epic** |
-| a `docs/designs/*.dc.html` path a **prior epic already touched** (open or closed) | **re-diff** (reconciliation) |
+| a page the codebase has **never** built against | **new epic** |
+| a page a **prior epic already touched** (open or closed) | **re-diff** (reconciliation) |
 | `resume #<n>` or a bare epic issue number | **resume** an in-flight epic |
-| _(none)_ | **ask** which design doc; do not guess |
+| _(none)_ | **ask** which page; do not guess |
+
+**Locate the page first.** Pages live in the design repository, read from a sibling checkout:
+`DS="${ENGINEER_CLI_DS:-../engineer-cli-ds}"`, and the page is `$DS/pages/<file>.dc.html`. If
+`$DS` is missing, stop and ask the user to clone `dsaenztagarro/engineer-cli-ds` beside this
+repository (or set `ENGINEER_CLI_DS`); never fall back to a copy elsewhere. Confirm the checkout
+is current (`git -C "$DS" status -sb` shows no `behind`) — a stale page is a stale design.
 
 **Idempotency guard (path mode):** before creating anything, run
 `gh issue list --label epic --search "<design filename>"` across **both** states
@@ -139,7 +149,7 @@ prior epic being closed means nothing; verify against the code.
    Capture the epic number `#E`. (If the `epic` label is missing, create it once:
    `gh label create epic`.)
 2. Create one issue per planned ticket with `gh issue create`, body =
-   - first line: `Part of EPIC #E · Design [§<label>](docs/designs/<file>.dc.html)`
+   - first line: `Part of EPIC #E · Design [§<label>](https://github.com/dsaenztagarro/engineer-cli-ds/blob/master/pages/<file>.dc.html)`
    - `## Goal` — what this ticket delivers
    - `## Acceptance` — checkbox criteria
    - `## Technical notes` — files/patterns to reuse, constraints
@@ -185,11 +195,11 @@ models and are traced; errors surface as `notify` tiles, never panics; keyboard 
 follows the neovim grammar and the footer must advertise the active keys. When the ticket
 changes the API layer, update `docs/api-layer.md`; when it changes commands or flags, update
 `README.md`'s Commands section; every user-visible change adds a `CHANGELOG.md` `[Unreleased]`
-entry. If the ticket ships the last surface of a `docs/designs/briefs/proposed/*.brief.md`,
-**delete the consumed brief** — a brief is an input and its lifecycle ends at ship (`AGENTS.md`).
+entry. If the ticket ships the last surface of a `$DS/briefs/proposed/*.brief.md`,
+**delete the consumed brief** in `engineer-cli-ds` — a brief is an input and its lifecycle ends at ship (`AGENTS.md`).
 Delete it only once its durable half has landed: the decisions in an ADR (step 3.5), the look in
 the area's `.dc.html`, the behaviour in a test, and any residual gap or deferral as its own
-issue. Drop its index row from `docs/designs/briefs/README.md` in the same commit, and re-point
+issue. Drop its index row from `$DS/briefs/README.md` in the same commit, and re-point
 anything that cited it at the ADR or the test — never at another brief.
 
 ### 3.5 Decision-record gate (architecture-level decisions only)
@@ -252,7 +262,7 @@ When every ticket is shipped or consciously skipped:
 ```markdown
 # EPIC: <title>
 
-**Design:** [docs/designs/<file>.dc.html](docs/designs/<file>.dc.html)
+**Design:** [pages/<file>.dc.html](https://github.com/dsaenztagarro/engineer-cli-ds/blob/master/pages/<file>.dc.html)
 
 ## Summary
 <2-3 sentences: what this epic delivers and why>
@@ -284,12 +294,13 @@ When every ticket is shipped or consciously skipped:
   not from local git — a ticket is "done" only when its box is checked and its PR is merged.
 - If `gh` reports the design doc isn't referenced by any open epic but a half-built one looks
   related, ask the user whether to resume it rather than opening a second epic.
-- Keep the design doc link relative (`docs/designs/<file>.dc.html`) so it resolves in the
-  repo; name the specific screen label (`§<label>`) the ticket implements.
+- Link the page by its GitHub URL in `engineer-cli-ds` so it resolves from the issue; name the
+  specific screen label (`§<label>`) the ticket implements. Labels belong in issues, never in
+  code: `tests/design_references.rs` fails on a design reference in `src/`.
 
 ### Design versioning & incremental work
 
-- A design doc is a **living file**. The same `docs/designs/<file>.dc.html` may be re-run
+- A design page is a **living file**. The same `pages/<file>.dc.html` may be re-run
   after it's been edited (Claude Design iterates), or after a prior epic shipped part of it.
   The skill must reconcile, not rebuild — that's what **re-diff mode** (step 0) and the
   **re-diff pass** (step 1.5) are for.
@@ -303,6 +314,6 @@ When every ticket is shipped or consciously skipped:
 - **Design ↔ backend sync gate:** before decomposing, sanity-check the design against what
   the Engineer API actually serves (`docs/api-layer.md`, `src/api/`). If the design shows
   workflows the backend can't power yet, surface that as a gap-analysis note in the area's brief
-  under `docs/designs/briefs/proposed/` for Claude Design / the web repo instead
+  under `$DS/briefs/proposed/` for Claude Design / the web repo instead
   of silently narrowing scope — designed-but-unbuildable
   surfaces become skip-rule tickets (step 3.2) so they stay visible on the epic.
