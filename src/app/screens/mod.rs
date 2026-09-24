@@ -31,9 +31,6 @@ pub mod settings;
 pub mod timer;
 pub mod week;
 
-/// The ISO week id (`YYYY-Www`) `offset` weeks from the current study week
-/// (0 = this week, -1 = last week). The one derivation the week-dialect screens
-/// (Progress, Week) step with, so `[`/`]`/`t` agree across them.
 pub(crate) fn iso_week_for_offset(offset: i32) -> String {
     let today = Zoned::now().date();
     let target = today
@@ -43,14 +40,10 @@ pub(crate) fn iso_week_for_offset(offset: i32) -> String {
     format!("{:04}-W{:02}", iso.year(), iso.week())
 }
 
-/// The `week` query parameter for the Progress endpoint: `None` for the current
-/// week (the server picks its own default), else the explicit ISO week id.
 pub(crate) fn week_param(offset: i32) -> Option<String> {
     (offset != 0).then(|| iso_week_for_offset(offset))
 }
 
-/// Left-align `s` into `width` columns, truncating with an ellipsis when it
-/// overruns — the shared row-label fitter for the week-dialect tables.
 pub(crate) fn pad_or_truncate(s: &str, width: usize) -> String {
     let len = s.chars().count();
     if len > width {
@@ -62,14 +55,10 @@ pub(crate) fn pad_or_truncate(s: &str, width: usize) -> String {
     }
 }
 
-/// Queue + read-cache locations for the offline write seam. `None` (production)
-/// uses the shared XDG paths (`QueuedClient::new`); tests inject a scratch dir so
-/// a spawned write never touches the real queue. Shared by every screen that
-/// routes writes through `QueuedClient` (Timer, Week).
+/// `None` is the shared XDG queue and cache; tests pass scratch paths so a
+/// spawned write never touches the real queue.
 pub(crate) type QueuePaths = Option<(PathBuf, PathBuf)>;
 
-/// Build the write seam a spawned task enqueues through — the shared XDG queue,
-/// or the test scratch paths when the screen was handed some.
 pub(crate) fn open_queued(
     api: &ApiClient,
     paths: &QueuePaths,
@@ -84,8 +73,6 @@ pub(crate) fn open_queued(
     }
 }
 
-/// Loud failure when the queue seam itself can't open — the write can't even be
-/// deferred, so say so rather than dropping the gesture.
 pub(crate) fn notify_seam_error(
     tx: &UnboundedSender<Action>,
     context: &str,
@@ -236,7 +223,6 @@ impl Screen {
         }
     }
 
-    /// Screens may consume keys before the global keymap (used for inline edits).
     pub fn intercept_key(&mut self, key: KeyEvent) -> Option<Action> {
         match self {
             Self::Books(s) => s.intercept_key(key),
@@ -303,8 +289,6 @@ impl Screen {
 
     pub fn hints(&self, leader: bool, goto: bool, command: Option<&str>) -> Line<'static> {
         if let Some(buf) = command {
-            // The command line renders its own four states (empty / partial /
-            // unknown / executing) from the grammar table.
             return crate::app::command::render_line(buf);
         }
         if leader {
@@ -322,7 +306,6 @@ impl Screen {
             ]);
         }
         if goto {
-            // The `g`-goto menu: destinations plus `gg` = top of the list.
             return crate::ui::widgets::footer_hints(&[
                 ("t", "timer"),
                 ("p", "progress"),
@@ -365,5 +348,37 @@ impl Screen {
             Self::Connect(s) => s.hints(),
             Self::Queue(s) => s.hints(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_week_offset_steps_whole_iso_weeks_from_this_one() {
+        let iso = |d: jiff::civil::Date| {
+            let w = d.iso_week_date();
+            format!("{:04}-W{:02}", w.year(), w.week())
+        };
+        let today = Zoned::now().date();
+        assert_eq!(iso_week_for_offset(0), iso(today));
+        assert_eq!(
+            iso_week_for_offset(-1),
+            iso(today.checked_sub(7.days()).unwrap())
+        );
+    }
+
+    #[test]
+    fn the_current_week_sends_no_week_param_so_the_server_picks_it() {
+        assert_eq!(week_param(0), None);
+        assert_eq!(week_param(-2), Some(iso_week_for_offset(-2)));
+    }
+
+    #[test]
+    fn a_row_label_pads_to_its_column_and_truncates_with_an_ellipsis() {
+        assert_eq!(pad_or_truncate("ddia", 6), "ddia  ");
+        assert_eq!(pad_or_truncate("designing", 6), "desig…");
+        assert_eq!(pad_or_truncate("design", 6), "design");
     }
 }
