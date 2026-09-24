@@ -7,7 +7,7 @@
 The terminal client is designed in a Claude Design project and built here.
 Until this record, the two were joined by copies and citations:
 
-- `docs/designs/` carried the project's canvases, the design kit and a brief — 920 KB of design content in a repository that ships a binary, and growing without bound.
+- A design folder in this repository carried the project's canvases, the design kit and a brief — 920 KB of design content in a repository that ships a binary, and growing without bound.
 - 37 source comments cited a canvas or one of its section labels, and eight of those named files that live in the web client's repository and never existed here.
 - The canvases carried **behaviour**. An audit of all ten (#189) extracted 69 rules. Eleven had been deliberately re-decided while building and recorded here, and none of those could be corrected on the canvas: the design project cannot see this repository, so the next export restored every stale sentence. Nine more were **work status** — "blocked on API", "no weeks client is built yet" — false the moment the work moved.
 - `src/ui/theme.rs` was hand-adapted from a token file that had since moved, and its header cited a path that no longer existed. Once the palette was authored where contrast is measured, two of its colours turned out to fail their floors.
@@ -47,5 +47,5 @@ Until this record, the two were joined by copies and citations:
   - the border grey moves from `240` to `244`, because `240` measured 2.63 on a dark ground, under the 3.0 a mark needs;
   - ink on a fill is `text-inverse` (`233`) rather than ANSI black, because indices 0–15 are the user's theme's to redefine.
 - Refreshing the palette is two commands: `cp ../engineer-cli-ds/dist/tokens.toml design/tokens.toml`, then `UPDATE_TOKENS=1 cargo test --test tokens`. Hand-editing either generated file fails CI.
-- The token set has no decisions for work states yet. `theme.rs` maps them onto the notice decisions (`SUCCESS`, `WARN`, `DANGER`), which are the right hues but are named for a different purpose. That gap belongs to the design system, not to this repository.
+- The token set has no decisions for work states yet. `theme.rs` maps them onto the notice decisions (`SUCCESS`, `WARN`, `DANGER`), which are the right hues but are named for a different purpose. That gap belongs to the design system, not to this repository ([engineer-cli-ds#2](https://github.com/dsaenztagarro/engineer-cli-ds/issues/2)).
 - A behaviour a canvas draws and nothing here tests is not a specification of this client. It becomes an issue, or it is corrected on the canvas.
