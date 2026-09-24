@@ -826,6 +826,80 @@ mod tests {
         assert!(text.contains("distributed systems"), "{text}");
     }
 
+    fn kind_reading(id: i64, kind: &str, state: &str, delta: i64) -> serde_json::Value {
+        serde_json::json!({
+            "target": {
+                "id": id, "axis": "kind",
+                "scope": { "axis": "kind", "value": kind },
+                "hours_per_week": 4.0, "active": true, "retired": false
+            },
+            "hours_per_week": 4.0, "actual_minutes": 120, "expected_minutes": 137,
+            "delta_minutes": delta, "state": state
+        })
+    }
+
+    /// Three readings in the server's order: the largest gap, a smaller gap,
+    /// then a met target.
+    fn gaps_in_server_order() -> ProgressData {
+        let mut data = sample();
+        data.targets = serde_json::from_value(serde_json::json!([
+            kind_reading(1, "consensus", "behind", -200),
+            kind_reading(2, "storage", "behind", -60),
+            kind_reading(3, "coding", "met", 30),
+        ]))
+        .unwrap();
+        data
+    }
+
+    #[test]
+    fn meters_keep_the_servers_behind_first_largest_gap_order() {
+        let mut p = Progress {
+            data: Some(gaps_in_server_order()),
+            ..Default::default()
+        };
+        let text = render_text(&mut p);
+        let at = |name: &str| text.find(name).unwrap_or_else(|| panic!("{name}: {text}"));
+        assert!(
+            at("consensus") < at("storage") && at("storage") < at("coding"),
+            "the largest gap is on top, met rows last: {text}"
+        );
+    }
+
+    #[test]
+    fn the_footer_names_the_first_behind_reading_as_the_largest_gap() {
+        let text = spans_text(&behind_footer(&gaps_in_server_order()));
+        assert!(text.contains("behind 4.3h total"), "{text}");
+        assert!(text.contains("largest gap \"consensus\""), "{text}");
+    }
+
+    #[test]
+    fn the_now_tick_sits_where_an_even_week_would_be() {
+        // 257 of 360 expected minutes → the tick in cell 7 of 10; 132 actual
+        // minutes fill 4 cells.
+        let text = spans_text(&meter_line(&sample().targets[0], 18, false));
+        assert!(text.contains("████···╎··"), "{text}");
+    }
+
+    #[test]
+    fn a_met_row_draws_its_bar_full_with_no_now_tick() {
+        let text = spans_text(&meter_line(&sample().targets[1], 18, false));
+        assert!(text.contains("██████████"), "{text}");
+    }
+
+    #[test]
+    fn a_closed_week_reads_day_7_of_7() {
+        let mut data = sample();
+        data.week.elapsed_days = 7;
+        let text = spans_text(&week_header(&data));
+        assert!(text.contains("sun · day 7 of 7"), "{text}");
+    }
+
+    #[test]
+    fn fmt_hours_drops_a_trailing_zero() {
+        assert_eq!(fmt_hours(6.0), "6");
+        assert_eq!(fmt_hours(2.5), "2.5");
+    }
+
     #[test]
     fn behind_footer_quiet_when_all_on_pace() {
         let mut data = sample();
@@ -898,6 +972,20 @@ mod tests {
             hint.contains("where it went"),
             "footer advertises it: {hint}"
         );
+    }
+
+    #[test]
+    fn a_truly_empty_week_hides_the_fold() {
+        let mut data = sample();
+        data.targets.clear();
+        data.kind_mix.clear();
+        let mut p = Progress {
+            data: Some(data),
+            ..Default::default()
+        };
+        let text = render_text(&mut p);
+        assert!(text.contains("No weekly targets yet."), "{text}");
+        assert!(!text.contains("where it went"), "{text}");
     }
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -1047,6 +1135,160 @@ mod tests {
         assert_eq!(p.retire_armed, Some(42));
         p.handle(Action::ProgressSelectMove(1), &api, &tx).await;
         assert_eq!(p.retire_armed, None, "moving the cursor disarms retire");
+    }
+
+    #[tokio::test]
+    async fn a_second_x_retires_through_the_queue() {
+        use crate::queue::QueueStore;
+
+        let (queue_path, cache_path) = scratch_paths();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut p = Progress {
+            data: Some(sample()),
+            queue_paths: Some((queue_path.clone(), cache_path)),
+            ..Default::default()
+        };
+        p.handle(Action::ProgressRetire, &dead_api(), &tx).await;
+        let second = p.handle(Action::ProgressRetire, &dead_api(), &tx).await;
+        assert!(second.is_none(), "the confirm doesn't re-warn");
+
+        let store = QueueStore::at(&queue_path);
+        let mut pending = store.pending().unwrap();
+        for _ in 0..100 {
+            if !pending.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            pending = store.pending().unwrap();
+        }
+        assert_eq!(pending.len(), 1, "the retire landed in the queue");
+        assert_eq!(pending[0].kind.word(), "retire");
+    }
+
+    #[tokio::test]
+    async fn a_reload_keeps_the_cursor_in_range() {
+        let (api, tx) = ctx();
+        let mut p = loaded();
+        p.handle(Action::ProgressSelectMove(1), &api, &tx).await;
+        let mut one = sample();
+        one.targets.truncate(1);
+        p.handle(Action::ProgressLoaded(Box::new(one)), &api, &tx)
+            .await;
+        assert_eq!(p.selected, 0);
+    }
+
+    #[tokio::test]
+    async fn stepping_the_week_drops_its_queued_declares() {
+        let (api, tx) = ctx();
+        let mut p = loaded();
+        p.handle(
+            Action::ProgressDeclareQueued("coding · 4h/wk".into()),
+            &api,
+            &tx,
+        )
+        .await;
+        p.handle(Action::ProgressWeekStep(-1), &api, &tx).await;
+        assert!(
+            !render_text(&mut p).contains("coding · 4h/wk"),
+            "a queued declare never bleeds into another week"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_401_from_the_pace_read_routes_to_reauth() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        let api = ApiClient::with_token(url::Url::parse(&server.uri()).unwrap(), "t".into());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut p = Progress::default();
+        p.handle(Action::RefreshProgress, &api, &tx).await;
+        assert!(
+            wait_for(&mut rx, |a| matches!(a, Action::SessionExpired)).await,
+            "a 401 is a session problem, never a progress panel"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_domain_read_still_opens_the_picker_with_kinds_and_intents() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let api = ApiClient::with_token(url::Url::parse(&server.uri()).unwrap(), "t".into());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut p = Progress::default();
+        p.handle(Action::ProgressDeclareBegin, &api, &tx).await;
+        assert!(
+            wait_for(
+                &mut rx,
+                |a| matches!(a, Action::ProgressDeclareReady(domains) if domains.is_empty())
+            )
+            .await,
+            "a failed domain read falls back to an empty domain list"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_late_domain_read_does_not_reopen_a_cancelled_flow() {
+        let (api, tx) = ctx();
+        let mut p = Progress::default();
+        p.handle(Action::ProgressDeclareReady(vec![]), &api, &tx)
+            .await;
+        assert!(p.declare.is_none());
+    }
+
+    #[test]
+    fn the_declare_flow_owns_every_key() {
+        let mut p = Progress {
+            declare: Some(Declare::Loading),
+            ..Default::default()
+        };
+        assert!(matches!(
+            p.intercept_key(key(KeyCode::Char('q'))),
+            Some(Action::ProgressDeclareKey(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn enter_holds_the_step_when_nothing_is_picked_or_the_hours_are_invalid() {
+        let (api, tx) = ctx();
+        let mut p = Progress {
+            declare: Some(Declare::Scope(Progress::scope_picker(&[]))),
+            ..Default::default()
+        };
+        for c in "zzzz".chars() {
+            p.handle(Action::ProgressDeclareKey(key(KeyCode::Char(c))), &api, &tx)
+                .await;
+        }
+        p.handle(Action::ProgressDeclareKey(key(KeyCode::Enter)), &api, &tx)
+            .await;
+        assert!(
+            matches!(p.declare, Some(Declare::Scope(_))),
+            "an empty filter has nothing to pick"
+        );
+
+        p.declare = Some(Declare::Hours {
+            scope: TargetScope::Kind("coding".into()),
+            label: "kind · coding".into(),
+            buf: String::new(),
+            picker: Progress::scope_picker(&[]),
+        });
+        p.handle(Action::ProgressDeclareKey(key(KeyCode::Enter)), &api, &tx)
+            .await;
+        assert!(
+            matches!(p.declare, Some(Declare::Hours { .. })),
+            "no hours typed keeps the prompt open"
+        );
     }
 
     #[tokio::test]
