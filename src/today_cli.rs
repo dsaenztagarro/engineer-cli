@@ -1,11 +1,4 @@
-//! Headless `engineer today` — the one-shot twin of the Home screen
-//! (home.dc.html §ONE READ). One `GET /api/v1/today` read, emitted as the raw
-//! payload (`--json`) or a compact, stable human summary: the date, the timer,
-//! the pace line, today's plan counts, review triage, and the books mid-chapter.
-//!
-//! Home owns no write, so this verb is read-only: it exits `0` on success, and a
-//! `401`/transport error surfaces through the shared `ApiError` path with a
-//! non-zero exit, matching the `engineer timer`/`target` contract.
+//! Headless `engineer today` — the one-shot twin of the Home screen (ADR 0003).
 
 use clap::Args;
 use color_eyre::eyre::Result;
@@ -50,9 +43,8 @@ async fn dispatch(api: &ApiClient, json: bool) -> Result<Outcome, ApiError> {
     Ok(Outcome { out, code: 0 })
 }
 
-/// A faithful projection of the decoded `/today` payload. Built by hand (rather
-/// than `#[derive(Serialize)]`) because the embedded `api::Timer` is
-/// deserialize-only; this mirrors the `engineer timer --json` precedent.
+/// Built by hand rather than `#[derive(Serialize)]`: the embedded `api::Timer`
+/// is deserialize-only.
 fn json_today(t: &Today) -> serde_json::Value {
     serde_json::json!({
         "date": {
@@ -112,8 +104,6 @@ fn json_today(t: &Today) -> serde_json::Value {
     })
 }
 
-/// A compact, greppable summary — one aligned line per block, mirroring the Home
-/// screen's reading order (date → timer → pace → plan → review → reading).
 fn human_summary(t: &Today) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(format!(

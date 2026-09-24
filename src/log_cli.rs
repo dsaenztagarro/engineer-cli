@@ -1,9 +1,4 @@
-//! Headless `engineer log` — record a completed session without the timer
-//! (the TUI ↔ headless contract, ADR 0003). Two shapes: log a **new** activity
-//! (`engineer log '<title>' --minutes N --kind K`), or **append** the minutes to
-//! an existing activity by fuzzy match (`engineer log --activity '<match>'
-//! --minutes N`). `--json` for machines; plain otherwise; exit 0 on success, 1
-//! on refusal — the `engineer timer`/`target` contract.
+//! Headless `engineer log` — record a completed session without the timer (ADR 0003).
 
 use std::io::IsTerminal;
 
@@ -104,11 +99,8 @@ async fn dispatch(api: &ApiClient, queued: &QueuedClient, args: LogArgs, colored
     }
 }
 
-/// Log a new completed activity — the exact write the `a` new-activity form
-/// makes. Routes through [`QueuedClient`] like every write: a single create
-/// carrying `duration_minutes` (the server mints the activity *and* its opening
-/// segment from it), so offline it queues one `ActivityCreate` and prints a
-/// provisional line, replaying when the wire returns.
+/// One create carrying `duration_minutes`: the server mints the opening
+/// segment from it, so there is no second write to queue.
 async fn log_new(
     queued: &QueuedClient,
     title: &str,
@@ -130,10 +122,6 @@ async fn log_new(
             let provisional = out.is_provisional();
             let a = out.value();
             if json {
-                // A queued create's `id` is the negative provisional stand-in
-                // (`-(intent.id)`) — carried honestly so a script reads "not yet
-                // server-minted" straight off the sign, with `queued: true` to
-                // name it.
                 let mut v = serde_json::json!({
                     "id": a.id,
                     "title": a.title,
@@ -163,12 +151,8 @@ async fn log_new(
     }
 }
 
-/// Append minutes to an existing activity — resolve the query to its best match
-/// (the timer bind candidates, a *live* read), then write a manual segment
-/// ending now through [`QueuedClient`]. The resolve is the offline boundary:
-/// with no wire it can't fuzzy-match, and guessing would log against the wrong
-/// activity, so it refuses with the way forward — the one spelling `timer start`
-/// and `note capture --book` already use.
+/// The fuzzy resolve is a live read, so offline this refuses rather than
+/// guess: a guess would log against the wrong activity.
 async fn log_segment(
     api: &ApiClient,
     queued: &QueuedClient,
@@ -190,7 +174,6 @@ async fn log_segment(
         return Outcome::refuse(format!("no activity matches \"{query}\""));
     };
 
-    // The segment ends now and started `minutes` ago — the honest after-the-fact shape.
     let now = Timestamp::now();
     let started = Timestamp::from_second(now.as_second() - minutes as i64 * 60).unwrap_or(now);
 

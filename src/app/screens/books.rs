@@ -20,16 +20,11 @@ pub struct Books {
     pub items: Vec<Book>,
     pub state: ListState,
     pub filter: BooksFilter,
-    /// The `/` search buffer (query + capturing flag). `/` re-queries the
-    /// server; `n`/`N` step matches within the loaded set (search atom).
+    /// `/` re-queries the server; `n`/`N` step within the loaded set.
     pub search: SearchBox,
     pub loading: bool,
-    /// Tier-2 state: set when the read failed, so an empty shelf (no books) and
-    /// a failed fetch render differently. Cleared on the next successful load.
     failure: Option<PanelFailure>,
-    /// `f` — a fuzzy jump over the loaded books (the shared picker widget). `/`
-    /// stays the server-side search; this is the local, instant jump within the
-    /// set already on screen.
+    /// `f` — a local fuzzy jump within the loaded set, beside the server-side `/`.
     picker: Option<Picker<i64>>,
 }
 
@@ -74,15 +69,10 @@ impl Books {
                 Ok(list) => {
                     let _ = tx.send(Action::BooksLoaded(list.data));
                 }
-                // A 401 is a session problem, not a books problem — route to
-                // re-auth (Tier 3) rather than a Tier-2 books panel.
                 Err(ApiError::Unauthorized) => {
                     let _ = tx.send(Action::SessionExpired);
                 }
                 Err(e) => {
-                    // Tier 2: report the failure as itself — never an empty
-                    // shelf. The reason line is spelled once (§C) so the panel
-                    // matches what a headless `engineer books` prints.
                     let _ = tx.send(Action::BooksLoadFailed(messages::fail_reason(
                         api.host(),
                         &e,
@@ -93,8 +83,6 @@ impl Books {
     }
 
     pub fn intercept_key(&mut self, key: KeyEvent) -> Option<Action> {
-        // The fuzzy picker is modal: while open it owns every key so a typed
-        // letter filters rather than firing the global keymap.
         if self.picker.is_some() {
             return Some(Action::BooksPickerKey(key));
         }
@@ -109,8 +97,6 @@ impl Books {
             if matches!(key.code, KeyCode::Char('f')) {
                 return Some(Action::BooksPickerOpen);
             }
-            // `n`/`N` step matches once a query is live (search applied, not
-            // capturing). Only claim the keys when there's a query to step.
             if !self.search.is_empty() {
                 match key.code {
                     KeyCode::Char('n') => return Some(Action::BooksMatchStep(1)),
@@ -185,14 +171,9 @@ impl Books {
                                     chapters: list.data,
                                 });
                             }
-                            // A 401 is a session problem — route to re-auth (Tier
-                            // 3) rather than a Tier-2 detail panel.
                             Err(ApiError::Unauthorized) => {
                                 let _ = tx.send(Action::SessionExpired);
                             }
-                            // Tier 2: the detail read failed — surface it as a
-                            // failed panel on the detail screen, never a book with
-                            // a silently-empty chapter list.
                             Err(e) => {
                                 let _ = tx.send(Action::BookDetailLoadFailed(
                                     messages::fail_reason(api.host(), &e),
@@ -229,8 +210,6 @@ impl Books {
                 match key.code {
                     KeyCode::Esc => self.picker = None,
                     KeyCode::Enter => {
-                        // Reuse the normal open path: select the picked row, then
-                        // fire BooksOpen (which loads chapters and navigates).
                         let id = self.picker.as_ref().and_then(|p| p.selected().copied());
                         self.picker = None;
                         if let Some(idx) =
@@ -278,8 +257,6 @@ impl Books {
         self.state.select(Some(next as usize));
     }
 
-    /// `n`/`N` — move the cursor to the next/previous loaded row whose label
-    /// matches the live query, wrapping around.
     fn step_match(&mut self, dir: i32) {
         let matches =
             search::match_indices(self.items.iter().map(book_label_ref), &self.search.query);
@@ -302,8 +279,6 @@ impl Books {
         let title = search::title_with_query(&format!("Books · {label}"), &self.search);
         let block = bordered(title);
 
-        // No rows → the region is a Tier-2 state, not a list. Failed and empty
-        // are deliberately distinct; loading is its own calm state.
         if self.items.is_empty() {
             let state = if let Some(f) = &self.failure {
                 PanelState::Failed(f.clone())
@@ -327,8 +302,6 @@ impl Books {
             .iter()
             .map(|b| {
                 let mut spans = vec![widgets::status_pill(b.status), Span::raw("  ")];
-                // Highlight the query inside the title (search atom); the muted
-                // author trailer stays plain.
                 spans.extend(search::highlight(
                     &b.title,
                     &self.search.query,
@@ -351,7 +324,6 @@ impl Books {
             .highlight_symbol("▌ ");
         frame.render_stateful_widget(list, area, &mut self.state);
 
-        // The fuzzy jump draws over the list when open.
         if let Some(p) = &self.picker {
             p.render(frame, area);
         }
@@ -368,7 +340,6 @@ impl Books {
             return search::search_hints();
         }
         let mut hints: Vec<(&str, &str)> = vec![("j/k", "move"), ("↵", "open"), ("/", "search")];
-        // Advertise match-stepping only while a query is live.
         if !self.search.is_empty() {
             hints.push(("n/N", "match"));
         }
@@ -377,8 +348,6 @@ impl Books {
     }
 }
 
-/// The picker row for a book — title, and the author when present, so a fuzzy
-/// query can match either.
 fn book_label(book: &Book) -> String {
     match &book.author {
         Some(a) if !a.is_empty() => format!("{} · {}", book.title, a),

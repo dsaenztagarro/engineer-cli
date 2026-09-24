@@ -15,9 +15,7 @@ use crate::ui::{layout::bordered, theme, widgets};
 
 use super::{notify_seam_error, open_queued, QueuePaths};
 
-/// The status picker's rows, in display order. The `r/c/u/h/a` mnemonics and the
-/// kit's pill vocabulary (` reading `/` done `/` unread `/` hold `/` stop `) key
-/// off this order, and `BookStatusMove` steps the cursor within it.
+/// The status picker's rows, in display order; `BookStatusMove` steps within it.
 const STATUSES: [BookStatus; 5] = [
     BookStatus::Reading,
     BookStatus::Completed,
@@ -29,14 +27,9 @@ const STATUSES: [BookStatus; 5] = [
 pub struct BookDetail {
     book: Option<Book>,
     chapters: Vec<BookChapter>,
-    /// Tier-2 state: set when the detail read (its chapters) failed. Since the
-    /// book was going to arrive alongside the chapters, a failure means there's
-    /// no payload at all — so the whole body renders the failed panel. Cleared
-    /// on the next successful load.
     chapters_failure: Option<PanelFailure>,
     state: ListState,
     edit_page: Option<String>,
-    /// The status picker modal's cursor, `Some` while it's open.
     status_picker: Option<ListState>,
     /// Queue + read-cache locations for the offline write seam — `None`
     /// (production) uses the shared XDG paths, tests inject a scratch dir.
@@ -65,9 +58,6 @@ impl BookDetail {
     }
 
     pub fn intercept_key(&mut self, key: KeyEvent) -> Option<Action> {
-        // The status picker is modal: while open it owns j/k, the r/c/u/h/a
-        // mnemonics, Enter (confirm) and Esc (cancel), so `h` picks `on_hold`
-        // rather than stepping back and Esc closes the modal, not the screen.
         if self.status_picker.is_some() {
             return match key.code {
                 KeyCode::Esc => Some(Action::BookStatusCancel),
@@ -106,7 +96,6 @@ impl BookDetail {
                 self.state.select(self.current_chapter_index().or(Some(0)));
             }
             Action::BookDetailLoadFailed(reason) => {
-                // No book, no chapters — the whole detail is a Tier-2 failure.
                 self.chapters_failure = Some(PanelFailure {
                     headline: messages::load_failed("the book"),
                     reason,
@@ -149,7 +138,6 @@ impl BookDetail {
             Action::ToggleChapterDone => {
                 if let Some(chapter) = self.selected_chapter().cloned() {
                     if let Some(book) = &self.book {
-                        // Mark this chapter as current and advance cursor.
                         spawn_book_update(
                             api,
                             tx,
@@ -167,8 +155,6 @@ impl BookDetail {
                 }
             }
             Action::BookStatusPicker => {
-                // Open the modal at the book's current status, so a confirm with
-                // no movement is a no-op change the user can eyeball first.
                 if let Some(book) = &self.book {
                     let mut state = ListState::default();
                     state.select(Some(status_index(book.status)));
@@ -239,9 +225,6 @@ impl BookDetail {
             .split(area);
 
         let Some(book) = self.book.clone() else {
-            // No payload yet → the whole body is a Tier-2 state: a loud failure
-            // (with a retry key) when the read failed, else the calm loading
-            // state while the chapters fetch is in flight.
             let block = bordered("Book");
             let state = if let Some(f) = &self.chapters_failure {
                 PanelState::Failed(f.clone())
@@ -252,7 +235,6 @@ impl BookDetail {
             return;
         };
 
-        // Header
         let pct = book.progress_percent.unwrap_or(0.0);
         let mut header_lines = vec![
             Line::from(vec![
@@ -287,7 +269,6 @@ impl BookDetail {
         }
         frame.render_widget(Paragraph::new(header_lines).block(bordered(" ")), chunks[0]);
 
-        // Chapters
         let cur_id = book.current_chapter_id;
         let items: Vec<ListItem> = self
             .chapters
@@ -326,15 +307,11 @@ impl BookDetail {
             .highlight_symbol("▌ ");
         frame.render_stateful_widget(list, chunks[1], &mut self.state);
 
-        // The status picker renders last, as a small centered modal over the body.
         if self.status_picker.is_some() {
             self.render_status_picker(frame, area);
         }
     }
 
-    /// The status picker modal — five kit pills, one per `BookStatus`, each with
-    /// its `r/c/u/h/a` mnemonic. The highlighted row is the pending choice; the
-    /// footer carries the keymap.
     fn render_status_picker(&mut self, frame: &mut Frame, area: Rect) {
         let modal = centered(area, 34, STATUSES.len() as u16 + 2);
         frame.render_widget(Clear, modal);
@@ -383,7 +360,6 @@ impl BookDetail {
     }
 }
 
-/// The `r/c/u/h/a` mnemonic key for a status, matching the picker's keymap.
 fn mnemonic(status: BookStatus) -> char {
     match status {
         BookStatus::Reading => 'r',
@@ -394,18 +370,11 @@ fn mnemonic(status: BookStatus) -> char {
     }
 }
 
-/// A status's row index in `STATUSES` (the picker cursor position).
 fn status_index(status: BookStatus) -> usize {
     STATUSES.iter().position(|&s| s == status).unwrap_or(0)
 }
 
-/// Route a book write through the offline seam — the shared arm behind the
-/// detail's three writes (`s` status, `p` page, `⎵` chapter-done). Live, the
-/// server's recomputed book (progress, chapter marks) feeds the detail; offline,
-/// the seam field-flips `current` and the queued stand-in feeds it just the same
-/// (progress stays at its last-known reading, honest until the drain), with a
-/// muted "queued (offline)" line. `ok_msg` is the confirmed-only success line
-/// (chapter-done stays silent, `None`).
+/// `ok_msg` is the confirmed-only success line; `None` keeps a write silent.
 fn spawn_book_update(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
@@ -449,7 +418,6 @@ fn spawn_book_update(
     });
 }
 
-/// A fixed-size rectangle centered in `area`, clamped to fit.
 fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.width);
     let h = h.min(area.height);

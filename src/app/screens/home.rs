@@ -1,9 +1,4 @@
-//! Home — the daily loop's opening question, served from one `GET /api/v1/today`
-//! read. It leads with the two ambient reads that decide the next move — the
-//! running timer (the header's `timer_cell` atom, drawn larger as a band) and
-//! this week's pace fold — over today's plan, the logged/review strip, and the
-//! books mid-chapter. Home owns no write; its blocks link out (Timer / Progress
-//! / Review).
+//! Home — the daily loop's opening screen, rendered from one `GET /api/v1/today` read.
 
 use std::time::Instant;
 
@@ -25,21 +20,14 @@ use crate::ui::{layout::bordered, theme, widgets};
 #[derive(Default)]
 pub struct Home {
     today: Option<Today>,
-    /// Monotonic instant the current `today` snapshot arrived — the base for
-    /// ticking the lead band's elapsed between refreshes, exactly as the header
-    /// cell ticks (both share `timer::live_elapsed`).
+    /// When the current `today` snapshot arrived — the base `live_elapsed`
+    /// ticks the lead band from between refreshes.
     loaded_at: Option<Instant>,
     loading: bool,
-    /// The ambient pending-drafts count (§Inbox · the ambient count). Loaded by
-    /// a light `list_pending_tasks()` fetch beside the `today()` load, since the
-    /// `/today` aggregate carries no drafts count. `0` renders nothing — quiet by
-    /// default; `inbox_expiring` escalates the chip to amber when a draft is near
-    /// expiry (the design's "escalates once").
+    /// From a separate `list_pending_tasks()` read: the `/today` aggregate
+    /// carries no drafts count.
     inbox_pending: usize,
     inbox_expiring: bool,
-    /// Tier-2 state: set when the `/today` read failed, so a failure renders a
-    /// loud inline panel over the body (the reason + a retry key) rather than
-    /// the calm loading spinner. Cleared on the next successful load.
     failure: Option<PanelFailure>,
 }
 
@@ -88,8 +76,6 @@ impl Home {
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
         let Some(today) = self.today.as_ref() else {
-            // No aggregate yet: a failed `/today` read is a loud Tier-2 panel
-            // (reason + `r` retry), never confused with the calm loading state.
             let state = if let Some(f) = &self.failure {
                 PanelState::Failed(f.clone())
             } else {
@@ -99,10 +85,8 @@ impl Home {
             return;
         };
 
-        // The screen reads top to bottom: the date, the timer lead band, today's
-        // plan, the logged/review/left strip, and the books mid-chapter beneath.
         let plan_rows = if today.plan.items.is_empty() {
-            2 // the calm two-line invitation
+            2 // the two-line empty-plan invitation
         } else {
             today.plan.items.len() as u16
         };
@@ -124,11 +108,6 @@ impl Home {
         render_reading(frame, chunks[4], today);
     }
 
-    /// The top row: the date (right-aligned) with the ambient inbox chip on the
-    /// left when drafts are pending (§Inbox · the ambient count — the design's
-    /// header-cell footprint). Split so the chip never collides with the date; a
-    /// muted `◧ inbox N` normally, an amber `▾ inbox N` when a draft is near
-    /// expiry. Nothing shows at inbox zero — quiet by default.
     fn render_header_row(&self, frame: &mut Frame, area: Rect, today: &Today) {
         if self.inbox_pending == 0 {
             render_date(frame, area, today);
@@ -157,10 +136,6 @@ impl Home {
         render_date(frame, cols[1], today);
     }
 
-    /// The lead band — the two ambient reads that decide the next move: the
-    /// running timer as `widgets::timer_cell` (the *same atom, larger*, not a
-    /// second timer face), and the pace fold beneath it. When nothing runs, the
-    /// calm idle line leads instead.
     fn render_lead(&self, frame: &mut Frame, area: Rect, today: &Today) {
         let elapsed = live_elapsed(&today.timer, self.loaded_at);
         let timer_line = match widgets::timer_cell(&today.timer, elapsed, false, false) {
@@ -183,13 +158,8 @@ impl Home {
     }
 }
 
-/// The pace fold beneath the timer — this week's promise, pre-folded to the
-/// single worst-behind target. `pace: null` is the on-pace state, rendered as a
-/// calm line (silence is on-pace, baked into the API — never a red or empty
-/// panel). Behind wears a small warn chip naming the worst target by scope and
-/// how many trail. The full now-tick meters stay on Progress (`g p`) — the
-/// `/today` fold carries only `delta_minutes`, not the fill/expected/target the
-/// meter needs.
+/// No meter here: the `/today` fold carries only `delta_minutes`, not the
+/// fill/expected/target a meter needs — that lives on Progress.
 fn pace_line(today: &Today) -> Line<'static> {
     match today.pace.as_ref() {
         None => Line::from(vec![
@@ -281,7 +251,6 @@ fn render_plan(frame: &mut Frame, area: Rect, today: &Today) {
                 Cell::from(format!("{} / {}m", it.logged_minutes, it.size_minutes))
                     .style(theme::muted()),
             ]);
-            // The live item leads the eye — the full-row selection highlight.
             if it.state == "live" {
                 row.style(theme::selection())
             } else {
@@ -359,8 +328,6 @@ fn render_reading(frame: &mut Frame, area: Rect, today: &Today) {
 
             let mut bar = widgets::progress_bar(b.progress_percent.unwrap_or(0.0), 30);
             if let Some(total) = b.chapters_total {
-                // Chapters read = the next unread chapter's number minus one; a
-                // finished book (no next chapter) has read them all.
                 let read = b
                     .next_chapter
                     .as_ref()
@@ -378,8 +345,6 @@ fn render_reading(frame: &mut Frame, area: Rect, today: &Today) {
     frame.render_widget(List::new(items).block(block), area);
 }
 
-/// The plan-row glyph for a lifecycle state: `✓` done, `●` live, `·` left,
-/// `○` planned (and the fallback for anything unrecognised).
 fn state_glyph(state: &str) -> (&'static str, Color) {
     match state {
         "done" => ("✓", theme::SUCCESS),
@@ -412,13 +377,10 @@ fn spawn_load(api: ApiClient, tx: UnboundedSender<Action>) {
             Ok(today) => {
                 let _ = tx.send(Action::TodayLoaded(Box::new(today)));
             }
-            // A 401 is a session problem, not a Home problem — route to re-auth.
             Err(ApiError::Unauthorized) => {
                 let _ = tx.send(Action::SessionExpired);
             }
             Err(e) => {
-                // Tier 2: the whole-body read failed — the reason rides on the
-                // panel (§C one spelling), not a transient tile.
                 let _ = tx.send(Action::HomeLoadFailed(messages::fail_reason(
                     api.host(),
                     &e,
@@ -428,10 +390,6 @@ fn spawn_load(api: ApiClient, tx: UnboundedSender<Action>) {
     });
 }
 
-/// The ambient pending-drafts count — a light `list_pending_tasks()` read beside
-/// the `today()` load (the `/today` aggregate carries no drafts count, and the
-/// CLI invents no server endpoint). Quiet by default: a failed read stays silent
-/// (the chip just doesn't show), never a notify tile.
 fn spawn_inbox_count(api: ApiClient, tx: UnboundedSender<Action>) {
     tokio::spawn(async move {
         if let Ok(tasks) = api.list_pending_tasks().await {

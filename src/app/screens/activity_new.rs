@@ -75,7 +75,6 @@ impl ActivityNew {
                         self.kind.handle_event(&evt);
                     }
                     2 => {
-                        // Allow only digits for duration.
                         if let KeyCode::Char(c) = key.code {
                             if !c.is_ascii_digit() {
                                 return None;
