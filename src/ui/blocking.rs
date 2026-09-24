@@ -1,13 +1,4 @@
-//! Tier-3 of the error/notification model (design-system.dc.html §ERROR &
-//! NOTIFICATION MODEL, reference: §SIGN IN · SERVER ERROR): the **blocking
-//! screen**. When the whole content area is meaningless without something that
-//! failed — auth down / 5xx, an expired session (401 → re-auth), missing config
-//! — the screen fills with the failure and offers the one recovery action.
-//!
-//! This is the loudest, rarest tier and deliberately has few owners: only Login
-//! (its own read is the session) and the global 401→re-auth path route here.
-//! Every other screen's failure is a Tier-2 panel (`ui::panel`) while the rest
-//! of the screen stays live.
+//! The Tier-3 blocking screen of the error model (ADR 0001).
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -17,22 +8,17 @@ use ratatui::Frame;
 
 use crate::ui::{layout::bordered, theme};
 
-/// The one recovery a blocking screen offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Recovery {
-    /// `⏎ retry` — re-run the thing that failed (a 5xx that may pass next time).
     Retry,
-    /// `⏎ sign in` — the session expired; re-authenticate.
     ReAuth,
-    /// No forward move — only `q` quits (e.g. missing config the app can't fix).
-    /// The atom supports it; the missing-config *trigger* isn't wired yet (no
-    /// config-validation path exists), so this variant has no non-test caller.
+    // No caller yet: nothing validates the config, so the missing-config
+    // trigger this recovery exists for is not wired.
     #[allow(dead_code)]
     QuitOnly,
 }
 
 impl Recovery {
-    /// The `⏎` action label, or `None` when there's nothing but quit.
     fn enter_label(self) -> Option<&'static str> {
         match self {
             Recovery::Retry => Some("retry"),
@@ -42,10 +28,6 @@ impl Recovery {
     }
 }
 
-/// A whole-screen blocking failure. `headline` is the loud one-line summary
-/// (rendered as a full-width danger bar); `detail` are the muted lines beneath
-/// (the cause, and any "nothing was changed" reassurance); `footnote` is an
-/// optional dim diagnostic tail.
 pub struct Blocking {
     pub title: String,
     pub headline: String,
@@ -54,10 +36,7 @@ pub struct Blocking {
     pub footnote: Option<String>,
 }
 
-/// Render `b` filling `area` — a centred bordered panel, the danger headline
-/// bar, the muted detail, and the recovery line.
 pub fn render_blocking(frame: &mut Frame, area: Rect, b: &Blocking) {
-    // Centre a panel wide enough for the headline, matching the Login layout.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -178,5 +157,31 @@ mod tests {
         });
         assert!(text.contains("quit"), "{text}");
         assert!(!text.contains("Enter"), "no forward move offered: {text}");
+    }
+
+    #[test]
+    fn only_the_login_screen_raises_a_blocking_screen() {
+        fn callers(dir: &std::path::Path, out: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    callers(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs")
+                    && !path.ends_with("ui/blocking.rs")
+                    && std::fs::read_to_string(&path)
+                        .unwrap()
+                        .contains("render_blocking")
+                {
+                    out.push(path.display().to_string());
+                }
+            }
+        }
+        let mut found = Vec::new();
+        callers(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut found,
+        );
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].ends_with("app/screens/login.rs"), "{found:?}");
     }
 }

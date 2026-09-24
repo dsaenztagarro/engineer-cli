@@ -130,7 +130,6 @@ fn init_tracing() -> Result<()> {
 
     if let Ok(dir) = config::Config::log_dir() {
         std::fs::create_dir_all(&dir).ok();
-        // Daily rotation with a capped history so logs never grow unbounded.
         let appender = RollingFileAppender::builder()
             .rotation(Rotation::DAILY)
             .filename_prefix("engineer-cli")
