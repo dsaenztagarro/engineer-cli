@@ -1,16 +1,4 @@
-//! Timer screen — the watch face (timer.dc.html §Timer hero / §Paused): one
-//! big number, a state label, and a foldable instrument rail. The persistent
-//! header cell is rendered by the chrome from the app-owned snapshot; this
-//! screen owns the interactions.
-//!
-//! States, driven by the live snapshot:
-//! - **Absent** — no live timer. `s` starts a blank clock ("name it later").
-//! - **Live** — the watch face. `SPC` (or `p`) pauses/resumes; `i` folds the
-//!   rail; bound: `s` ends & saves; unbound: `/`/`b` open the bind search,
-//!   `d` discards. Paused draws the frozen amber face — a paused timer never
-//!   goes idle.
-//! - **Stopped** — the written segment (minutes + activity) so the ledger is
-//!   trusted; `↵` dismisses.
+//! Timer screen — the watch face and every timer interaction; the header cell is the chrome's.
 
 use std::time::Instant;
 
@@ -36,9 +24,7 @@ use crate::ui::{layout::bordered, theme, widgets};
 
 use super::{notify_seam_error, open_queued, QueuePaths};
 
-/// The four timer sub-verbs the `:` palette dispatches (`:timer start|pause|
-/// resume|stop`). Defined here, next to the actions they drive, so the grammar
-/// table and this screen share one spelling of the inventory.
+/// The `:timer` sub-verbs, defined beside the actions they drive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimerVerb {
     Start,
@@ -48,8 +34,7 @@ pub enum TimerVerb {
 }
 
 impl TimerVerb {
-    /// Canonical names, in help/completion order. The grammar table's argument
-    /// set and `from_name` both read from here.
+    /// Help/completion order; the `:` grammar table reads its argument set here.
     pub const NAMES: &'static [&'static str] = &["start", "pause", "resume", "stop"];
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -63,12 +48,8 @@ impl TimerVerb {
     }
 }
 
-/// Run a `:timer <verb>` palette action against the app-owned snapshot, without
-/// routing through the screen (so it works from any screen and never races the
-/// screen's own load). Valid transitions spawn the same API op the on-screen
-/// keys do; the header cell reflects the result. An invalid transition returns
-/// the notify-tile warning to surface — the unbound-stop message matches the one
-/// the Timer screen shows for the same mistake.
+/// Runs against the app-owned snapshot rather than the screen, so it works from
+/// any screen and never races the screen's own load.
 pub(crate) fn palette_dispatch(
     verb: TimerVerb,
     snap: Option<&TimerSnapshot>,
@@ -124,33 +105,20 @@ pub(crate) fn palette_dispatch(
     }
 }
 
-/// Displayed elapsed for a snapshot — the controlling local clock. With a
-/// `started_at` anchor this is `timer_clock::elapsed` at now: the server's own
-/// arithmetic, so the tick between polls, the offline fold, and the reconciled
-/// server value are all the same number (still frozen while paused, still
-/// advancing once a second while live). Snapshots without the anchor keep the
-/// display-smoothing fallback: the last `elapsed_seconds` plus the monotonic
-/// time since the snapshot was fetched, only while actually advancing. Shared
-/// with the header cell so both tick in step.
+/// Shared with the header cell so both tick in step.
 pub(crate) fn live_elapsed(snap: &TimerSnapshot, base: Option<Instant>) -> i64 {
     let age = base.map(|b| b.elapsed().as_secs() as i64).unwrap_or(0);
     crate::timer_clock::elapsed_with_snapshot_age(snap, jiff::Timestamp::now(), age)
 }
 
-/// Which offer the focus rhythm is holding open, if any (§Focus offers).
-/// Transitions never fire on their own — a finished phase waits for a key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Offer {
-    /// The work interval is complete: offer the break (long every Nth).
     Break { long: bool },
-    /// The break is done: offer the next work interval.
     BackToWork,
 }
 
-/// A finished focus phase, judged from `phase_started_at` against the
-/// configured durations. Paused and idle clocks never hold an offer open
-/// (their moments come first). Phase time ignores mid-phase pauses — the
-/// offer may arrive early after one; the server still validates.
+/// Phase time ignores mid-phase pauses, so an offer can arrive early after one;
+/// the server still validates the transition.
 pub(crate) fn offer_for(
     snap: &TimerSnapshot,
     settings: &crate::api::TimerSettings,
@@ -190,71 +158,41 @@ pub(crate) fn offer_for(
     }
 }
 
-/// Past this much elapsed work, discarding asks twice — in the TUI a second
-/// `d`, headless `--force`. Under it, a mis-tap discards instantly.
 pub(crate) const DISCARD_CONFIRM_SECS: i64 = 120;
 
-/// What a bind submission would act on, resolved from the current selection.
 enum BindTarget {
     Existing(i64),
     Create(String),
 }
 
-/// The start picker's stopwatch ⇄ focus toggle (`Tab`).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PickerMode {
     Stopwatch,
     Focus,
 }
 
-/// Which live-search panel owns the keys. `Bind` names the running unnamed
-/// timer in place; `Start` is the §Start-a-timer picker — one list, every way
-/// in (bound / new activity / just start), plus the stop-&-switch confirm
-/// when a timer is already running.
+/// The open panel, which owns the keys.
 enum Panel {
     Bind {
-        /// Bind-at-stop (§Bind at stop): a successful bind immediately saves —
-        /// the server's bound-only stop, with the picker in between.
         save_on_bind: bool,
-        /// Whether opening the panel paused the clock (the design's frozen
-        /// moment). Esc resumes only what this panel froze — a manually
-        /// paused timer stays paused.
         froze: bool,
     },
     Start {
         mode: PickerMode,
         confirm: Option<TimerCandidate>,
     },
-    /// §Idle reclaim: the clock went quiet — one row per server verb plus the
-    /// discard escape. Nothing is written until a row is applied; Esc defers.
-    Reclaim { selected: usize },
-    /// §Diverged (the one loud state): replay found the server moved on and a
-    /// diverged intent waits in the queue. Two sides, pick one — `⏎` keeps the
-    /// highlighted side, `b` keeps both (session family), Esc defers (the
-    /// panel reopens on the next poll while the divergence stands). Nothing
-    /// resolves, drops, or merges without a gesture.
-    ///
-    /// A **rejected write** (#109, §Diverged · rejected segment — a 422 on a
-    /// replayed `SegmentCreate`/`ActivityCreate`) wears a different face on
-    /// the same panel: no sides to pick, three gestures instead — `e` edit
-    /// times (`$EDITOR`), `x` drop (armed, the second `x` confirms), `s`
-    /// skip & keep queued.
+    Reclaim {
+        selected: usize,
+    },
     Reconcile {
-        /// The diverged intent, its stored RFC 7807 payload included — the
-        /// server's objection renders verbatim (generic fallback today;
-        /// #107's coded conflicts enrich the same panel). Boxed: the payload
-        /// is large next to the other panels.
+        /// Boxed: the stored problem payload is large next to the other panels.
         intent: Box<Intent>,
         /// 0 = local, 1 = server.
         selected: usize,
-        /// An `x` on the rejected-write face armed the drop confirm; only the
-        /// very next `x` goes through — any other gesture disarms.
         confirm_drop: bool,
     },
 }
 
-/// The rejected-write face of the reconcile panel (#109): a server-refused
-/// segment or activity create resolves through edit/drop/skip, not sides.
 fn rejected_write(intent: &Intent) -> bool {
     matches!(
         intent.kind,
@@ -265,7 +203,6 @@ fn rejected_write(intent: &Intent) -> bool {
 /// The reclaim list rows, in display order: trim · keep · stop · discard.
 const RECLAIM_ROWS: usize = 4;
 
-/// What a start-picker submission would do, resolved from the selection.
 enum StartTarget {
     Candidate(TimerCandidate),
     Create(String),
@@ -288,30 +225,16 @@ enum Stage {
 pub struct Timer {
     stage: Stage,
     snapshot: Option<TimerSnapshot>,
-    /// Monotonic baseline for ticking the displayed elapsed between snapshots.
+    /// Monotonic baseline for ticking the displayed elapsed between polls.
     base: Option<Instant>,
-    /// `i` folds the instrument rail away; the number recenters into the calm
-    /// watch face. Default is the cockpit (rail shown).
     rail_hidden: bool,
-    /// Today's logged minutes (summed from today's activities) for the rail.
     today_minutes: Option<u32>,
-    /// The week's per-day minutes (mon→sun) for the rail's sparkline; empty
-    /// until the progress read lands (or on servers without `by_day`).
     week: Vec<crate::api::DayMinutes>,
-    /// The open live-search panel (bind or start picker), if any. The panel
-    /// owns the keys while open; the clock underneath runs untouched.
     panel: Option<Panel>,
-    /// A `d` past the confirm fence arms this; only the very next `d`
-    /// confirms the discard.
     discard_armed: bool,
-    /// True while the shown clock is a provisional offline write (queued, not
-    /// yet server-confirmed) — the watch face wears the `◔` marker. Cleared by
-    /// the next live `TimerLoaded`.
     provisional: bool,
-    /// Queue + cache locations for the offline write seam; `None` in production
-    /// (the shared XDG paths). Tests inject a scratch dir.
+    /// `None` is the shared XDG queue and cache; tests inject a scratch dir.
     queue_paths: QueuePaths,
-    /// The per-user knobs — the reclaim default and the focus copy read them.
     settings: Option<crate::api::TimerSettings>,
     query: String,
     candidates: Vec<TimerCandidate>,
@@ -328,22 +251,18 @@ impl Timer {
         spawn_diverged_check(tx, self.queue_paths.clone());
     }
 
-    /// The live focus phase (`work`/`break`), or `None` outside focus.
     fn focus_phase(&self) -> Option<&str> {
         let snap = self.snapshot.as_ref()?;
         (snap.running && snap.mode.as_deref() == Some("focus"))
             .then(|| snap.phase.as_deref().unwrap_or("work"))
     }
 
-    /// The offer the face is holding open, if settings have arrived.
     fn current_offer(&self) -> Option<Offer> {
         let snap = self.snapshot.as_ref()?;
         let settings = self.settings.as_ref()?;
         offer_for(snap, settings, jiff::Timestamp::now())
     }
 
-    /// The reclaim list's preselected row, from the `idle_default_reclaim`
-    /// knob. Trim (the safe pick) when settings haven't arrived.
     fn default_reclaim_row(&self) -> usize {
         match self
             .settings
@@ -356,13 +275,8 @@ impl Timer {
         }
     }
 
-    /// While the bind panel is open, the screen owns every key (a live search):
-    /// characters filter, arrows pick, Enter binds/creates, Esc closes. This
-    /// runs before the global keymap, so the timer keeps running untouched.
-    ///
-    /// On the live face the screen also claims `Space` as pause ⇄ resume (the
-    /// design's `SPC`), so the leader is unavailable only while a clock runs on
-    /// this screen — navigation still has `h`, `t`, and the `:` verbs.
+    /// On the live face `Space` is pause ⇄ resume, which shadows the `<Space>`
+    /// leader while a clock runs here — navigation still has `h`, `t` and `:`.
     pub fn intercept_key(&mut self, key: KeyEvent) -> Option<Action> {
         let Some(panel) = self.panel.as_ref() else {
             if key.code == KeyCode::Char(' ') && matches!(self.stage, Stage::Live) {
@@ -370,8 +284,6 @@ impl Timer {
             }
             return None;
         };
-        // The reclaim list is a plain chooser, not a live search: j/k move,
-        // ⏎ applies, Esc defers — typing does nothing.
         if matches!(panel, Panel::Reclaim { .. }) {
             return match key.code {
                 KeyCode::Esc => Some(Action::TimerBindCancel),
@@ -381,11 +293,6 @@ impl Timer {
                 _ => None,
             };
         }
-        // The reconcile panel: the same plain-chooser grammar, plus `b` for
-        // keep-both. Esc defers — the divergence stands and the panel reopens
-        // on the next poll, exactly the reclaim list's deferral idiom.
-        // The rejected-write face has no sides: its gestures are the design's
-        // `e` edit / `x` drop / `s` skip, and Esc still defers.
         if let Panel::Reconcile { intent, .. } = panel {
             if rejected_write(intent) {
                 return match key.code {
@@ -425,27 +332,18 @@ impl Timer {
         api: &ApiClient,
         tx: &UnboundedSender<Action>,
     ) -> Option<(Level, String)> {
-        // A discard confirm is strictly two consecutive `d`s — anything else
-        // disarms it.
         if self.discard_armed && !matches!(action, Action::TimerDiscard) {
             self.discard_armed = false;
         }
-        // The rejected-write drop confirm is strictly two consecutive `x`s the
-        // same way — any other gesture disarms it.
         if !matches!(action, Action::TimerReconcileDrop) {
             if let Some(Panel::Reconcile { confirm_drop, .. }) = self.panel.as_mut() {
                 *confirm_drop = false;
             }
         }
         match action {
-            // Snapshot update (from on_enter, the header poll, or a completed
-            // op). A pending stop confirmation is preserved — the user hasn't
-            // acknowledged the written segment yet.
             Action::TimerLoaded(t) => {
-                // Every landed snapshot re-checks the queue for a waiting
-                // divergence — the reconcile panel follows the queue file, so
-                // it opens after a halted drain and closes after a headless
-                // resolve, without its own polling loop.
+                // The reconcile panel follows the queue file this way rather
+                // than running its own polling loop.
                 spawn_diverged_check(tx, self.queue_paths.clone());
                 if matches!(self.stage, Stage::Stopped { .. }) {
                     return None;
@@ -456,14 +354,9 @@ impl Timer {
                 } else {
                     Stage::Absent
                 };
-                // A background poll must not close the start picker mid-browse;
-                // the bind panel closes once its job is done (bound or gone).
                 if matches!(self.panel, Some(Panel::Bind { .. })) && (t.bound || !t.running) {
                     self.close_panel();
                 }
-                // The idle guard: a quiet clock opens the reclaim list (the
-                // default verb from settings preselected); a read that is no
-                // longer idle closes it — the decision landed elsewhere.
                 match (t.idle == Some(true) && t.running, &self.panel) {
                     (true, None) => {
                         self.panel = Some(Panel::Reclaim {
@@ -475,13 +368,8 @@ impl Timer {
                 }
                 self.base = Some(Instant::now());
                 self.snapshot = Some(t);
-                // A live read is server truth — the clock is confirmed again.
                 self.provisional = false;
             }
-            // The offline twin of `TimerLoaded`: a queued write's synthesized
-            // clock. The screen keeps it (unlike the header-only `TimerStale`)
-            // and flips the provisional marker on. A pending stop confirmation
-            // is preserved, exactly as `TimerLoaded` guards it.
             Action::TimerProvisional(t) => {
                 if matches!(self.stage, Stage::Stopped { .. }) {
                     return None;
@@ -492,8 +380,6 @@ impl Timer {
                 } else {
                     Stage::Absent
                 };
-                // A landed bind closes the picker (bound now); a discard that
-                // left nothing running closes it too.
                 if matches!(self.panel, Some(Panel::Bind { .. })) && (t.bound || !t.running) {
                     self.close_panel();
                 }
@@ -501,10 +387,6 @@ impl Timer {
                 self.snapshot = Some(t);
                 self.provisional = true;
             }
-            // The queue check landed. A waiting divergence opens the reconcile
-            // panel (never stealing an already-open picker mid-gesture — it
-            // reopens on the next poll); a cleared one closes a stale panel,
-            // e.g. after a headless `engineer queue resolve`.
             Action::TimerDivergedLoaded(found) => match (found, &mut self.panel) {
                 (Some(intent), None) => {
                     self.panel = Some(Panel::Reconcile {
@@ -517,10 +399,6 @@ impl Timer {
                 (None, Some(Panel::Reconcile { .. })) => self.close_panel(),
                 _ => {}
             },
-            // `b` on the reconcile panel: keep both — the local session is
-            // written via create_segment, the server session stands. Only the
-            // session family has two sessions to keep; a diverged stop has one
-            // segment at stake, so it says so instead.
             Action::TimerReconcileBoth => {
                 if let Some(Panel::Reconcile { intent, .. }) = self.panel.as_ref() {
                     if matches!(intent.kind, IntentKind::TimerStop { .. }) {
@@ -534,9 +412,6 @@ impl Timer {
                     spawn_resolve(api, tx, self.queue_paths.clone(), id, Resolution::KeepBoth);
                 }
             }
-            // `e` on the rejected-write face: hand the payload's editable
-            // lines to the run loop's $EDITOR hand-off. The panel stays —
-            // the intent is still diverged until the saved buffer applies.
             Action::TimerReconcileEdit => {
                 if let Some(Panel::Reconcile { intent, .. }) = self.panel.as_ref() {
                     match crate::queue::edit_seed(intent) {
@@ -555,14 +430,10 @@ impl Timer {
                     }
                 }
             }
-            // The saved $EDITOR buffer: parse it back, re-pend the intent,
-            // retry the drain — all off the reducer thread.
             Action::TimerReconcileEditApply { intent_id, buffer } => {
                 self.close_panel();
                 spawn_edit_apply(api, tx, self.queue_paths.clone(), intent_id, buffer);
             }
-            // `x` on the rejected-write face: armed, then confirmed — the
-            // queue's one user-chosen delete is never a single keystroke.
             Action::TimerReconcileDrop => {
                 if let Some(Panel::Reconcile {
                     intent,
@@ -591,8 +462,6 @@ impl Timer {
                     );
                 }
             }
-            // `s` on the rejected-write face: skip — parked (kept, reviewed
-            // later), and the stream behind it keeps syncing.
             Action::TimerReconcileSkip => {
                 if let Some(Panel::Reconcile { intent, .. }) = self.panel.as_ref() {
                     if !rejected_write(intent) {
@@ -610,23 +479,18 @@ impl Timer {
                 }
             }
             Action::TimerReload => spawn_load(api, tx),
-            // `s` — stage-dependent primary: open the start picker when
-            // absent, end & save when bound, and the bind-first warning when
-            // unbound (the full bind-at-stop flow is its own ticket).
             Action::TimerSave => match self.stage {
                 Stage::Absent => self.open_start_panel(api, tx),
                 Stage::Live => {
                     if self.snapshot.as_ref().is_some_and(|s| s.bound) {
                         spawn_stop(api, tx, self.queue_paths.clone());
                     } else {
-                        // §Bind at stop: freeze the clock and name it to save it.
                         self.open_bind_at_stop(api, tx);
                     }
                 }
                 _ => {}
             },
             Action::TimerToggleRail => self.rail_hidden = !self.rail_hidden,
-            // `m` — stopwatch ⇄ focus in place; elapsed is preserved.
             Action::TimerModeSwitch => match self.snapshot.as_ref() {
                 Some(snap) if snap.running => {
                     let target = if snap.mode.as_deref() == Some("focus") {
@@ -643,17 +507,11 @@ impl Timer {
                     ));
                 }
             },
-            // `n` — bank the interval and arm the next: work → break → work
-            // (interval credit is the work→break edge). On a break it simply
-            // returns to work early.
             Action::TimerSkipInterval => match self.focus_phase() {
                 Some("work") => spawn_skip_interval(api, tx),
                 Some("break") => spawn_phase(api, tx, "work"),
                 _ => {}
             },
-            // `b` — the phase toggle in focus (break now / back to work); in
-            // stopwatch it keeps its bind meaning: the bind panel when
-            // unbound, the start picker when bound.
             Action::TimerBreak => match self.focus_phase() {
                 Some("work") => spawn_phase(api, tx, "break"),
                 Some("break") => spawn_phase(api, tx, "work"),
@@ -685,8 +543,6 @@ impl Timer {
             }
             Action::TimerUndo => {
                 if let Stage::Stopped { result, .. } = &self.stage {
-                    // A queued stop has no server segment to delete yet — the
-                    // undo is unavailable until it syncs.
                     if result.segment_id >= 0 {
                         spawn_undo(api, tx, result.activity_id, result.segment_id);
                     }
@@ -719,8 +575,6 @@ impl Timer {
                     .as_ref()
                     .map(|s| live_elapsed(s, self.base))
                     .unwrap_or(0);
-                // Past ~2 minutes real work is at stake: ask twice (§Saved &
-                // undo). A mis-tap discards instantly.
                 if elapsed > DISCARD_CONFIRM_SECS && !self.discard_armed {
                     self.discard_armed = true;
                     return Some((
@@ -735,9 +589,6 @@ impl Timer {
                 spawn_discard(api, tx, self.queue_paths.clone());
             }
             Action::TimerBindBegin => match self.stage {
-                // Unbound: name the running timer in place. Bound: open the
-                // start picker in switch context (§Start conflict). Absent:
-                // the same picker `s` opens.
                 Stage::Live => {
                     if self.snapshot.as_ref().is_some_and(|s| !s.bound) {
                         self.open_panel(
@@ -755,27 +606,22 @@ impl Timer {
                 Stage::Absent => self.open_start_panel(api, tx),
                 _ => {}
             },
-            Action::TimerBindCancel => {
-                // Esc steps back one level: a pending switch-confirm first,
-                // then the panel itself. Leaving bind-at-stop resumes only
-                // what the panel froze.
-                match self.panel.as_mut() {
-                    Some(Panel::Start { confirm, .. }) if confirm.is_some() => {
-                        *confirm = None;
-                        return None;
-                    }
-                    Some(Panel::Bind {
-                        save_on_bind: true,
-                        froze,
-                    }) => {
-                        if *froze {
-                            spawn_op(api, tx, self.queue_paths.clone(), TimerOp::Resume);
-                        }
-                        self.close_panel();
-                    }
-                    _ => self.close_panel(),
+            Action::TimerBindCancel => match self.panel.as_mut() {
+                Some(Panel::Start { confirm, .. }) if confirm.is_some() => {
+                    *confirm = None;
+                    return None;
                 }
-            }
+                Some(Panel::Bind {
+                    save_on_bind: true,
+                    froze,
+                }) => {
+                    if *froze {
+                        spawn_op(api, tx, self.queue_paths.clone(), TimerOp::Resume);
+                    }
+                    self.close_panel();
+                }
+                _ => self.close_panel(),
+            },
             Action::TimerPickerToggleMode => {
                 if let Some(Panel::Start { mode, .. }) = self.panel.as_mut() {
                     *mode = match mode {
@@ -799,7 +645,6 @@ impl Timer {
                     let next = (*selected as i32 + delta).clamp(0, RECLAIM_ROWS as i32 - 1);
                     *selected = next as usize;
                 }
-                // Two sides: local (0) and server (1).
                 Some(Panel::Reconcile { selected, .. }) => {
                     *selected = (*selected as i32 + delta).clamp(0, 1) as usize;
                 }
@@ -840,7 +685,6 @@ impl Timer {
             }
             Some(Panel::Start { mode, confirm }) => {
                 let focus = *mode == PickerMode::Focus;
-                // Second ⏎ on the conflict banner: stop & save, then start.
                 if let Some(picked) = confirm.take() {
                     self.close_panel();
                     spawn_start_switch(api, tx, self.queue_paths.clone(), picked.id, focus);
@@ -849,7 +693,6 @@ impl Timer {
                 let running = self.snapshot.as_ref().is_some_and(|s| s.running);
                 match self.start_target() {
                     Some(StartTarget::Candidate(picked)) if running => {
-                        // One timer at a time — surface the conflict banner.
                         if let Some(Panel::Start { confirm, .. }) = self.panel.as_mut() {
                             *confirm = Some(picked);
                         }
@@ -877,19 +720,12 @@ impl Timer {
                     0 => spawn_reclaim(api, tx, ReclaimVerb::Trim),
                     1 => spawn_reclaim(api, tx, ReclaimVerb::Keep),
                     2 => spawn_reclaim(api, tx, ReclaimVerb::Stop),
-                    // The discard escape rides the normal discard flow —
-                    // including its two-press confirm past the fence.
                     _ => {
                         let _ = tx.send(Action::TimerDiscard);
                     }
                 }
                 None
             }
-            // ⏎ keeps the highlighted side: local re-asserts the gesture on
-            // the server (switch / create_segment), server parks the local
-            // intents for review — never a delete either way. The rejected-
-            // write face has no sides, so ⏎ never reaches here for it (its
-            // keys are e/x/s).
             Some(Panel::Reconcile {
                 intent, selected, ..
             }) => {
@@ -929,8 +765,6 @@ impl Timer {
         );
     }
 
-    /// §Bind at stop: freeze the clock (pause, unless already paused) and open
-    /// the bind picker with save-on-bind armed. Esc resumes what was frozen.
     fn open_bind_at_stop(&mut self, api: &ApiClient, tx: &UnboundedSender<Action>) {
         let already_paused = self.snapshot.as_ref().is_some_and(|s| s.paused);
         if !already_paused {
@@ -952,10 +786,7 @@ impl Timer {
         self.candidates.clear();
     }
 
-    /// Extra synthetic rows after the candidates, by panel: the bind panel
-    /// offers "create" when a title is typed; the start picker adds "create"
-    /// and "just start" only while nothing runs (in switch context the list
-    /// is candidates-only).
+    /// The synthetic `(create, just start)` rows after the candidates.
     fn extra_rows(&self) -> (bool, bool) {
         let has_query = !self.query.trim().is_empty();
         let running = self.snapshot.as_ref().is_some_and(|s| s.running);
@@ -1029,15 +860,11 @@ impl Timer {
         ])
     }
 
-    /// The watch face (§Timer hero / §Paused): state label, the big number,
-    /// context, activity — vertically centered, with the instrument rail on
-    /// the right unless folded away with `i`.
     fn render_watch_face(&self, frame: &mut Frame, area: Rect) {
         let block = bordered("Timer");
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        // Rail only when there's room for both the face and the instruments.
         let (face_area, rail_area) = if !self.rail_hidden && inner.width >= 64 {
             let cols = Layout::default()
                 .direction(Direction::Horizontal)
@@ -1055,16 +882,13 @@ impl Timer {
         let secs = live_elapsed(snap, self.base);
         let focus = snap.mode.as_deref() == Some("focus");
         let on_break = focus && snap.phase.as_deref() == Some("break");
-        // 1-based: the interval being worked now. The round length is a
-        // settings knob with no API, so no "of N" is claimed.
+        // No "of N": the round length has no API to read it from.
         let interval_now = snap.intervals_completed.unwrap_or(0) + 1;
 
         let idle = snap.idle == Some(true);
         let offer = self.current_offer();
 
         let mut lines: Vec<Line<'static>> = Vec::new();
-        // The provisional marker (§Offline): the shown clock is a queued write,
-        // real to you but not yet confirmed by the server.
         if self.provisional {
             lines.push(Line::from(Span::styled(
                 "◔  QUEUED — will sync when you reconnect",
@@ -1073,10 +897,7 @@ impl Timer {
                     .add_modifier(Modifier::BOLD),
             )));
         }
-        // State label above the number.
         lines.push(if idle {
-            // Reclaim was deferred with Esc — the face says the guard is
-            // still waiting (the list reopens on the next poll).
             Line::from(Span::styled(
                 "◐  IDLE — RECLAIM PENDING",
                 Style::default()
@@ -1138,8 +959,6 @@ impl Timer {
         });
         lines.push(Line::from(""));
 
-        // The big number — muted while not counting, amber past the plan,
-        // accent while counting.
         let digit_style = if paused || on_break {
             Style::default()
                 .fg(theme::MUTED)
@@ -1156,7 +975,6 @@ impl Timer {
         lines.extend(big_time_lines(&widgets::fmt_elapsed(secs), digit_style));
         lines.push(Line::from(""));
 
-        // Context under the number.
         if paused {
             lines.push(Line::from(Span::styled(
                 "frozen · the paused gap is excluded from the total",
@@ -1219,7 +1037,6 @@ impl Timer {
         }
         lines.push(Line::from(""));
 
-        // The activity line.
         if snap.bound {
             let label = snap.label.clone().unwrap_or_default();
             lines.push(Line::from(Span::styled(
@@ -1239,7 +1056,6 @@ impl Timer {
             )));
         }
 
-        // Vertical centering: pad above with empty rows.
         let content_h = lines.len() as u16;
         let pad = face_area.height.saturating_sub(content_h) / 2;
         let mut padded: Vec<Line<'static>> = (0..pad).map(|_| Line::from("")).collect();
@@ -1254,9 +1070,6 @@ impl Timer {
         }
     }
 
-    /// The instrument rail. Focus instruments (interval gauge, pomodoro ticks)
-    /// arrive with the focus display ticket; today's total is the one
-    /// instrument the stopwatch face has data for.
     fn render_rail(&self, frame: &mut Frame, area: Rect) {
         let block = ratatui::widgets::Block::default()
             .borders(ratatui::widgets::Borders::LEFT)
@@ -1266,9 +1079,7 @@ impl Timer {
 
         let mut lines: Vec<Line<'static>> = Vec::new();
 
-        // POMODORO — focus only: banked intervals green, the live one accent.
-        // No empty remainder dots: the round length is a settings knob with no
-        // API to read it from.
+        // No empty remainder dots: the round length has no API to read it from.
         if let Some(snap) = self
             .snapshot
             .as_ref()
@@ -1295,8 +1106,6 @@ impl Timer {
             lines.push(Line::from(""));
         }
 
-        // THIS WEEK — the mon→sun sparkline over the progress by_day series;
-        // absent on servers without it (the block degrades to TODAY below).
         if !self.week.is_empty() {
             let today = jiff::Zoned::now().date();
             let max = self
@@ -1353,14 +1162,10 @@ impl Timer {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
-        // The reconcile panel outranks everything — the one loud state; a
-        // divergence is a surfaced choice, never background noise.
         if matches!(self.panel, Some(Panel::Reconcile { .. })) {
             self.render_reconcile_panel(frame, area);
             return;
         }
-        // The start picker overlays whichever stage it was opened from
-        // (Absent, or Live in switch context).
         if matches!(self.panel, Some(Panel::Start { .. })) {
             self.render_start_panel(frame, area);
             return;
@@ -1390,8 +1195,6 @@ impl Timer {
                 let activity = label
                     .clone()
                     .unwrap_or_else(|| format!("activity #{}", result.activity_id));
-                // A queued stop (§Offline): the segment is real to you but not
-                // yet written server-side, so there is no id and no undo yet.
                 let queued = result.segment_id < 0;
                 let heading = if queued {
                     Line::from(Span::styled(
@@ -1461,9 +1264,6 @@ impl Timer {
         }
     }
 
-    /// The §Start-a-timer picker: mode toggle, live search, the synthetic
-    /// create / just-start rows — and the §Start-conflict banner when a timer
-    /// is already running.
     fn render_start_panel(&mut self, frame: &mut Frame, area: Rect) {
         let block = bordered("Start a timer");
         let inner = block.inner(area);
@@ -1474,7 +1274,6 @@ impl Timer {
             _ => return,
         };
 
-        // The conflict banner replaces the list: one decision, two keys.
         if let Some(picked) = confirm {
             let current = self
                 .snapshot
@@ -1590,9 +1389,6 @@ impl Timer {
         frame.render_stateful_widget(list, rows[1], &mut self.cand_state);
     }
 
-    /// §Idle reclaim: what was the idle tail worth? One row per server verb,
-    /// captions computed from the read (`last_interacted_at` anchors the
-    /// span). Nothing is written until ⏎.
     fn render_reclaim_panel(&mut self, frame: &mut Frame, area: Rect) {
         let block = bordered("Welcome back — the clock went quiet");
         let inner = block.inner(area);
@@ -1707,14 +1503,6 @@ impl Timer {
         frame.render_widget(Paragraph::new(lines), inner);
     }
 
-    /// §Diverged (session elsewhere / clock drift): full-row danger treatment
-    /// — a red frame, the local intent's identity (verb word, queued age), and
-    /// two sides picked with the shipped `▌` selection. The coded conflicts
-    /// (engineer#806) enrich the server side: `timer-already-running` renders
-    /// the actual server session from `current` (label, elapsed, paused) so
-    /// the pick is informed, and `no-live-timer` says plainly that the session
-    /// is gone. A code-less problem renders the objection verbatim, exactly as
-    /// the generic fallback always did.
     fn render_reconcile_panel(&mut self, frame: &mut Frame, area: Rect) {
         let Some(Panel::Reconcile {
             intent,
@@ -1767,8 +1555,6 @@ impl Timer {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        // The local side's clock: a diverged stop carries its own gestured
-        // elapsed; the session family shows the running local clock.
         let local_clock = match &intent.kind {
             IntentKind::TimerStop {
                 local_elapsed_s, ..
@@ -1807,10 +1593,6 @@ impl Timer {
             ])
         };
 
-        // The server side: the coded conflict's `current` snapshot when the
-        // server has a session to show, the plain "gone" statement on
-        // `no-live-timer`, the objection verbatim otherwise (the generic
-        // fallback, unchanged).
         let objection = format!("{status} {title}");
         let (server_text, server_caption) = if gone {
             (
@@ -1832,9 +1614,8 @@ impl Timer {
                 })
                 .unwrap_or_else(|| "—".into());
             if current.paused {
-                // No paused-spans arithmetic rides the snapshot, so a paused
-                // server clock shows its anchor, never a number that counts
-                // the frozen gap.
+                // The conflict snapshot carries no paused spans, so there is
+                // no honest elapsed to show.
                 (
                     format!("server   ‖ paused   {server_label}"),
                     format!("paused on the server · started {since}"),
@@ -1878,8 +1659,6 @@ impl Timer {
             side(1, server_text, server_caption),
             Line::from(""),
         ];
-        // The server's resolution hints, mapped onto the panel's gestures —
-        // `switch` is this panel's keep-local, `keep-remote` its take-server.
         if already_running && !conflict.resolutions.is_empty() {
             let mapped: Vec<String> = conflict
                 .resolutions
@@ -1993,9 +1772,6 @@ impl Timer {
                     ("Esc", "decide later"),
                 ]);
             }
-            // The reconcile gestures the design panels advertise; `b` only
-            // where there are two sessions to keep, and the rejected-write
-            // face's own three (§Diverged · rejected segment).
             Some(Panel::Reconcile { intent, .. }) => {
                 if rejected_write(intent) {
                     return widgets::footer_hints(&[
@@ -2025,7 +1801,6 @@ impl Timer {
         match &self.stage {
             Stage::Loading => widgets::footer_hints(&[("h", "home")]),
             Stage::Absent => widgets::footer_hints(&[("s", "start"), ("h", "home")]),
-            // A queued stop has no server segment to undo yet — drop the `u`.
             Stage::Stopped { result, .. } if result.segment_id < 0 => {
                 widgets::footer_hints(&[("↵", "dismiss"), ("h", "home")])
             }
@@ -2093,10 +1868,6 @@ impl Timer {
     }
 }
 
-/// §Diverged · rejected segment (#109): the rejected-write face of the
-/// reconcile panel. No sides to pick — the refused write's own identity
-/// (times, minutes, target), the server's objection verbatim, and the three
-/// gestures: `e` edit times, `x` drop (confirmed), `s` skip & keep queued.
 fn render_rejected_write(
     frame: &mut Frame,
     area: Rect,
@@ -2125,7 +1896,6 @@ fn render_rejected_write(
             .strftime("%H:%M")
             .to_string()
     };
-    // The refused write's own identity — what the user gestured, verbatim.
     let (what, caption) = match &intent.kind {
         IntentKind::SegmentCreate {
             activity_id,
@@ -2193,9 +1963,6 @@ fn render_rejected_write(
     );
 }
 
-/// The watch-face digit font: 5 rows tall, `█`-on-space, one column of gap
-/// between glyphs (the kit's block-digit idiom — weight and colour only, one
-/// font size).
 fn big_glyph(c: char) -> [&'static str; 5] {
     match c {
         '0' => ["█████", "█   █", "█   █", "█   █", "█████"],
@@ -2235,8 +2002,6 @@ fn fmt_minutes(minutes: u32) -> String {
     }
 }
 
-/// `42s` · `7m` · `3h` · `2d` — the queued-intent age the reconcile panel
-/// prints, matching `engineer queue`'s one-glance ages.
 fn fmt_age(secs: i64) -> String {
     match secs {
         s if s < 60 => format!("{s}s"),
@@ -2246,16 +2011,11 @@ fn fmt_age(secs: i64) -> String {
     }
 }
 
-/// Timer ops that resolve to a fresh snapshot (`TimerLoaded`).
 enum TimerOp {
     Pause,
     Resume,
 }
 
-/// Forward a queued write's outcome to the reducer: a confirmed write lands as a
-/// live snapshot (`TimerLoaded`), a queued one as the provisional twin
-/// (`TimerProvisional`, the `◔` marker), and any non-transport error keeps
-/// today's notify-tile semantics.
 fn forward_write(
     tx: &UnboundedSender<Action>,
     result: Result<WriteOutcome<TimerSnapshot>, ApiError>,
@@ -2277,8 +2037,6 @@ fn forward_write(
     }
 }
 
-/// Today's logged minutes for the rail — the same today-window read the Home
-/// screen uses, reduced to one number.
 fn spawn_today(api: &ApiClient, tx: &UnboundedSender<Action>) {
     use jiff::{civil::Date, ToSpan, Zoned};
 
@@ -2301,9 +2059,6 @@ fn spawn_today(api: &ApiClient, tx: &UnboundedSender<Action>) {
                 let total: u32 = list.data.iter().filter_map(|a| a.duration_minutes).sum();
                 let _ = tx.send(Action::TimerTodayLoaded(total));
             }
-            // A 401 is a session problem — route to re-auth. Any other error
-            // leaves the rail's number stale rather than tiling noise for a
-            // background read.
             Err(ApiError::Unauthorized) => {
                 let _ = tx.send(Action::SessionExpired);
             }
@@ -2319,12 +2074,9 @@ fn spawn_load(api: &ApiClient, tx: &UnboundedSender<Action>) {
             Ok(t) => {
                 let _ = tx.send(Action::TimerLoaded(Box::new(t)));
             }
-            // A 401 is a session problem, not a timer problem — route to re-auth.
             Err(ApiError::Unauthorized) => {
                 let _ = tx.send(Action::SessionExpired);
             }
-            // The tile copy is spelled once (§C) so it matches the catalogue and
-            // the headless `engineer timer` stderr word for word.
             Err(e) => {
                 let _ = tx.send(Action::Notify {
                     level: Level::Error,
@@ -2338,9 +2090,7 @@ fn spawn_load(api: &ApiClient, tx: &UnboundedSender<Action>) {
     });
 }
 
-/// The picker's Focus choice: `start_timer` has no mode param, so a focus
-/// start is start + mode switch. A refused hop keeps the stopwatch start and
-/// says so.
+/// `start_timer` takes no mode, so a focus start is a start plus a mode hop.
 async fn into_mode(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
@@ -2379,8 +2129,7 @@ fn spawn_start_blank(
                 let t = into_mode(&api, &tx, t, focus).await;
                 let _ = tx.send(Action::TimerLoaded(Box::new(t)));
             }
-            // Offline: the queued start is a stopwatch — the focus mode hop is
-            // a live-only call, not one of the offline verbs.
+            // The mode hop is live-only; a queued start stays a stopwatch.
             Ok(WriteOutcome::Provisional(t)) => {
                 let _ = tx.send(Action::TimerProvisional(Box::new(t)));
             }
@@ -2389,8 +2138,8 @@ fn spawn_start_blank(
     });
 }
 
-/// Start bound to an existing activity (no switch — a running timer should
-/// have routed through the conflict banner first; a racing 409 still surfaces).
+/// No `switch`: a running timer goes through the conflict banner first, and a
+/// racing 409 still surfaces.
 fn spawn_start_bound(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
@@ -2417,8 +2166,6 @@ fn spawn_start_bound(
     });
 }
 
-/// The conflict banner's second ⏎: stop & save the running timer server-side,
-/// then start the picked one.
 fn spawn_start_switch(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
@@ -2432,8 +2179,6 @@ fn spawn_start_switch(
             Ok(q) => q,
             Err(e) => return notify_seam_error(&tx, "stop & switch failed", e),
         };
-        // `switch` rides the intent, so an offline switch replays as stop & save
-        // then start — the same server verb, deferred.
         match queued.start_timer(Some(activity_id), true).await {
             Ok(WriteOutcome::Confirmed(t)) => {
                 let t = into_mode(&api, &tx, t, focus).await;
@@ -2447,9 +2192,7 @@ fn spawn_start_switch(
     });
 }
 
-/// The "＋ new activity" row: a blank start followed by a bind-with-title —
-/// the same call pair the bind panel uses, so the server mints the activity.
-/// Offline, both halves queue: the replay creates the activity, then binds.
+/// A blank start, then a bind-with-title, so the server mints the activity.
 fn spawn_create_and_start(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
@@ -2470,7 +2213,6 @@ fn spawn_create_and_start(
                     let _ = tx.send(Action::TimerLoaded(Box::new(t)));
                 }
                 Err(e) => {
-                    // The clock is running but unnamed — say so, don't hide it.
                     let _ = tx.send(Action::TimerReload);
                     let _ = tx.send(Action::Notify {
                         level: Level::Warning,
@@ -2479,7 +2221,6 @@ fn spawn_create_and_start(
                 }
             },
             Ok(WriteOutcome::Provisional(started)) => {
-                // Offline: queue the name too so the provisional face reads bound.
                 match queued.bind_timer(None, Some(title)).await {
                     Ok(out) => {
                         let _ = tx.send(Action::TimerProvisional(Box::new(out.into_value())));
@@ -2517,12 +2258,12 @@ fn spawn_stop(api: &ApiClient, tx: &UnboundedSender<Action>, paths: QueuePaths) 
             Err(e) => return notify_seam_error(&tx, "stop failed", e),
         };
         match queued.stop_timer().await {
-            // The confirmation view reads `segment_id < 0` to render the queued
-            // stop; a live stop carries the real, server-minted id.
+            // A queued stop carries a negative `segment_id`; the confirmation
+            // view keys on it.
             Ok(out) => {
                 let _ = tx.send(Action::TimerStopped(Box::new(out.into_value())));
-                // Clear the header cell without disturbing the screen's
-                // confirmation view (TimerCleared is app-only).
+                // `TimerCleared` is app-only: it clears the header cell without
+                // disturbing the screen's confirmation view.
                 let _ = tx.send(Action::TimerCleared);
             }
             Err(e) => notify_seam_error(&tx, "stop failed", e),
@@ -2538,19 +2279,14 @@ fn spawn_discard(api: &ApiClient, tx: &UnboundedSender<Action>, paths: QueuePath
             Err(e) => return notify_seam_error(&tx, "discard failed", e),
         };
         match queued.discard_timer().await {
-            Ok(WriteOutcome::Confirmed(_)) => {
-                // Re-fetch so the screen lands on Absent and the header clears.
-                match api.timer().await {
-                    Ok(t) => {
-                        let _ = tx.send(Action::TimerLoaded(Box::new(t)));
-                    }
-                    Err(_) => {
-                        let _ = tx.send(Action::TimerCleared);
-                    }
+            Ok(WriteOutcome::Confirmed(_)) => match api.timer().await {
+                Ok(t) => {
+                    let _ = tx.send(Action::TimerLoaded(Box::new(t)));
                 }
-            }
-            // Offline: discarded locally (nothing running), queued. The screen
-            // goes Absent; the header clears.
+                Err(_) => {
+                    let _ = tx.send(Action::TimerCleared);
+                }
+            },
             Ok(WriteOutcome::Provisional(t)) => {
                 let _ = tx.send(Action::TimerProvisional(Box::new(t)));
                 let _ = tx.send(Action::TimerCleared);
@@ -2580,9 +2316,8 @@ fn spawn_bind(
     });
 }
 
-/// §Bind at stop's ⏎: bind (existing or minted-from-title), then stop — the
-/// server's bound-only save with the picker in between. The bind result is
-/// forwarded first so the stop confirmation can name the activity.
+/// The bind result is forwarded before the stop so the confirmation can name
+/// the activity.
 fn spawn_bind_then_stop(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
@@ -2624,9 +2359,6 @@ fn spawn_bind_then_stop(
     });
 }
 
-/// Apply a reclaim verb. Trim/keep resolve to a fresh running snapshot; stop
-/// resolves to the written segment (the same confirmation + undo as a normal
-/// stop).
 fn spawn_reclaim(api: &ApiClient, tx: &UnboundedSender<Action>, verb: ReclaimVerb) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
@@ -2656,7 +2388,6 @@ fn spawn_reclaim(api: &ApiClient, tx: &UnboundedSender<Action>, verb: ReclaimVer
     });
 }
 
-/// Drive a focus phase transition; the fresh snapshot lands as TimerLoaded.
 fn spawn_phase(api: &ApiClient, tx: &UnboundedSender<Action>, to: &'static str) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
@@ -2674,8 +2405,6 @@ fn spawn_phase(api: &ApiClient, tx: &UnboundedSender<Action>, to: &'static str) 
     });
 }
 
-/// `n` mid-work: bank the interval (work → break credits it) and immediately
-/// arm the next work phase — the skip is the pair, not a server verb.
 fn spawn_skip_interval(api: &ApiClient, tx: &UnboundedSender<Action>) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
@@ -2705,7 +2434,6 @@ fn spawn_skip_interval(api: &ApiClient, tx: &UnboundedSender<Action>) {
     });
 }
 
-/// Switch the running timer's mode in place (elapsed preserved).
 fn spawn_mode(api: &ApiClient, tx: &UnboundedSender<Action>, mode: &'static str) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
@@ -2723,11 +2451,8 @@ fn spawn_mode(api: &ApiClient, tx: &UnboundedSender<Action>, mode: &'static str)
     });
 }
 
-/// Read the queue for the first diverged intent and report it (or its absence)
-/// to the reducer — the reconcile panel opens, refreshes, or closes from this.
-/// A plain file read, spawned so the reducer never blocks on the store; an
-/// unreadable queue reads as no divergence here (`engineer queue` is the loud
-/// surface for that).
+/// Spawned so the reducer never blocks on the store. An unreadable queue reads
+/// as no divergence here; `engineer queue` is where that is loud.
 fn spawn_diverged_check(tx: &UnboundedSender<Action>, paths: QueuePaths) {
     let tx = tx.clone();
     tokio::spawn(async move {
@@ -2746,12 +2471,8 @@ fn spawn_diverged_check(tx: &UnboundedSender<Action>, paths: QueuePaths) {
     });
 }
 
-/// Apply a reconcile-panel resolution through the shared `queue::resolve`
-/// engine — the same one `engineer queue resolve` calls, so the gesture and
-/// the flag cannot drift. A keep-local/keep-both unblocks the queue, so the
-/// drain continues behind the choice, streaming the shipped reconnect
-/// transcript; a failure keeps the intent diverged and says so (the panel
-/// reopens on the next poll).
+/// Through the same `queue::resolve` engine `engineer queue resolve` calls, so
+/// the gesture and the flag cannot drift.
 fn spawn_resolve(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
@@ -2786,8 +2507,6 @@ fn spawn_resolve(
                     level: Level::Success,
                     text,
                 });
-                // Continue the drain behind the choice (skips instantly when
-                // take-server parked everything).
                 let tx2 = tx.clone();
                 if let Some(report) = queued
                     .drain_reporting(|intent| {
@@ -2812,18 +2531,14 @@ fn spawn_resolve(
     });
 }
 
-/// The rejected-write gestures that act on the store alone (#109): drop
-/// (explicit, already confirmed by the second `x`) and skip (park).
 #[derive(Clone, Copy)]
 enum RejectGesture {
     Drop,
     Skip,
 }
 
-/// Apply a drop/skip to the rejected write through the shared `queue`
-/// gestures — the same functions `engineer queue resolve --drop/--skip`
-/// calls. Both unblock the intent's stream, so the drain continues behind
-/// the choice, streaming the shipped reconnect transcript.
+/// Through the same `queue` functions `engineer queue resolve --drop/--skip`
+/// calls.
 fn spawn_reject_gesture(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
@@ -2875,10 +2590,6 @@ fn spawn_reject_gesture(
     });
 }
 
-/// Apply a saved $EDITOR buffer to the rejected write (`queue::apply_edit`):
-/// the corrected payload re-pends and the drain retries it immediately. A
-/// buffer that doesn't parse refuses loudly and the intent stays diverged —
-/// the panel reopens on the next poll.
 fn spawn_edit_apply(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
@@ -2916,8 +2627,6 @@ fn spawn_edit_apply(
     });
 }
 
-/// The store the reject gestures mutate — the screen's injected scratch paths
-/// in tests, the shared XDG queue in production.
 fn queue_store(paths: &QueuePaths) -> Result<QueueStore, crate::queue::QueueError> {
     match paths {
         Some((queue, _)) => Ok(QueueStore::at(queue.clone())),
@@ -2925,9 +2634,8 @@ fn queue_store(paths: &QueuePaths) -> Result<QueueStore, crate::queue::QueueErro
     }
 }
 
-/// Continue the drain behind a resolved choice, streaming the shipped
-/// reconnect transcript (`ReplayProgress` per landed intent, the report
-/// tile at the end) — the same tail `spawn_resolve` runs.
+/// Continue the drain behind a resolved choice, streaming the reconnect
+/// transcript.
 async fn drain_behind(queued: &crate::queue::QueuedClient, tx: &UnboundedSender<Action>) {
     let tx2 = tx.clone();
     if let Some(report) = queued
@@ -2942,8 +2650,6 @@ async fn drain_behind(queued: &crate::queue::QueuedClient, tx: &UnboundedSender<
     }
 }
 
-/// The week's per-day minutes for the rail's sparkline — the current week's
-/// progress read, reduced to `by_day`.
 fn spawn_week(api: &ApiClient, tx: &UnboundedSender<Action>) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
@@ -2951,8 +2657,6 @@ fn spawn_week(api: &ApiClient, tx: &UnboundedSender<Action>) {
             Ok(progress) => {
                 let _ = tx.send(Action::TimerWeekLoaded(progress.by_day));
             }
-            // A 401 routes to re-auth; any other error leaves the sparkline
-            // stale rather than tiling noise for a background read.
             Err(ApiError::Unauthorized) => {
                 let _ = tx.send(Action::SessionExpired);
             }
@@ -2961,7 +2665,6 @@ fn spawn_week(api: &ApiClient, tx: &UnboundedSender<Action>) {
     });
 }
 
-/// The per-user knobs for this screen's copy and the reclaim default.
 fn spawn_settings(api: &ApiClient, tx: &UnboundedSender<Action>) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
@@ -2971,8 +2674,6 @@ fn spawn_settings(api: &ApiClient, tx: &UnboundedSender<Action>) {
     });
 }
 
-/// `u` on the stop confirmation: delete the just-written segment — the exact
-/// inverse of the save, while the confirmation still shows.
 fn spawn_undo(api: &ApiClient, tx: &UnboundedSender<Action>, activity_id: i64, segment_id: i64) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
@@ -3006,8 +2707,6 @@ fn spawn_candidates(api: &ApiClient, tx: &UnboundedSender<Action>, query: String
             Ok(list) => {
                 let _ = tx.send(Action::TimerCandidatesLoaded(list));
             }
-            // A 401 routes to re-auth; any other error leaves the bind picker's
-            // candidate list as it was rather than tiling noise.
             Err(ApiError::Unauthorized) => {
                 let _ = tx.send(Action::SessionExpired);
             }
@@ -3083,8 +2782,6 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         spawn_load(&api, &tx);
 
-        // The read's 401 becomes SessionExpired (re-auth), never a timer-load
-        // notify tile — the one cross-cutting behaviour of the error-model epic.
         let got = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
             .await
             .expect("a message arrives")
@@ -3225,8 +2922,7 @@ mod tests {
                 ..
             })
         ));
-        // Submitting in focus mode starts for real now (start + mode hop) —
-        // the picker closes like any accepted start.
+        // A focus start (start + mode hop) closes the picker like any other.
         feed(
             &mut s,
             &api,
@@ -4216,7 +3912,7 @@ mod tests {
     }
 
     #[test]
-    fn fmt_minutes_reads_like_the_design() {
+    fn fmt_minutes_reads_hours_and_padded_minutes() {
         assert_eq!(fmt_minutes(227), "3h 47m");
         assert_eq!(fmt_minutes(45), "45m");
     }
@@ -4251,7 +3947,7 @@ mod tests {
         assert!((500..=502).contains(&elapsed), "got {elapsed}");
     }
 
-    // ------------------------------------------- the reconcile panel (#106)
+    // ------------------------------------------------- the reconcile panel
 
     /// A diverged intent as the queue check would deliver it — the code-less
     /// generic fallback.
@@ -4276,8 +3972,8 @@ mod tests {
         }
     }
 
-    /// A coded divergence (engineer#806): swap the generic objection for a
-    /// `code` + extensions capture.
+    /// A coded divergence: swap the generic objection for a `code` +
+    /// extensions capture.
     fn coded(mut intent: Intent, code: &str, conflict: serde_json::Value) -> Intent {
         if let IntentState::Diverged {
             code: c,
@@ -4457,7 +4153,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_hints_advertise_the_design_gestures() {
+    async fn reconcile_hints_offer_keep_both_only_when_two_sessions_diverged() {
         let (mut s, api, tx) = setup();
         feed(
             &mut s,
@@ -4525,7 +4221,7 @@ mod tests {
         assert!(text.contains("never deletes them"), "{text}");
     }
 
-    // --------------------- the rejected write's face (#109, case B)
+    // ------------------------------------------- the rejected write's face
 
     /// A diverged `SegmentCreate`, exactly as a 422 on replay parks it.
     fn rejected_segment() -> Intent {
@@ -4749,7 +4445,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_rejected_face_renders_the_design_copy_and_hints() {
+    async fn the_rejected_face_renders_the_refused_write_and_its_three_gestures() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
@@ -4786,7 +4482,7 @@ mod tests {
         assert!(hints.contains("decide later"), "{hints}");
     }
 
-    // -------------------------------------- the coded conflicts (#107)
+    // ------------------------------------------------- the coded conflicts
 
     #[tokio::test]
     async fn reconcile_panel_renders_the_server_session_from_the_coded_conflict() {
@@ -4890,8 +4586,833 @@ mod tests {
         assert!(text.contains("no live session"), "{text}");
         assert!(
             text.contains("keep local writes your minutes as a segment"),
-            "keep-local now composes via create_segment: {text}"
+            "keep-local composes via create_segment: {text}"
         );
         assert!(text.contains("take server parks"), "{text}");
+    }
+
+    // ------------------------------------------------ against a live server
+
+    /// A screen whose api points at `server`, with a live receiver for the
+    /// actions its spawned work sends back.
+    fn served(
+        server: &wiremock::MockServer,
+    ) -> (
+        Timer,
+        ApiClient,
+        mpsc::UnboundedSender<Action>,
+        mpsc::UnboundedReceiver<Action>,
+    ) {
+        let api = ApiClient::with_token(url::Url::parse(&server.uri()).unwrap(), "tok".into());
+        let (tx, rx) = mpsc::unbounded_channel();
+        let screen = Timer {
+            queue_paths: Some(scratch_paths()),
+            ..Timer::default()
+        };
+        (screen, api, tx, rx)
+    }
+
+    /// The first action `pred` accepts, skipping the rest.
+    async fn recv_matching(
+        rx: &mut mpsc::UnboundedReceiver<Action>,
+        pred: impl Fn(&Action) -> bool,
+    ) -> Action {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let action = rx.recv().await.expect("channel open");
+                if pred(&action) {
+                    return action;
+                }
+            }
+        })
+        .await
+        .expect("a matching action arrives")
+    }
+
+    /// The paths and JSON bodies `server` has received on `path_prefix`.
+    async fn received(
+        server: &wiremock::MockServer,
+        path_prefix: &str,
+    ) -> Vec<(String, serde_json::Value)> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().starts_with(path_prefix))
+            .map(|r| {
+                (
+                    r.url.path().to_string(),
+                    serde_json::from_slice(&r.body).unwrap_or(serde_json::Value::Null),
+                )
+            })
+            .collect()
+    }
+
+    /// Wait (up to two seconds) until `server` holds `n` requests on
+    /// `path_prefix` — the spawned writes land asynchronously.
+    async fn await_requests(server: &wiremock::MockServer, path_prefix: &str, n: usize) {
+        for _ in 0..200 {
+            if received(server, path_prefix).await.len() >= n {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    fn ago(secs: i64) -> String {
+        jiff::Timestamp::from_second(jiff::Timestamp::now().as_second() - secs)
+            .unwrap()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn a_finished_phase_offers_the_long_break_from_settings_and_never_fires_it() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/phase"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let (mut s, api, tx, _rx) = served(&server);
+        let mut settings = knobs("trim");
+        settings.focus_long_break_every = 3;
+        settings.focus_long_break_minutes = 35;
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::SettingsLoaded(Box::new(settings)),
+        )
+        .await;
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "label": "Implement Raft",
+                "mode": "focus", "phase": "work", "intervals_completed": 2,
+                "phase_started_at": ago(60 * 60), "elapsed_seconds": 3600
+            })))),
+        )
+        .await;
+
+        let text = rendered(&mut s);
+        assert!(text.contains("INTERVAL 3 COMPLETE"), "{text}");
+        assert!(text.contains("b start 35m long break"), "{text}");
+        assert!(text.contains("nothing fires on its own"), "{text}");
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(
+            s.snapshot.as_ref().and_then(|t| t.phase.as_deref()),
+            Some("work"),
+            "the phase waits for a key"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_paused_timer_opens_no_reclaim_unless_the_read_says_idle() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::SettingsLoaded(Box::new(knobs("trim"))),
+        )
+        .await;
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "paused": true, "idle": false,
+                "label": "Read DDIA ch.7", "elapsed_seconds": 1800,
+                "last_interacted_at": ago(3 * 3600)
+            })))),
+        )
+        .await;
+        assert!(s.panel.is_none(), "no reclaim list for a paused clock");
+        let text = rendered(&mut s);
+        assert!(text.contains("PAUSED — NOT COUNTING"), "{text}");
+        assert!(!text.contains("IDLE"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_mode_switch_keeps_the_running_clock_and_closes_no_segment() {
+        use wiremock::matchers::{body_json, method, path, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/mode"))
+            .and(body_json(serde_json::json!({ "mode": "focus" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "bound": true, "mode": "focus", "phase": "work",
+                "elapsed_seconds": 1928
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/api/v1/timer/stop"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(path_regex("/segments"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let (mut s, api, tx, mut rx) = served(&server);
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "elapsed_seconds": 1928
+            })))),
+        )
+        .await;
+        assert!(s.handle(Action::TimerModeSwitch, &api, &tx).await.is_none());
+
+        let switched = recv_matching(&mut rx, |a| matches!(a, Action::TimerLoaded(_))).await;
+        feed(&mut s, &api, &tx, switched).await;
+        assert!(
+            matches!(s.stage, Stage::Live),
+            "still counting, never stopped"
+        );
+        let snap = s.snapshot.as_ref().unwrap();
+        assert_eq!(snap.mode.as_deref(), Some("focus"));
+        assert_eq!(snap.elapsed_seconds, Some(1928));
+    }
+
+    #[tokio::test]
+    async fn enter_dismisses_the_stop_confirmation_and_reloads() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerStopped(Box::new(TimerStopped {
+                stopped: true,
+                activity_id: 9,
+                segment_id: 41,
+                minutes: 25,
+            })),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::TimerDismissStopped).await;
+        assert!(matches!(s.stage, Stage::Loading));
+    }
+
+    #[tokio::test]
+    async fn esc_from_bind_at_stop_resumes_only_what_it_froze() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        async fn gestures_after_save_then_esc(paused: bool) -> Vec<String> {
+            let server = MockServer::start().await;
+            for verb in ["pause", "resume"] {
+                Mock::given(method("POST"))
+                    .and(path(format!("/api/v1/timer/{verb}")))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "running": true, "bound": false, "paused": verb == "pause"
+                    })))
+                    .mount(&server)
+                    .await;
+            }
+            let (mut s, api, tx, _rx) = served(&server);
+            s.handle(
+                Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                    "running": true, "bound": false, "paused": paused
+                })))),
+                &api,
+                &tx,
+            )
+            .await;
+            s.handle(Action::TimerSave, &api, &tx).await;
+            let froze = usize::from(!paused);
+            await_requests(&server, "/api/v1/timer/pause", froze).await;
+            s.handle(Action::TimerBindCancel, &api, &tx).await;
+            await_requests(&server, "/api/v1/timer/resume", froze).await;
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            received(&server, "/api/v1/timer/")
+                .await
+                .into_iter()
+                .map(|(p, _)| p)
+                .filter(|p| p.ends_with("/pause") || p.ends_with("/resume"))
+                .collect()
+        }
+
+        assert_eq!(
+            gestures_after_save_then_esc(false).await,
+            vec!["/api/v1/timer/pause", "/api/v1/timer/resume"],
+            "the panel froze a running clock, so Esc resumes it"
+        );
+        assert!(
+            gestures_after_save_then_esc(true).await.is_empty(),
+            "a clock the user paused stays paused"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_reclaim_list_preselects_trim_before_settings_arrive() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "idle": true
+            })))),
+        )
+        .await;
+        assert!(matches!(s.panel, Some(Panel::Reclaim { selected: 0 })));
+    }
+
+    #[tokio::test]
+    async fn the_reclaim_list_is_a_chooser_not_a_search() {
+        use crossterm::event::KeyModifiers;
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "idle": true
+            })))),
+        )
+        .await;
+        let press = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+        assert!(s.intercept_key(press(KeyCode::Char('x'))).is_none());
+        assert!(matches!(
+            s.intercept_key(press(KeyCode::Char('j'))),
+            Some(Action::TimerBindMove(1))
+        ));
+        assert!(matches!(
+            s.intercept_key(press(KeyCode::Enter)),
+            Some(Action::TimerBindSubmit)
+        ));
+        assert!(matches!(
+            s.intercept_key(press(KeyCode::Esc)),
+            Some(Action::TimerBindCancel)
+        ));
+    }
+
+    #[tokio::test]
+    async fn every_landed_snapshot_rechecks_the_queue_for_a_divergence() {
+        let config = Config::for_environment(Environment::Development);
+        let api = ApiClient::with_token(config.api_url.clone(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (queue_path, cache_path) = scratch_paths();
+        let store = QueueStore::at(&queue_path);
+        store
+            .enqueue(IntentKind::TimerPause {
+                at: jiff::Timestamp::now(),
+            })
+            .unwrap();
+        store
+            .mutate(|doc| {
+                doc.intents_mut()[0].state = IntentState::Diverged {
+                    status: 409,
+                    title: "Conflict".into(),
+                    detail: String::new(),
+                    type_uri: None,
+                    errors: vec![],
+                    code: None,
+                    conflict: Default::default(),
+                };
+            })
+            .unwrap();
+        let mut s = Timer {
+            queue_paths: Some((queue_path, cache_path)),
+            ..Timer::default()
+        };
+        s.handle(
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({ "running": false })))),
+            &api,
+            &tx,
+        )
+        .await;
+        let found = recv_matching(&mut rx, |a| matches!(a, Action::TimerDivergedLoaded(_))).await;
+        assert!(matches!(found, Action::TimerDivergedLoaded(Some(_))));
+    }
+
+    #[tokio::test]
+    async fn a_background_poll_leaves_the_start_picker_open_but_closes_a_finished_bind() {
+        let (mut s, api, tx) = setup();
+        let absent =
+            || Action::TimerLoaded(Box::new(snapshot(serde_json::json!({ "running": false }))));
+        feed(&mut s, &api, &tx, absent()).await;
+        feed(&mut s, &api, &tx, Action::TimerSave).await;
+        feed(&mut s, &api, &tx, absent()).await;
+        assert!(matches!(s.panel, Some(Panel::Start { .. })), "mid-browse");
+
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": false
+            })))),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::TimerBindBegin).await;
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true
+            })))),
+        )
+        .await;
+        assert!(s.panel.is_none(), "bound — the bind panel's job is done");
+    }
+
+    #[tokio::test]
+    async fn a_read_that_is_no_longer_idle_closes_the_reclaim_list() {
+        let (mut s, api, tx) = setup();
+        let load = |idle: bool| {
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "idle": idle
+            }))))
+        };
+        feed(&mut s, &api, &tx, load(true)).await;
+        assert!(matches!(s.panel, Some(Panel::Reclaim { .. })));
+        feed(&mut s, &api, &tx, load(false)).await;
+        assert!(s.panel.is_none(), "the decision landed elsewhere");
+    }
+
+    #[tokio::test]
+    async fn a_provisional_write_never_clears_a_pending_stop_confirmation() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerStopped(Box::new(TimerStopped {
+                stopped: true,
+                activity_id: 9,
+                segment_id: -1,
+                minutes: 25,
+            })),
+        )
+        .await;
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerProvisional(Box::new(snapshot(serde_json::json!({ "running": false })))),
+        )
+        .await;
+        assert!(matches!(s.stage, Stage::Stopped { .. }));
+    }
+
+    #[tokio::test]
+    async fn slash_on_an_empty_face_opens_the_start_picker() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({ "running": false })))),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::TimerBindBegin).await;
+        assert!(matches!(s.panel, Some(Panel::Start { .. })));
+    }
+
+    #[tokio::test]
+    async fn the_reclaim_discard_row_rides_the_normal_discard_flow() {
+        let config = Config::for_environment(Environment::Development);
+        let api = ApiClient::with_token(config.api_url.clone(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Timer {
+            queue_paths: Some(scratch_paths()),
+            ..Timer::default()
+        };
+        s.handle(
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "idle": true, "elapsed_seconds": 9660
+            })))),
+            &api,
+            &tx,
+        )
+        .await;
+        s.handle(Action::TimerBindMove(3), &api, &tx).await;
+        s.handle(Action::TimerBindSubmit, &api, &tx).await;
+        let sent = recv_matching(&mut rx, |a| matches!(a, Action::TimerDiscard)).await;
+        assert!(matches!(sent, Action::TimerDiscard));
+    }
+
+    #[tokio::test]
+    async fn a_narrow_face_drops_the_rail() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "label": "consensus", "elapsed_seconds": 600
+            })))),
+        )
+        .await;
+        let mut terminal = Terminal::new(TestBackend::new(60, 32)).unwrap();
+        terminal.draw(|f| s.render(f, f.area())).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("TRACKING"), "{text}");
+        assert!(!text.contains("TODAY"), "no room for the rail: {text}");
+    }
+
+    #[tokio::test]
+    async fn a_deferred_reclaim_leaves_the_face_saying_idle() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "idle": true, "elapsed_seconds": 9660
+            })))),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::TimerBindCancel).await;
+        let text = rendered(&mut s);
+        assert!(text.contains("IDLE — RECLAIM PENDING"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn the_big_number_is_muted_while_not_counting_and_amber_past_the_plan() {
+        use ratatui::{backend::TestBackend, style::Color, Terminal};
+
+        async fn digit_colour(json: serde_json::Value) -> Color {
+            let (mut s, api, tx) = setup();
+            feed(
+                &mut s,
+                &api,
+                &tx,
+                Action::TimerLoaded(Box::new(snapshot(json))),
+            )
+            .await;
+            let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+            terminal.draw(|f| s.render(f, f.area())).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .find(|c| c.symbol() == "█")
+                .expect("the big digits render")
+                .fg
+        }
+
+        let counting =
+            serde_json::json!({ "running": true, "bound": true, "elapsed_seconds": 600 });
+        let paused = serde_json::json!({
+            "running": true, "bound": true, "paused": true, "elapsed_seconds": 600
+        });
+        let on_break = serde_json::json!({
+            "running": true, "bound": true, "mode": "focus", "phase": "break", "elapsed_seconds": 600
+        });
+        let over = serde_json::json!({
+            "running": true, "bound": true, "over": true, "elapsed_seconds": 600
+        });
+        assert_eq!(digit_colour(counting).await, theme::ACCENT);
+        assert_eq!(digit_colour(paused).await, theme::MUTED);
+        assert_eq!(digit_colour(on_break).await, theme::MUTED);
+        assert_eq!(digit_colour(over).await, theme::WARN);
+    }
+
+    #[tokio::test]
+    async fn the_conflict_banner_replaces_the_picker_list() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "label": "Read DDIA ch.7"
+            })))),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::TimerBindBegin).await;
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerCandidatesLoaded(vec![TimerCandidate {
+                id: 42,
+                title: "Implement Raft".into(),
+            }]),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::TimerBindSubmit).await;
+        let text = rendered(&mut s);
+        assert!(text.contains("One timer at a time"), "{text}");
+        assert!(text.contains("already tracking  Read DDIA ch.7"), "{text}");
+        assert!(
+            !text.contains("Tab switches mode"),
+            "the list is gone: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reclaim_captions_split_the_run_into_idle_and_worked() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "idle": true, "elapsed_seconds": 5400,
+                "last_interacted_at": ago(1800)
+            })))),
+        )
+        .await;
+        let text = rendered(&mut s);
+        assert!(text.contains("idle 30:0"), "{text}");
+        assert!(text.contains("worked 1:00:0"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_diverged_stop_shows_its_own_gestured_elapsed() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "label": "consensus", "elapsed_seconds": 100
+            })))),
+        )
+        .await;
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerDivergedLoaded(Some(Box::new(diverged_stop()))),
+        )
+        .await;
+        let text = rendered(&mut s);
+        assert!(text.contains("local    47:12"), "{text}");
+    }
+
+    #[test]
+    fn fmt_age_reads_the_largest_whole_unit() {
+        assert_eq!(fmt_age(42), "42s");
+        assert_eq!(fmt_age(7 * 60 + 59), "7m");
+        assert_eq!(fmt_age(3 * 3600 + 5), "3h");
+        assert_eq!(fmt_age(2 * 86_400 + 7), "2d");
+    }
+
+    #[test]
+    fn a_confirmed_write_lands_live_and_a_queued_one_provisional() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let t = || snapshot(serde_json::json!({ "running": true }));
+        forward_write(&tx, Ok(WriteOutcome::Confirmed(t())), "op");
+        forward_write(&tx, Ok(WriteOutcome::Provisional(t())), "op");
+        forward_write(&tx, Err(ApiError::Unauthorized), "op");
+        assert!(matches!(rx.try_recv(), Ok(Action::TimerLoaded(_))));
+        assert!(matches!(rx.try_recv(), Ok(Action::TimerProvisional(_))));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Action::Notify {
+                level: Level::Error,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn background_reads_route_a_401_to_reauth_and_swallow_other_failures() {
+        use wiremock::matchers::any;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        async fn actions_for_status(status: u16) -> Vec<Action> {
+            let server = MockServer::start().await;
+            Mock::given(any())
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server)
+                .await;
+            let api = ApiClient::with_token(url::Url::parse(&server.uri()).unwrap(), "tok".into());
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            spawn_today(&api, &tx);
+            spawn_week(&api, &tx);
+            spawn_candidates(&api, &tx, String::new());
+            await_requests(&server, "/", 3).await;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let mut got = Vec::new();
+            while let Ok(action) = rx.try_recv() {
+                got.push(action);
+            }
+            got
+        }
+
+        let unauthorized = actions_for_status(401).await;
+        assert_eq!(unauthorized.len(), 3, "{unauthorized:?}");
+        assert!(unauthorized
+            .iter()
+            .all(|a| matches!(a, Action::SessionExpired)));
+        let failed = actions_for_status(500).await;
+        assert!(
+            failed.is_empty(),
+            "no tile for a background read: {failed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_timer_read_tiles_an_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let api = ApiClient::with_token(url::Url::parse(&server.uri()).unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        spawn_load(&api, &tx);
+        let got = recv_matching(&mut rx, |_| true).await;
+        assert!(
+            matches!(
+                got,
+                Action::Notify {
+                    level: Level::Error,
+                    ..
+                }
+            ),
+            "got {got:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_focus_hop_keeps_the_stopwatch_start_and_says_so() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "running": true, "bound": false, "mode": "stopwatch"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/mode"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "title": "Unprocessable", "detail": "focus is off"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let api = ApiClient::with_token(url::Url::parse(&server.uri()).unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        spawn_start_blank(&api, &tx, Some(scratch_paths()), true);
+
+        let warned = recv_matching(&mut rx, |a| matches!(a, Action::Notify { .. })).await;
+        match warned {
+            Action::Notify { level, text } => {
+                assert_eq!(level, Level::Warning);
+                assert!(text.contains("focus mode refused"), "{text}");
+            }
+            other => panic!("expected the warning, got {other:?}"),
+        }
+        let started = recv_matching(&mut rx, |a| matches!(a, Action::TimerLoaded(_))).await;
+        match started {
+            Action::TimerLoaded(t) => assert!(t.running, "the start stands"),
+            other => panic!("expected the started timer, got {other:?}"),
+        }
+    }
+
+    async fn phase_calls_for_skip_from(phase: &str) -> Vec<serde_json::Value> {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/phase"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "running": true, "mode": "focus", "phase": "work"
+            })))
+            .mount(&server)
+            .await;
+        let (mut s, api, tx, _rx) = served(&server);
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::TimerLoaded(Box::new(snapshot(serde_json::json!({
+                "running": true, "bound": true, "mode": "focus", "phase": phase
+            })))),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::TimerSkipInterval).await;
+        await_requests(&server, "/api/v1/timer/phase", 2).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        received(&server, "/api/v1/timer/phase")
+            .await
+            .into_iter()
+            .map(|(_, body)| body)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn skip_mid_work_banks_the_interval_then_rearms_work() {
+        assert_eq!(
+            phase_calls_for_skip_from("work").await,
+            vec![
+                serde_json::json!({ "to": "break" }),
+                serde_json::json!({ "to": "work" })
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn skip_on_a_break_just_returns_to_work() {
+        assert_eq!(
+            phase_calls_for_skip_from("break").await,
+            vec![serde_json::json!({ "to": "work" })]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unparseable_edit_is_refused_loudly_and_stays_diverged() {
+        let (mut s, api, _, store) = seeded_rejected_screen();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let id = store.intents().unwrap()[0].id;
+        s.handle(
+            Action::TimerReconcileEditApply {
+                intent_id: id,
+                buffer: "minutes: 0".into(),
+            },
+            &api,
+            &tx,
+        )
+        .await;
+        let refused = recv_matching(&mut rx, |a| matches!(a, Action::Notify { .. })).await;
+        match refused {
+            Action::Notify { level, text } => {
+                assert_eq!(level, Level::Error);
+                assert!(text.contains("edit refused"), "{text}");
+            }
+            other => panic!("expected the refusal, got {other:?}"),
+        }
+        assert!(store.intents().unwrap()[0].is_diverged());
     }
 }
