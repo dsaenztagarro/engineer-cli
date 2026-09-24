@@ -453,6 +453,15 @@ mod tests {
         assert!(resolve_scope(Some(7), Some("coding".into()), None).is_err());
     }
 
+    #[test]
+    fn the_plain_row_is_id_axis_scope_hours_state_in_that_order() {
+        let t: TargetRef = serde_json::from_value(target_json(42)).unwrap();
+        assert_eq!(
+            plain_target(&t, false),
+            "42  domain  Distributed Systems  6h/wk  active"
+        );
+    }
+
     #[tokio::test]
     async fn declare_posts_and_confirms() {
         let server = MockServer::start().await;

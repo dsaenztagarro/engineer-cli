@@ -656,6 +656,29 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_page_without_a_book_is_dropped() {
+        let api = dead_api();
+        let dir = scratch();
+        let queued = queued_at(&api, &dir);
+        let cmd = Some(NoteCmd::Capture(CaptureArgs {
+            text: Some("a thought with nowhere to anchor".into()),
+            book: None,
+            page: Some(142),
+        }));
+        let out = dispatch(&api, &queued, cmd, false, false).await.unwrap();
+        assert_eq!(out.code, 0);
+        let intents = crate::queue::QueueStore::at(dir.join("queue.json"))
+            .pending()
+            .unwrap();
+        match &intents[0].kind {
+            crate::queue::IntentKind::NoteCreate { body } => {
+                assert_eq!(body.anchors, None, "no book, so nothing to anchor")
+            }
+            other => panic!("expected a NoteCreate intent, got {other:?}"),
+        }
+    }
+
     // ------------------------------------------------- stdin / editor idiom
 
     #[test]
@@ -911,6 +934,48 @@ mod tests {
         assert_eq!(out.code, 1);
         assert!(out.err[0].contains("offline"), "{}", out.err[0]);
         assert!(out.err[0].contains("notes reads need the server"));
+    }
+
+    fn note(json: serde_json::Value) -> Note {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn an_archived_row_wears_an_archived_tail() {
+        let n = note(serde_json::json!({
+            "id": 1, "title": "shelved", "archived_at": "2026-07-01T00:00:00Z"
+        }));
+        assert!(note_row(&n, false).contains("— · archived"));
+    }
+
+    #[test]
+    fn a_book_link_without_a_citation_still_names_its_place() {
+        let n = note(serde_json::json!({
+            "id": 1, "title": "t", "content": "body", "book_id": 3, "book_title": "SICP"
+        }));
+        assert_eq!(show_lines(&n, false), vec!["body", "SICP"]);
+    }
+
+    #[test]
+    fn age_reads_the_largest_whole_unit() {
+        let ago = |secs: i64| {
+            let ts = jiff::Timestamp::now()
+                .checked_sub(jiff::SignedDuration::from_secs(secs))
+                .unwrap();
+            age_label(&note(
+                serde_json::json!({ "id": 1, "title": "t", "updated_at": ts.to_string() }),
+            ))
+        };
+        assert_eq!(ago(2 * 3600 + 60), "2h");
+        assert_eq!(ago(3 * 86_400 + 60), "3d");
+        assert_eq!(ago(15 * 86_400), "2w");
+        assert_eq!(ago(40 * 86_400), "1mo");
+    }
+
+    #[test]
+    fn a_long_title_is_clipped_with_an_ellipsis() {
+        assert_eq!(truncate("abcdef", 3), "abc…");
+        assert_eq!(truncate("abc", 3), "abc");
     }
 
     #[test]

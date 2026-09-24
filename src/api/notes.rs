@@ -302,6 +302,14 @@ mod tests {
     }
 
     #[test]
+    fn a_long_first_line_is_clipped_in_the_title_but_kept_whole_in_content() {
+        let long = "x".repeat(TITLE_MAX + 5);
+        let (title, content) = derive_title_content(&long);
+        assert_eq!(title.chars().count(), TITLE_MAX);
+        assert_eq!(content.as_deref(), Some(long.as_str()));
+    }
+
+    #[test]
     fn derive_title_content_empty_is_empty() {
         let (title, content) = derive_title_content("   \n  ");
         assert!(title.is_empty());

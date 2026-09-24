@@ -913,6 +913,157 @@ mod tests {
         assert!(s.detail.is_some());
     }
 
+    #[tokio::test]
+    async fn t_reveals_archived_notes_through_the_all_filter() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/notes"))
+            .and(query_param("archived", "all"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [], "meta": {}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let api = ApiClient::with_token(url::Url::parse(&server.uri()).unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Notes::default();
+        s.handle(Action::NotesToggleArchived, &api, &tx).await;
+        let got = await_notify(&mut rx).await;
+        assert!(
+            matches!(got, Action::NotesLoaded(_)),
+            "active and archived come back together: {got:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_archived_note_is_dimmed_in_place_not_hidden() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (mut s, api, tx) = setup();
+        s.show_archived = true;
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::NotesLoaded(vec![
+                note(serde_json::json!({ "id": 1, "title": "kept" })),
+                note(serde_json::json!({
+                    "id": 2, "title": "shelved", "archived_at": "2026-07-01T00:00:00Z"
+                })),
+            ]),
+        )
+        .await;
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
+        terminal.draw(|f| s.render(f, f.area())).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let cell_of = |word: &str| {
+            let text: Vec<&str> = buffer.content().iter().map(|c| c.symbol()).collect();
+            let at = text
+                .windows(word.len())
+                .position(|w| w.concat() == word)
+                .unwrap_or_else(|| panic!("{word} is on screen"));
+            buffer.content()[at].clone()
+        };
+        assert_eq!(cell_of("shelved").fg, theme::muted().fg.unwrap());
+        assert_eq!(cell_of("(archived)").fg, theme::muted().fg.unwrap());
+        assert!(cell_of("kept").modifier.contains(Modifier::BOLD));
+    }
+
+    #[tokio::test]
+    async fn archive_on_an_archived_note_unarchives_it() {
+        let dir = scratch("unarchive");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Notes {
+            items: vec![note(serde_json::json!({
+                "id": 42, "title": "shelved", "archived_at": "2026-07-01T00:00:00Z"
+            }))],
+            queue_paths: Some((dir.join("queue.json"), dir.join("timer-cache.json"))),
+            ..Notes::default()
+        };
+        s.handle(Action::NotesArchiveSelected, &dead_api(), &tx)
+            .await;
+        await_notify(&mut rx).await;
+
+        let intents = crate::queue::QueueStore::at(dir.join("queue.json"))
+            .pending()
+            .unwrap();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(
+            intents[0].kind.word(),
+            "unarchive",
+            "the same key reverses the archive"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_401_from_the_notes_read_routes_to_reauth() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        let api = ApiClient::with_token(url::Url::parse(&server.uri()).unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Notes::default();
+        s.handle(Action::RefreshNotes, &api, &tx).await;
+        let got = await_notify(&mut rx).await;
+        assert!(matches!(got, Action::SessionExpired), "got {got:?}");
+    }
+
+    #[tokio::test]
+    async fn an_offline_delete_refuses_rather_than_queue() {
+        let dir = scratch("delete");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Notes {
+            detail: Some(note(serde_json::json!({ "id": 9, "title": "doomed" }))),
+            queue_paths: Some((dir.join("queue.json"), dir.join("timer-cache.json"))),
+            ..Notes::default()
+        };
+        s.handle(Action::NotesDeleteConfirm, &dead_api(), &tx).await;
+        match await_notify(&mut rx).await {
+            Action::Notify {
+                level: Level::Error,
+                text,
+            } => assert!(text.contains("delete needs the server"), "{text}"),
+            other => panic!("expected an error notify, got {other:?}"),
+        }
+        assert!(crate::queue::QueueStore::at(dir.join("queue.json"))
+            .pending()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_late_full_record_never_reopens_a_closed_detail() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::NotesDetailLoaded(Box::new(note(serde_json::json!({ "id": 7, "title": "a" })))),
+        )
+        .await;
+        assert!(s.detail.is_none());
+    }
+
+    #[test]
+    fn match_stepping_is_advertised_only_while_a_query_is_live() {
+        let mut s = Notes::default();
+        let hints =
+            |s: &Notes| -> String { s.hints().spans.iter().map(|x| x.content.as_ref()).collect() };
+        assert!(!hints(&s).contains("match"));
+        s.search.query = "rust".into();
+        assert!(hints(&s).contains("match"));
+    }
+
     // --- offline write seam: archive / unlink queue through QueuedClient ---
 
     /// A base URL nothing listens on — reqwest fails before any response, which

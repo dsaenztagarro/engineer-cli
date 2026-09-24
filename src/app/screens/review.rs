@@ -1150,6 +1150,7 @@ mod tests {
         assert_eq!(s.stage, Stage::Dashboard);
         assert!(s.current.is_none());
         assert!(!s.done);
+        assert!(s.loading, "the dashboard re-reads what was just rated");
     }
 
     fn rate_result(next: Option<Topic>) -> crate::api::RateResult {
@@ -1363,5 +1364,195 @@ mod tests {
         s.handle(Action::ReviewRate(Rating::Solid), &api, &tx).await;
         assert!(s.rating_in_flight); // guarded until the result lands
         assert!(recv_matching(&mut rx, |a| matches!(a, Action::ReviewRated(_))).await);
+    }
+
+    #[tokio::test]
+    async fn a_second_rating_while_one_is_in_flight_is_dropped() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "topic": { "subdomain_id": 5, "domain_id": 1, "state": "fresh", "review_count": 4 }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = sitting(queue_topics().remove(0));
+        s.handle(Action::ReviewRate(Rating::Solid), &api, &tx).await;
+        s.handle(Action::ReviewRate(Rating::Forgot), &api, &tx)
+            .await;
+        assert!(recv_matching(&mut rx, |a| matches!(a, Action::ReviewRated(_))).await);
+    }
+
+    #[tokio::test]
+    async fn an_offline_rating_refuses_and_releases_the_guard() {
+        let api = ApiClient::with_token(Url::parse("http://127.0.0.1:1/").unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = sitting(queue_topics().remove(0));
+        s.handle(Action::ReviewRate(Rating::Solid), &api, &tx).await;
+        assert!(
+            recv_matching(&mut rx, |a| matches!(
+                a,
+                Action::Notify { level: Level::Error, text }
+                    if text.contains("a rating needs the server")
+            ))
+            .await,
+            "offline refuses with the way forward"
+        );
+        assert!(recv_matching(&mut rx, |a| matches!(a, Action::ReviewRateFailed)).await);
+        feed(&mut s, &api, &tx, Action::ReviewRateFailed).await;
+        assert!(!s.rating_in_flight, "the topic can be rated again");
+    }
+
+    #[tokio::test]
+    async fn a_401_from_the_dashboard_read_routes_to_reauth() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Review::default();
+        s.handle(Action::RefreshReview, &api, &tx).await;
+        assert!(recv_matching(&mut rx, |a| matches!(a, Action::SessionExpired)).await);
+    }
+
+    // ---- dashboard read ----
+
+    #[tokio::test]
+    async fn the_dashboard_reads_the_due_count_minutes_streak_and_queue() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::ReviewDashboardLoaded(Box::new(dashboard(queue_topics()))),
+        )
+        .await;
+        let text = render(&mut s);
+        assert!(text.contains("2 topics due"), "{text}");
+        assert!(text.contains("~5 min"), "{text}");
+        assert!(text.contains("streak 3 days"), "{text}");
+        let at = |name: &str| text.find(name).unwrap_or_else(|| panic!("{name}: {text}"));
+        assert!(
+            at("Consensus") < at("B-trees"),
+            "the queue keeps the server's urgency order: {text}"
+        );
+    }
+
+    // ---- browse: detail, failures, query ----
+
+    #[tokio::test]
+    async fn the_browse_detail_takes_the_rating_keys() {
+        let mut s = Review {
+            stage: Stage::Browse,
+            detail: Some(queue_topics().remove(0)),
+            ..Default::default()
+        };
+        assert!(matches!(
+            s.intercept_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE)),
+            Some(Action::ReviewRate(Rating::Instant))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_one_off_rate_from_the_browse_detail_closes_it() {
+        let (mut s, api, tx) = setup();
+        s.stage = Stage::Browse;
+        s.detail = Some(queue_topics().remove(0));
+        let out = s
+            .handle(Action::ReviewRated(Box::new(rate_result(None))), &api, &tx)
+            .await;
+        assert!(matches!(out, Some((Level::Success, _))));
+        assert!(s.detail.is_none());
+        assert!(s.browse_loading, "the page re-reads the rated topic");
+    }
+
+    #[tokio::test]
+    async fn a_browse_load_failure_names_topics_inline() {
+        let (mut s, api, tx) = setup();
+        s.stage = Stage::Browse;
+        let out = s
+            .handle(
+                Action::ReviewLoadFailed("identity.test → HTTP 500".into()),
+                &api,
+                &tx,
+            )
+            .await;
+        assert!(
+            out.is_none(),
+            "reported once, in the panel — no notify tile"
+        );
+        let text = render(&mut s);
+        assert!(text.contains("✖ couldn't load topics"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_browse_failure_does_not_bleed_into_the_dashboard() {
+        let (mut s, api, tx) = setup();
+        s.stage = Stage::Browse;
+        feed(&mut s, &api, &tx, Action::ReviewLoadFailed("boom".into())).await;
+        feed(&mut s, &api, &tx, Action::ReviewOpenDashboard).await;
+        assert!(s.failure.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_late_topic_record_never_reopens_a_closed_detail() {
+        let (mut s, api, tx) = setup();
+        s.stage = Stage::Browse;
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::ReviewBrowseDetailLoaded(Box::new(queue_topics().remove(0))),
+        )
+        .await;
+        assert!(s.detail.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_query_persists_across_pages_and_sorts() {
+        let (mut s, api, tx) = setup();
+        s.stage = Stage::Browse;
+        feed(&mut s, &api, &tx, browse_loaded(queue_topics(), 1, 25, 60)).await;
+        s.search.query = "raft".into();
+        feed(&mut s, &api, &tx, Action::ReviewBrowsePageNext).await;
+        feed(&mut s, &api, &tx, Action::ReviewBrowseCycleSort).await;
+        assert_eq!(s.search.query, "raft");
+    }
+
+    #[test]
+    fn n_is_claimed_and_advertised_only_while_a_browse_query_is_live() {
+        let mut s = Review {
+            stage: Stage::Browse,
+            ..Default::default()
+        };
+        let n = || KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
+        let hints =
+            |s: &Review| -> String { s.hints().spans.iter().map(|x| x.content.as_ref()).collect() };
+        assert!(s.intercept_key(n()).is_none());
+        assert!(!hints(&s).contains("match"));
+        s.search.query = "rust".into();
+        assert!(matches!(
+            s.intercept_key(n()),
+            Some(Action::ReviewBrowseMatchStep(1))
+        ));
+        assert!(hints(&s).contains("match"));
+    }
+
+    #[test]
+    fn rating_hints_show_the_interval_each_rating_would_set() {
+        let t = topic(serde_json::json!({
+            "subdomain_id": 5, "domain_id": 1, "state": "due", "review_count": 3,
+            "forecasts": { "solid": 21 }
+        }));
+        let text: String = rating_hints_line(&t)
+            .spans
+            .iter()
+            .map(|x| x.content.as_ref())
+            .collect();
+        assert!(text.contains("solid →21d"), "{text}");
     }
 }
