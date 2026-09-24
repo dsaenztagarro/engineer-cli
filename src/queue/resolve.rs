@@ -1,38 +1,5 @@
-//! Resolving a divergence — the pick-a-side engine behind the Timer screen's
-//! reconcile panel and `engineer queue resolve` (ADR 0004; the §Diverged boards
-//! in `docs/designs/offline-write.dc.html`). One module, one spelling of every
-//! outcome: both
-//! surfaces call [`resolve`], so a TUI gesture and a headless flag cannot
-//! drift apart.
-//!
-//! The honesty invariant this module exists to keep: **no resolution loses a
-//! segment silently.** Every arm either *writes* (a `start_timer(switch)` that
-//! stops & saves the server session, a `create_segment` carrying the local
-//! minutes) or *keeps* ([`IntentState::Parked`] — the intents stay in
-//! `queue.json`, visible as `parked`, excluded from replay, never deleted).
-//!
-//! The coded conflicts (engineer#806, ADR 0036) sharpen the compositions the
-//! generic RFC 7807 fallback couldn't support: a `no-live-timer` divergence
-//! proves the session is gone server-side, so keep-local on a pause/resume
-//! composes the local minutes into a `create_segment` instead of switching (a
-//! switch against a gone session would restart the clock at zero — a silent
-//! loss); a `timer-already-running` conflict carries the server session's
-//! `current.activity_id`, the last-resort anchor for an otherwise-unbound
-//! keep-both. Where the payload *still* can't compose a resolution (no code,
-//! no anchor anywhere, no server segment id for the drift composition), the
-//! arm refuses with [`ResolveError::CannotCompose`] naming what's missing, and
-//! the intent stays diverged — loud, unresolved, un-dropped.
-
-//! **The rejected write (§Diverged · rejected segment, #109).** A 422 on a
-//! replayed `SegmentCreate`/`ActivityCreate` (an overlap, a closed study day)
-//! resolves through three gestures instead of the pick-a-side pair: **edit**
-//! ([`edit_seed`] → `$EDITOR` → [`apply_edit`] re-pends the intent with the
-//! corrected payload and a fresh idempotency key), **drop** ([`drop_intent`] —
-//! the one genuinely user-chosen delete in the queue's life, always explicit
-//! and confirmed by the caller), and **skip** ([`skip_intent`] — parks it,
-//! reason `skipped`, kept in `queue.json` and out of replay until a later
-//! choice). Both surfaces (the TUI reconcile panel, `engineer queue resolve
-//! --edit/--drop/--skip`) call these same functions.
+//! Resolving a divergence — the engine behind the Timer screen's reconcile
+//! panel and `engineer queue resolve` (ADR 0004 rule 2).
 
 use crate::api::{codes, ApiClient, ApiError, ConflictInfo, Timer};
 use crate::timer_clock;
@@ -40,19 +7,10 @@ use crate::timer_clock;
 use super::intent::{new_idempotency_key, provisional_id, Intent, IntentKind, IntentState};
 use super::store::{QueueError, QueueStore};
 
-/// The three sides a divergence can resolve to. `NAMES` order is the
-/// `--keep=` help order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolution {
-    /// Re-assert the local gesture on the server: `start_timer(switch: true)`
-    /// for a session verb (the server's running session is stopped & saved
-    /// first), `create_segment` for a stop's minutes.
     KeepLocal,
-    /// The server session stands; the local timer intents move to
-    /// [`IntentState::Parked`] — kept for review, never deleted.
     TakeServer,
-    /// The server session stands *and* the local session is written as a
-    /// segment via `create_segment`.
     KeepBoth,
 }
 
@@ -77,23 +35,17 @@ impl Resolution {
     }
 }
 
-/// What a resolution did — every variant is a write or a keep, never a drop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolved {
-    /// Keep-local on a session verb: the server switched to the local session
-    /// (its own running one was stopped & saved by `switch: true`); the
-    /// diverged intent left the queue and the drain may continue behind it.
     SwitchedToLocal,
-    /// Keep-local on a stop / keep-both: the local minutes landed on the wire
-    /// as a segment.
     SegmentWritten {
         activity_id: i64,
         segment_id: i64,
         minutes: u32,
     },
-    /// Take-server: this many local intents moved to `parked` — kept for
-    /// review in `queue.json`, excluded from replay.
-    Parked { count: usize },
+    Parked {
+        count: usize,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -104,22 +56,12 @@ pub enum ResolveError {
     Api(#[from] ApiError),
     #[error("intent #{0} is not waiting on a divergence")]
     NotDiverged(u64),
-    /// The stored payload doesn't carry enough to compose this resolution —
-    /// the recorded boundary of the generic-conflict fallback. The intent
-    /// stays diverged; nothing is written or dropped.
     #[error("{0}")]
     CannotCompose(String),
-    /// The saved editor buffer didn't parse back into a valid payload — the
-    /// intent stays diverged, untouched, and the refusal names what's wrong.
     #[error("{0}")]
     EditRejected(String),
 }
 
-/// Apply `resolution` to the diverged intent `intent_id`. `cached` is the
-/// last-known server snapshot (the read cache) — the local session's identity
-/// when the diverged verb doesn't carry one itself. Callers continue the
-/// drain after a successful keep-local/keep-both; take-server parks the whole
-/// local session, so there is nothing left to drain behind it.
 pub async fn resolve(
     api: &ApiClient,
     store: &QueueStore,
@@ -141,23 +83,12 @@ pub async fn resolve(
     else {
         return Err(ResolveError::NotDiverged(intent_id));
     };
-    // `no-live-timer` is server proof the session is gone (ADR 0036) — the
-    // compositions below key on it. An absent or unknown code keeps every
-    // generic-fallback arm exactly as it was.
     let no_live_timer = code.as_deref() == Some(codes::NO_LIVE_TIMER);
-    // The local session's remaining gestures: the diverged intent plus every
-    // in-play intent queued behind it on the same stream (FIFO means nothing
-    // pending can sit before the head that hit the wall).
     let group: Vec<&Intent> = intents
         .iter()
         .filter(|i| i.stream == intent.stream && i.id >= intent.id && !i.is_parked())
         .collect();
 
-    // Only timer verbs compose a resolution today. A diverged plan write
-    // (`activity_create`/`_update`/`_archive`) can still be parked via
-    // take-server; keep-local/keep-both fall to the `other =>` refusals below —
-    // richer activity divergence (declare/adjust/drop reconciliation) is Phase-3
-    // (#110/#111), not this slice.
     match resolution {
         Resolution::TakeServer => park_group(store, &group, title),
         Resolution::KeepLocal => match &intent.kind {
@@ -165,15 +96,9 @@ pub async fn resolve(
                 switch_to_local(api, store, intent.id, *activity_id).await
             }
             IntentKind::TimerPause { .. } | IntentKind::TimerResume { .. } if no_live_timer => {
-                // The session is gone server-side: there is nothing to switch
-                // away from, and a fresh `start_timer` would restart the local
-                // clock at zero — a silent loss. The honest keep-local is the
-                // minutes themselves: compose the local session and write it.
                 write_local_session(api, store, cached, conflict, &group, now).await
             }
             IntentKind::TimerPause { .. } | IntentKind::TimerResume { .. } => {
-                // The verb carries no session identity; the local session is
-                // the cached snapshot's.
                 switch_to_local(api, store, intent.id, cached.and_then(|t| t.activity_id)).await
             }
             IntentKind::TimerStop {
@@ -202,8 +127,6 @@ pub async fn resolve(
     }
 }
 
-/// Take-server: move the whole group to `Parked` under the writer lock.
-/// Nothing leaves the queue — kept for review is the whole point.
 fn park_group(
     store: &QueueStore,
     group: &[&Intent],
@@ -226,16 +149,6 @@ fn park_group(
     Ok(Resolved::Parked { count })
 }
 
-// ---------------------------------------------------------------------------
-// The rejected write's gestures (§Diverged · rejected segment, #109):
-// edit / drop / skip. All three act on a *diverged* intent only.
-// ---------------------------------------------------------------------------
-
-/// The editable representation the `$EDITOR` hand-off opens for a rejected
-/// write — small `key: value` lines, seeded from the stored payload, with the
-/// server's objection as a comment so the fix is made against it. `None` for
-/// kinds that carry nothing time-shaped to edit (a diverged timer verb
-/// resolves through the pick-a-side panel instead).
 pub fn edit_seed(intent: &Intent) -> Option<String> {
     let objection = match &intent.state {
         IntentState::Diverged { status, title, .. } => format!("{status} {title}"),
@@ -272,13 +185,6 @@ pub fn edit_seed(intent: &Intent) -> Option<String> {
     Some(lines.join("\n"))
 }
 
-/// Parse a saved editor buffer back into the diverged intent's payload and
-/// re-pend it, all under the writer lock: the corrected write rejoins the
-/// queue as pending and the next drain retries it. The idempotency key is
-/// re-minted — the edited payload is a *new* logical write, and re-sending a
-/// different body under the old key would either replay the stored rejection
-/// or trip the server's key/payload mismatch guard. A buffer that doesn't
-/// parse refuses with [`ResolveError::EditRejected`] and changes nothing.
 pub fn apply_edit(
     store: &QueueStore,
     intent_id: u64,
@@ -322,9 +228,6 @@ pub fn apply_edit(
     if title.as_deref().is_some_and(|t| t.trim().is_empty()) {
         return Err(ResolveError::EditRejected("title must not be empty".into()));
     }
-    // A field the kind can't hold refuses rather than silently dropping — an
-    // ignored `started_at` would retry the unchanged payload behind the
-    // user's back.
     let refuse_foreign = |kind: &str, allowed: &[&str]| -> Result<(), ResolveError> {
         match fields.iter().find(|(k, _)| !allowed.contains(&k.as_str())) {
             Some((k, _)) => Err(ResolveError::EditRejected(format!(
@@ -377,19 +280,14 @@ pub fn apply_edit(
         }
         intent.state = IntentState::Pending;
         intent.last_error = None;
+        // A new payload needs a new key: under the old one the server replays
+        // the stored rejection or refuses the key/payload mismatch.
         intent.idempotency_key = new_idempotency_key();
         Ok(intent.clone())
     })??;
     Ok(updated)
 }
 
-/// Drop a diverged intent — the queue's one genuinely user-chosen delete,
-/// distinct from [`IntentState::Parked`] (which keeps). The *caller* owns the
-/// confirmation (the TUI's second `x`, the CLI's `--force`); this function is
-/// the final act. Refuses while still-queued intents reference the intent's
-/// provisional id — dropping the parent create would orphan them against an
-/// id that will never exist. Returns the dropped record so the surface can
-/// say exactly what left.
 pub fn drop_intent(store: &QueueStore, intent_id: u64) -> Result<Intent, ResolveError> {
     store.mutate(|doc| -> Result<Intent, ResolveError> {
         let Some(intent) = doc.intents().iter().find(|i| i.id == intent_id).cloned() else {
@@ -416,9 +314,6 @@ pub fn drop_intent(store: &QueueStore, intent_id: u64) -> Result<Intent, Resolve
     })?
 }
 
-/// Skip a diverged intent: park it (reason `skipped · <the objection>`), kept
-/// in `queue.json` for a later decision, excluded from replay — so its stream
-/// unblocks without anything being written or dropped.
 pub fn skip_intent(store: &QueueStore, intent_id: u64) -> Result<Intent, ResolveError> {
     store.mutate(|doc| -> Result<Intent, ResolveError> {
         let Some(intent) = doc.intents_mut().iter_mut().find(|i| i.id == intent_id) else {
@@ -434,7 +329,6 @@ pub fn skip_intent(store: &QueueStore, intent_id: u64) -> Result<Intent, Resolve
     })?
 }
 
-/// Does this kind reference the given (provisional) activity id?
 fn references_activity(kind: &IntentKind, activity_id: i64) -> bool {
     match kind {
         IntentKind::SegmentCreate {
@@ -446,9 +340,6 @@ fn references_activity(kind: &IntentKind, activity_id: i64) -> bool {
     }
 }
 
-/// Split a saved buffer into `key: value` pairs, skipping blank lines and `#`
-/// comments. An unrecognised line refuses loudly — a silent skip could eat a
-/// typo'd `minutes` and retry the unchanged payload.
 fn parse_edit_lines(buffer: &str) -> Result<Vec<(String, String)>, ResolveError> {
     const KEYS: [&str; 4] = ["started_at", "minutes", "title", "planned_on"];
     let mut fields = Vec::new();
@@ -479,10 +370,6 @@ fn parse_edit_lines(buffer: &str) -> Result<Vec<(String, String)>, ResolveError>
     Ok(fields)
 }
 
-/// Keep-local on a session verb: `start_timer(activity_id, switch: true)` —
-/// the server stops & saves its running session and the local one takes over.
-/// Only after the server acknowledges does the diverged intent leave the
-/// queue; the pending intents behind it stay and replay on the next drain.
 async fn switch_to_local(
     api: &ApiClient,
     store: &QueueStore,
@@ -494,11 +381,8 @@ async fn switch_to_local(
     Ok(Resolved::SwitchedToLocal)
 }
 
-/// Keep-local on a diverged stop: the local minutes become an explicit
-/// `create_segment` — the honest composition either way: a `no-live-timer`
-/// stop has no server segment to `update_segment` against (the session is
-/// gone), and none of the shipped conflict codes carries a segment id for the
-/// drift composition (ADR 0036), so the write is always a fresh segment.
+/// No shipped conflict code carries a server segment id (engineer ADR 0036), so
+/// the local minutes are always written as a fresh segment.
 async fn write_local_stop(
     api: &ApiClient,
     store: &QueueStore,
@@ -524,12 +408,6 @@ async fn write_local_stop(
     })
 }
 
-/// Write the local session as a segment (keep-both, and keep-local on a
-/// `no-live-timer` session verb): compose it from what is actually stored —
-/// the group's own verbs, seeded from a queued start, the cached snapshot, or
-/// the coded conflict's `current` — and write it via `create_segment`. Any
-/// server session is untouched. The whole group leaves the queue only after
-/// the write lands: its outcome now lives in the segment.
 async fn write_local_session(
     api: &ApiClient,
     store: &QueueStore,
@@ -550,13 +428,6 @@ async fn write_local_session(
     })
 }
 
-/// The local session as the stored payload supports composing it:
-/// `activity_id` from a queued start/bind (else the cached snapshot, else the
-/// coded conflict's `current.activity_id`), `started_at` from the queued start
-/// (else the cached anchor), elapsed from a queued stop's `local_elapsed_s`
-/// (else the group's pause/resume folded over the seed via `timer_clock`,
-/// materialized at `now`). Anything less refuses — the recorded boundary,
-/// never a guess.
 fn compose_local_session(
     cached: Option<&Timer>,
     conflict: &ConflictInfo,
@@ -572,10 +443,8 @@ fn compose_local_session(
             _ => None,
         })
         .or_else(|| cached.and_then(|t| t.activity_id))
-        // Last resort, `timer-already-running` only: the server session's
-        // activity. Not a guess — the panel showed that session (label and
-        // all) before the user chose to keep both, so the choice was made
-        // against exactly this anchor (the #106 boundary this dissolves).
+        // Not a guess: the conflict panel showed this session before the user
+        // chose keep-both.
         .or_else(|| conflict.current.as_ref().and_then(|c| c.activity_id))
         .ok_or_else(|| {
             ResolveError::CannotCompose(
@@ -583,8 +452,6 @@ fn compose_local_session(
             )
         })?;
 
-    // Seed the clock: a queued start anchors the local session; otherwise it
-    // predates the queue and the cached snapshot's anchor is the local truth.
     let mut timer = match group.iter().find_map(|i| match &i.kind {
         IntentKind::TimerStart { at, .. } => Some(*at),
         _ => None,
@@ -603,8 +470,6 @@ fn compose_local_session(
         .started_at
         .expect("both seed arms guarantee an anchor");
 
-    // Fold the group's clock verbs; a queued stop's own local_elapsed_s is
-    // the gestured truth and wins over recomputing it.
     let mut stopped_elapsed: Option<i64> = None;
     for intent in group {
         match &intent.kind {
@@ -619,9 +484,6 @@ fn compose_local_session(
                 ));
             }
             IntentKind::TimerStart { .. } | IntentKind::TimerBind { .. } => {}
-            // A timer-stream group never holds a plan write or a week note
-            // (those key on the `activity`/`activity:<id>`/`week:<iso>` streams),
-            // so this is unreachable — the match stays exhaustive over `IntentKind`.
             IntentKind::ActivityCreate { .. }
             | IntentKind::ActivityUpdate { .. }
             | IntentKind::ActivityArchive { .. }
@@ -647,8 +509,6 @@ fn compose_local_session(
     Ok((activity_id, started_at, elapsed_s))
 }
 
-/// Whole minutes, the same nearest-minute rounding `timer_clock::apply_stop`
-/// uses for the confirmation line.
 fn to_minutes(elapsed_s: i64) -> u32 {
     ((elapsed_s.max(0) + 30) / 60) as u32
 }
@@ -684,7 +544,6 @@ mod tests {
         diverge_as(store, id, 409, "Conflict", None, ConflictInfo::default());
     }
 
-    /// Diverge with a coded conflict — the enriched contract (engineer#806).
     fn diverge_as(
         store: &QueueStore,
         id: u64,
@@ -821,7 +680,6 @@ mod tests {
     #[tokio::test]
     async fn take_server_parks_the_whole_local_session_and_deletes_nothing() {
         let server = MockServer::start().await;
-        // Take-server writes nothing and the parked intents never replay.
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(200))
             .expect(0)
@@ -867,7 +725,6 @@ mod tests {
         }
         assert!(store.pending().unwrap().is_empty(), "excluded from replay");
 
-        // The proof the deliverable asks for: a later drain replays nothing.
         let report = super::super::replay::drain(&client(&server), &store)
             .await
             .unwrap();
@@ -878,8 +735,7 @@ mod tests {
     #[tokio::test]
     async fn keep_both_writes_the_composed_session_from_start_and_stop() {
         let server = MockServer::start().await;
-        // started_at from the queued start; minutes from the queued stop's
-        // local_elapsed_s (2832s ≈ 47m) — asserted on the wire.
+        // 2832s from the queued stop's local_elapsed_s ≈ 47m.
         Mock::given(method("POST"))
             .and(path("/api/v1/activities/9/segments"))
             .and(body_partial_json(serde_json::json!({
@@ -1040,10 +896,7 @@ mod tests {
     #[tokio::test]
     async fn keep_local_on_a_no_live_timer_pause_writes_the_minutes_instead_of_switching() {
         let server = MockServer::start().await;
-        // The session is gone server-side (coded proof) — keep-local composes
-        // the local session and writes it: cached anchor 09:00, queued pause
-        // at 09:30 freezes the clock → 30m. No start_timer call: there is no
-        // session to switch away from, and a fresh start would zero the clock.
+        // Cached anchor 09:00, queued pause at 09:30 → 30m.
         Mock::given(method("POST"))
             .and(path("/api/v1/activities/9/segments"))
             .and(body_partial_json(serde_json::json!({
@@ -1115,8 +968,6 @@ mod tests {
             .unwrap();
         no_live_timer(&store, pause.id);
 
-        // No cached snapshot: nothing names the gone session's activity, so
-        // there is nothing to write the composed segment on.
         let err = resolve(
             &client(&server),
             &store,
@@ -1141,9 +992,6 @@ mod tests {
     #[tokio::test]
     async fn keep_both_on_an_unbound_start_anchors_on_the_conflicts_current_activity() {
         let server = MockServer::start().await;
-        // The #106 boundary this ticket dissolves: an unbound local start used
-        // to refuse keep-both ("no activity to write its segment on"); the
-        // coded conflict's `current.activity_id` now anchors it.
         Mock::given(method("POST"))
             .and(path("/api/v1/activities/42/segments"))
             .and(body_partial_json(serde_json::json!({
@@ -1239,8 +1087,7 @@ mod tests {
         );
         assert!(store.intents().unwrap()[0].is_diverged(), "still diverged");
 
-        // keep-local on a diverged stop with no cached activity: nothing to
-        // write the segment on.
+        // keep-local on a diverged stop with no cached activity.
         let err = resolve(&api, &store, None, stop.id, Resolution::KeepLocal, now())
             .await
             .unwrap_err();
@@ -1254,8 +1101,7 @@ mod tests {
             "kept, not dropped"
         );
 
-        // keep-both on an unbound local session: no activity anywhere — not
-        // even a coded conflict snapshot to anchor on.
+        // keep-both on an unbound local session with no activity anywhere.
         let store = tmp_store("cannot-both-unbound");
         let start = store
             .enqueue(IntentKind::TimerStart {
@@ -1311,9 +1157,6 @@ mod tests {
         assert!(matches!(err, ResolveError::NotDiverged(999)), "{err}");
     }
 
-    // --- the rejected write's gestures (#109): edit / drop / skip -----------
-
-    /// A diverged `SegmentCreate` — the §Diverged · rejected segment case.
     fn seeded_rejected_segment(tag: &str) -> (QueueStore, Intent) {
         let store = tmp_store(tag);
         let seg = store
@@ -1344,7 +1187,6 @@ mod tests {
         assert!(seed.contains("minutes: 45"), "{seed}");
         let _ = seg;
 
-        // A diverged timer verb has nothing time-shaped to edit.
         let store = tmp_store("edit-seed-timer");
         let pause = store
             .enqueue(IntentKind::TimerPause {
@@ -1355,9 +1197,6 @@ mod tests {
         assert!(edit_seed(&store.intents().unwrap()[0]).is_none());
     }
 
-    /// The edit-retry round-trip: the corrected payload re-pends under the
-    /// writer lock with a **fresh** idempotency key, and the next drain lands
-    /// it — asserted on the wire, corrected times and all.
     #[tokio::test]
     async fn apply_edit_repends_the_corrected_segment_and_the_drain_retries_it() {
         let (store, seg) = seeded_rejected_segment("edit-retry");
@@ -1403,7 +1242,7 @@ mod tests {
             ("started_at: 14:02", "RFC 3339"),
             ("nonsense line", "key: value"),
             ("elapsed: 45", "unknown field"),
-            ("title: Raft", "no \"title\""), // a segment has no title line
+            ("title: Raft", "no \"title\""),
             ("# only comments\n", "nothing to retry"),
         ] {
             let err = apply_edit(&store, seg.id, buffer).unwrap_err();
@@ -1418,7 +1257,6 @@ mod tests {
             );
         }
 
-        // A pending intent is not editable — edit is a divergence gesture.
         let pending = store
             .enqueue(IntentKind::SegmentCreate {
                 activity_id: 9,
@@ -1455,7 +1293,6 @@ mod tests {
             ConflictInfo::default(),
         );
 
-        // The closed-day fix: move the day, trim the minutes.
         apply_edit(&store, create.id, "planned_on: 2026-07-15\nminutes: 25").unwrap();
         let intents = store.intents().unwrap();
         assert!(intents[0].is_pending());
@@ -1472,7 +1309,6 @@ mod tests {
     #[tokio::test]
     async fn drop_is_explicit_removes_the_intent_and_unblocks_its_stream() {
         let (store, seg) = seeded_rejected_segment("drop");
-        // A pending edit behind the diverged segment on the same stream.
         store
             .enqueue(IntentKind::ActivityUpdate {
                 id: 9,
@@ -1486,7 +1322,6 @@ mod tests {
         assert_eq!(intents.len(), 1, "gone — the one user-chosen delete");
         assert!(intents[0].is_pending(), "the stream is unblocked");
 
-        // The unblocked stream drains behind the choice.
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
             .and(path("/api/v1/activities/9"))
@@ -1505,7 +1340,6 @@ mod tests {
 
     #[test]
     fn drop_refuses_a_pending_intent_and_a_parent_with_dependents() {
-        // Pending: not a divergence choice.
         let store = tmp_store("drop-refuse");
         let pending = store
             .enqueue(IntentKind::TimerPause {
@@ -1517,9 +1351,6 @@ mod tests {
             Err(ResolveError::NotDiverged(_))
         ));
 
-        // A diverged create with a queued segment referencing its provisional
-        // id: dropping the parent would orphan the segment forever — refuse,
-        // naming the way out.
         use crate::api::ActivityCreate;
         let store = tmp_store("drop-orphan");
         let create = store
@@ -1560,7 +1391,6 @@ mod tests {
             other => panic!("expected parked, got {other:?}"),
         }
 
-        // Kept in the queue, out of the replay line — a drain touches nothing.
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(200))
@@ -1575,7 +1405,6 @@ mod tests {
         assert!(!report.diverged);
         assert_eq!(store.intents().unwrap().len(), 1, "kept, never deleted");
 
-        // Skip is a divergence gesture too.
         let pending = store
             .enqueue(IntentKind::TimerPause {
                 at: ts("2026-07-15T09:40:00Z"),
@@ -1624,5 +1453,98 @@ mod tests {
             store.intents().unwrap()[0].is_diverged(),
             "an unacknowledged resolution changes nothing — loud, not lossy"
         );
+    }
+
+    #[test]
+    fn a_composed_segment_rounds_to_the_nearest_minute() {
+        assert_eq!(to_minutes(89), 1);
+        assert_eq!(to_minutes(90), 2);
+        assert_eq!(to_minutes(2832), 47);
+        assert_eq!(
+            to_minutes(-30),
+            0,
+            "a negative elapsed never writes minutes"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_ending_in_a_queued_discard_refuses_keep_both() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("discard-keep-both");
+        let start = store
+            .enqueue(IntentKind::TimerStart {
+                activity_id: Some(9),
+                switch: false,
+                at: ts("2026-07-15T09:13:00Z"),
+            })
+            .unwrap();
+        store.enqueue(IntentKind::TimerDiscard).unwrap();
+        diverge(&store, start.id);
+
+        let err = resolve(
+            &client(&server),
+            &store,
+            None,
+            start.id,
+            Resolution::KeepBoth,
+            now(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ResolveError::CannotCompose(_)), "{err}");
+        assert_eq!(store.intents().unwrap().len(), 2, "nothing left the queue");
+        assert!(store.intents().unwrap()[0].is_diverged());
+    }
+
+    #[tokio::test]
+    async fn a_diverged_plan_write_parks_but_has_no_keep_local_or_keep_both() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("plan-write-resolve");
+        let adjust = store
+            .enqueue(IntentKind::ActivityUpdate {
+                id: 9,
+                title: "revised".into(),
+            })
+            .unwrap();
+        diverge(&store, adjust.id);
+
+        for resolution in [Resolution::KeepLocal, Resolution::KeepBoth] {
+            let err = resolve(
+                &client(&server),
+                &store,
+                Some(&cached_running()),
+                adjust.id,
+                resolution,
+                now(),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, ResolveError::CannotCompose(_)), "{err}");
+            assert!(store.intents().unwrap()[0].is_diverged(), "kept diverged");
+        }
+
+        let resolved = resolve(
+            &client(&server),
+            &store,
+            None,
+            adjust.id,
+            Resolution::TakeServer,
+            now(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolved, Resolved::Parked { count: 1 });
     }
 }
