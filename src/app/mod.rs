@@ -203,21 +203,12 @@ async fn run_loop(
             }
             maybe_event = events.next() => {
                 if let Some(Ok(ev)) = maybe_event {
-                    // A key in the TUI is the CLI's honest "still working"
-                    // signal — beat presence before the event is interpreted.
-                    if matches!(ev, crossterm::event::Event::Key(_)) {
-                        app.beat_presence_if_active();
-                    }
-                    if let Some(action) = event::translate(&mut app, ev) {
+                    if let Some(action) = app.on_terminal_event(ev) {
                         app.handle(action).await;
                     }
                 }
             }
-            _ = ticker.tick() => {
-                app.expire_stale_notification();
-                app.poll_timer_if_due();
-                app.refresh_queued_writes();
-            }
+            _ = ticker.tick() => app.on_tick(),
         }
 
         // A note asked for the full editor (Ctrl-E) — suspend the TUI, run
@@ -242,8 +233,12 @@ fn run_editor(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
     restore_terminal(terminal)?; // leave the alt screen + raw mode to the child
     let edited = crate::editor::edit(&pending.seed);
     resume_terminal(terminal)?;
-    let outcome = edited?;
-    match pending.target {
+    route_editor_outcome(app, pending.target, edited?);
+    Ok(())
+}
+
+fn route_editor_outcome(app: &mut App, target: EditorTarget, outcome: EditorOutcome) {
+    match target {
         // The capture draft: a non-empty save updates it; an abort or an empty
         // buffer keeps the original (capture-is-sacred, empty-buffer-cancels).
         EditorTarget::Capture => {
@@ -275,7 +270,6 @@ fn run_editor(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
             ),
         },
     }
-    Ok(())
 }
 
 /// Re-enter the alt screen + raw mode after the child editor exits.
@@ -815,6 +809,19 @@ impl App {
     /// presence-only). Deliberately silent once the timer has gone idle — the
     /// reclaim screen owns that decision (its `keep` verb is the explicit "I
     /// was present"), so navigating the reclaim list never auto-resolves it.
+    fn on_terminal_event(&mut self, ev: crossterm::event::Event) -> Option<Action> {
+        if matches!(ev, crossterm::event::Event::Key(_)) {
+            self.beat_presence_if_active();
+        }
+        event::translate(self, ev)
+    }
+
+    fn on_tick(&mut self) {
+        self.expire_stale_notification();
+        self.poll_timer_if_due();
+        self.refresh_queued_writes();
+    }
+
     fn beat_presence_if_active(&mut self) {
         let active = self.user.is_some()
             && self
@@ -1107,6 +1114,80 @@ mod tests {
         app.heartbeat_last = Instant::now() - HEARTBEAT_INTERVAL - Duration::from_secs(1);
         app.beat_presence_if_active();
         assert!(!beat_fired(&app), "signed out → no presence beat");
+    }
+
+    fn stale_heartbeat() -> Instant {
+        Instant::now() - HEARTBEAT_INTERVAL - Duration::from_secs(1)
+    }
+
+    #[tokio::test]
+    async fn a_keystroke_marks_presence_once_the_interval_has_passed() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.timer = Some(running_timer(300));
+        app.heartbeat_last = stale_heartbeat();
+        app.on_terminal_event(crossterm::event::Event::Key(
+            crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('j')),
+        ));
+        assert!(beat_fired(&app));
+    }
+
+    #[tokio::test]
+    async fn a_non_key_terminal_event_is_not_presence() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.timer = Some(running_timer(300));
+        let last = stale_heartbeat();
+        app.heartbeat_last = last;
+        app.on_terminal_event(crossterm::event::Event::Resize(80, 24));
+        app.on_terminal_event(crossterm::event::Event::FocusGained);
+        assert_eq!(app.heartbeat_last, last);
+    }
+
+    #[tokio::test]
+    async fn without_input_the_tick_never_marks_presence() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.timer = Some(running_timer(300));
+        let last = stale_heartbeat();
+        app.heartbeat_last = last;
+        app.on_tick();
+        app.handle(Action::TimerLoaded(Box::new(running_timer(310))))
+            .await;
+        assert_eq!(app.heartbeat_last, last);
+    }
+
+    fn capture_with_draft(app: &mut App, draft: &str) {
+        app.capture = Some(QuickCapture::with_text(draft));
+    }
+
+    #[tokio::test]
+    async fn quitting_the_editor_without_writing_keeps_the_capture_draft() {
+        let (mut app, _rx) = test_app(Some("a@b.c".into()));
+        capture_with_draft(&mut app, "a half-formed thought");
+        route_editor_outcome(&mut app, EditorTarget::Capture, EditorOutcome::Aborted);
+        assert_eq!(app.capture.unwrap().body(), "a half-formed thought");
+    }
+
+    #[tokio::test]
+    async fn an_empty_editor_save_keeps_the_capture_draft() {
+        let (mut app, _rx) = test_app(Some("a@b.c".into()));
+        capture_with_draft(&mut app, "a half-formed thought");
+        route_editor_outcome(
+            &mut app,
+            EditorTarget::Capture,
+            EditorOutcome::Saved("  \n".into()),
+        );
+        assert_eq!(app.capture.unwrap().body(), "a half-formed thought");
+    }
+
+    #[tokio::test]
+    async fn a_written_editor_buffer_replaces_the_capture_draft() {
+        let (mut app, _rx) = test_app(Some("a@b.c".into()));
+        capture_with_draft(&mut app, "a half-formed thought");
+        route_editor_outcome(
+            &mut app,
+            EditorTarget::Capture,
+            EditorOutcome::Saved("the finished thought".into()),
+        );
+        assert_eq!(app.capture.unwrap().body(), "the finished thought");
     }
 
     #[tokio::test]

@@ -107,4 +107,12 @@ mod tests {
         // `false` exits 1 without touching the file — the abort keeps the seed.
         assert_eq!(edit_with("false", "seed").unwrap(), EditorOutcome::Aborted);
     }
+
+    #[test]
+    fn quitting_without_writing_is_an_abort_even_after_the_buffer_changed() {
+        let editor = write_fake_editor("quitbang", "printf 'half typed' > \"$1\"; exit 1");
+        let out = edit_with(editor.to_str().unwrap(), "seed").unwrap();
+        let _ = std::fs::remove_file(&editor);
+        assert_eq!(out, EditorOutcome::Aborted);
+    }
 }
