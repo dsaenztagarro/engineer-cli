@@ -938,6 +938,13 @@ mod tests {
     }
 
     #[test]
+    fn a_week_without_a_monday_shows_the_bare_id() {
+        let mut data = sample();
+        data.week.monday = None;
+        assert_eq!(spans_text(&week_header(&data)), "2026-W29");
+    }
+
+    #[test]
     fn plan_row_renders_pill_and_logged_vs_planned() {
         let data = sample();
         let items: Vec<&PlanItem> = data.items().collect();
@@ -985,6 +992,19 @@ mod tests {
         assert_eq!(
             spans_text(&summary_line(&sample())),
             "planned 3 · done 1 · 5.1h logged"
+        );
+    }
+
+    #[test]
+    fn unplanned_time_still_counts_in_the_logged_summary() {
+        // The plan rows log 305 minutes between them; the server's week total
+        // also carries 95 unplanned minutes that belong to no plan item.
+        let mut data = sample();
+        data.planned_vs_done.logged_minutes = 400;
+        assert_eq!(
+            spans_text(&summary_line(&data)),
+            "planned 3 · done 1 · 6.7h logged",
+            "the summary reads every segment of the week, planned or not"
         );
     }
 
@@ -1163,7 +1183,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_week_renders_the_teaching_copy() {
+    async fn an_empty_week_is_an_invitation_not_a_blank() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
         let mut w = Week {
@@ -1180,6 +1200,7 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         assert!(text.contains("Nothing declared"), "{text}");
+        assert!(text.contains("`a` to add an intent"), "{text}");
         assert!(text.contains("engineer plan add"), "{text}");
     }
 
@@ -1471,9 +1492,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_live_reload_clears_the_provisional_rows() {
-        // Server truth supersedes the pending render: a WeekLoaded (a synced
-        // refetch) drops the `◔ queued` stand-ins.
+    async fn a_live_reload_clears_the_provisional_rows_and_note() {
         let (api, tx) = ctx();
         let mut w = Week {
             data: Some(empty()),
@@ -1485,7 +1504,15 @@ mod tests {
             &tx,
         )
         .await;
-        assert!(render_text(&mut w).contains("one systems paper"));
+        w.handle(
+            Action::WeekReflectQueued("a queued reflection".into()),
+            &api,
+            &tx,
+        )
+        .await;
+        let text = render_text(&mut w);
+        assert!(text.contains("one systems paper"), "{text}");
+        assert!(text.contains("a queued reflection"), "{text}");
         w.handle(Action::WeekLoaded(Box::new(sample())), &api, &tx)
             .await;
         let text = render_text(&mut w);
@@ -1493,7 +1520,78 @@ mod tests {
             !text.contains("one systems paper"),
             "provisional rows cleared"
         );
+        assert!(
+            !text.contains("a queued reflection"),
+            "the provisional note cleared"
+        );
         assert!(text.contains("SICP"), "the server rows render");
+    }
+
+    #[tokio::test]
+    async fn stepping_the_week_drops_its_pending_rows_and_open_input() {
+        let (api, tx) = ctx();
+        let mut w = Week {
+            data: Some(empty()),
+            ..Default::default()
+        };
+        w.handle(
+            Action::WeekPlanQueued("one systems paper".into()),
+            &api,
+            &tx,
+        )
+        .await;
+        w.handle(Action::WeekAddBegin, &api, &tx).await;
+        w.handle(Action::WeekStep(-1), &api, &tx).await;
+        let text = render_text(&mut w);
+        assert!(
+            !text.contains("one systems paper"),
+            "a queued row never leaks into another week: {text}"
+        );
+        assert!(!text.contains("INSERT"), "the input closed: {text}");
+    }
+
+    #[test]
+    fn the_open_input_owns_every_key() {
+        let mut w = loaded();
+        assert!(
+            w.intercept_key(KeyEvent::from(KeyCode::Char('d')))
+                .is_none(),
+            "closed: board keys fall through to the keymap"
+        );
+        w.input = Some(Input::Add { buf: String::new() });
+        assert!(matches!(
+            w.intercept_key(KeyEvent::from(KeyCode::Char('d'))),
+            Some(Action::WeekInputChar('d'))
+        ));
+        assert!(matches!(
+            w.intercept_key(KeyEvent::from(KeyCode::Enter)),
+            Some(Action::WeekInputSubmit)
+        ));
+        assert!(matches!(
+            w.intercept_key(KeyEvent::from(KeyCode::Esc)),
+            Some(Action::WeekInputCancel)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_401_from_the_week_read_routes_to_reauth() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        let api = ApiClient::with_token(url::Url::parse(&server.uri()).unwrap(), "t".into());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut w = Week::default();
+        w.handle(Action::RefreshWeek, &api, &tx).await;
+        assert!(
+            wait_for(&mut rx, |a| matches!(a, Action::SessionExpired)).await,
+            "a 401 is a session problem, never a week panel"
+        );
+        assert!(w.failure.is_none());
     }
 
     // --- the timer seam: start-on-plan, switch-confirm, offline, refusal ---
@@ -1666,6 +1764,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn s_on_a_negative_sentinel_row_refuses_still_queued() {
+        let (api, tx) = ctx();
+        let mut data = one_item();
+        data.days[0].items[0].id = -1;
+        let mut w = Week {
+            data: Some(data),
+            ..Default::default()
+        };
+        let (_, text) = w
+            .handle(Action::WeekStartTimer, &api, &tx)
+            .await
+            .expect("an unminted row refuses the start");
+        assert!(text.contains("still queued"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn s_binds_the_timer_to_the_plan_item_under_the_cursor() {
+        use crate::queue::{IntentKind, QueueStore};
+
+        let (queue_path, cache_path) = scratch_paths();
+        let api =
+            ApiClient::with_token(url::Url::parse("http://127.0.0.1:1/").unwrap(), "t".into());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut w = Week {
+            data: Some(sample()),
+            queue_paths: Some((queue_path.clone(), cache_path)),
+            ..Default::default()
+        };
+        w.handle(Action::WeekSelectMove(2), &api, &tx).await;
+        w.handle(Action::WeekStartTimer, &api, &tx).await;
+
+        let store = QueueStore::at(&queue_path);
+        let mut pending = store.pending().unwrap();
+        for _ in 0..100 {
+            if !pending.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            pending = store.pending().unwrap();
+        }
+        match &pending[..] {
+            [intent] => match &intent.kind {
+                IntentKind::TimerStart { activity_id, .. } => assert_eq!(
+                    *activity_id,
+                    Some(3),
+                    "the segment lands on the third row's planned activity"
+                ),
+                other => panic!("expected a TimerStart intent, got {other:?}"),
+            },
+            other => panic!("expected one queued start, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn moving_the_cursor_disarms_a_pending_switch() {
+        let (api, tx) = ctx();
+        let mut w = Week {
+            data: Some(sample()),
+            running: Some(running_on(99, "Read DDIA ch.7")),
+            ..Default::default()
+        };
+        w.handle(Action::WeekStartTimer, &api, &tx).await;
+        w.handle(Action::WeekSelectMove(1), &api, &tx).await;
+        w.handle(Action::WeekSelectMove(-1), &api, &tx).await;
+        let (level, text) = w
+            .handle(Action::WeekStartTimer, &api, &tx)
+            .await
+            .expect("the switch asks again after a cursor move");
+        assert!(matches!(level, Level::Warning));
+        assert!(text.contains("press s again"), "{text}");
+    }
+
+    #[tokio::test]
     async fn a_forwarded_timer_snapshot_marks_the_running_row_live() {
         let (api, tx) = ctx();
         let mut w = loaded();
@@ -1714,6 +1885,27 @@ mod tests {
             ))
             .await,
             "the reflect hand-off carries the week id and the current note as the seed"
+        );
+    }
+
+    #[tokio::test]
+    async fn re_editing_a_queued_reflection_seeds_from_the_local_draft() {
+        let (api, tx, mut rx) = ctx_rx();
+        let mut w = loaded();
+        w.handle(
+            Action::WeekReflectQueued("written offline".into()),
+            &api,
+            &tx,
+        )
+        .await;
+        w.handle(Action::WeekReflect, &api, &tx).await;
+        assert!(
+            wait_for(&mut rx, |a| matches!(
+                a,
+                Action::WeekReflectEdit { seed, .. } if seed == "written offline"
+            ))
+            .await,
+            "the seed is what was just written, not the stale stored note"
         );
     }
 
