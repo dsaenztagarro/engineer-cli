@@ -1,40 +1,4 @@
-//! Activities table — the core domain surface (the web `Activities.html` IA
-//! translated to a character grid, and the one deliberate concession to a
-//! web-shaped surface — capped by ADR 0002). A dense,
-//! scannable ledger of recent activities: a semantic status pill, kind, title,
-//! domain (by name — the terminal palette has no per-domain colours), duration,
-//! and a relative "when". It is the first screen to expose `meta.page`
-//! pagination, and it carries the row actions of the daily loop: complete,
-//! archive/unarchive (reversible, so it toggles quietly with no confirm),
-//! duplicate ("do this again"), a detail read, and binding the live timer to
-//! the selected activity.
-//!
-//! Filtering: `f` cycles a single, TUI-light filter ring that folds the two
-//! server-side axes worth cycling — lifecycle status and archived — into one
-//! key (all → planned → started → completed → archived). Kind is free-form on
-//! the wire and ill-suited to blind cycling, so it is reachable through `/`,
-//! which filters the *loaded page* client-side (the activities list API exposes
-//! no `q` text search) across title, kind, and domain.
-//!
-//! Mutations refetch the current page rather than patching the row in place, so
-//! the visible ledger always mirrors the server (the notes-browser discipline).
-//!
-//! Offline honesty (#109, §Segment audit · mixed): every fetch folds the
-//! pending queue over the server page (`queue::fold_activities`) — a
-//! still-queued create renders as a full `◔ … provisional · queued` row mixed
-//! with the confirmed, and a queued segment's minutes ride its parent row as
-//! `◔+Nm`. Read-time composition only: nothing provisional is ever written
-//! into a cache, and the rows settle to plain on the next fetch after the
-//! drain. Row actions refuse on a provisional row — there is no server id to
-//! act on yet.
-//!
-//! Offline writes (#110): the row's lifecycle verbs — complete (`c`),
-//! archive/unarchive (`a`), duplicate (`d`) — route through `QueuedClient` like
-//! every other write, so an offline gesture queues (confirming `· queued
-//! (offline)`) instead of bouncing. Complete/unarchive replay plain (naturally
-//! idempotent); duplicate mints a fresh copy and replays plain too (not in the
-//! `Idempotency-Key` opt-in set, ADR 0036), so a lost-ack re-fire makes a
-//! visible, archivable second copy — the accepted risk over a lost gesture.
+//! Activities table — the row-actionable activity ledger, capped by ADR 0002.
 
 use jiff::Timestamp;
 use ratatui::layout::{Constraint, Rect};
@@ -55,13 +19,10 @@ use crate::ui::{layout::bordered, theme, widgets};
 
 use super::{notify_seam_error, open_queued, QueuePaths};
 
-/// Page size we request. Also the divisor for "page N of M" when the server
-/// omits `per_page` from `meta`.
+/// Also the "page N of M" divisor when the server omits `per_page` from `meta`.
 const PER_PAGE: u32 = 25;
 
-/// The filter ring cycled by `f`: `(label, status, archived)`. `all` is the
-/// unfiltered default; the middle three are the conventional lifecycle values
-/// sent as the server `status=` filter; `archived` folds in archived-only rows.
+/// The filter ring cycled by `f`: `(label, status=, archived=)`.
 const FILTERS: [(&str, Option<&str>, Option<&str>); 5] = [
     ("all", None, None),
     ("planned", Some("planned"), None),
@@ -71,24 +32,20 @@ const FILTERS: [(&str, Option<&str>, Option<&str>); 5] = [
 ];
 
 pub struct Activities {
-    /// The server page with the pending queue folded over it (#109) — the
-    /// provisional rows carry negative ids, exactly as the queue minted them.
+    /// The server page with the pending queue folded over it; provisional rows
+    /// carry the negative ids the queue minted.
     items: Vec<FoldedActivity>,
     state: TableState,
-    /// 1-based current page (server-side).
+    /// 1-based, server-side.
     page: u32,
     per_page: u32,
     total: u32,
     /// Index into `FILTERS`.
     filter_idx: usize,
-    /// The `/` search buffer — a client-side narrow over the loaded page (no
-    /// server text search). `n`/`N` step matches within the visible rows.
+    /// Narrows the loaded page client-side: the list API has no `q` search.
     search: SearchBox,
     loading: bool,
-    /// Tier-2 state: set when the page read failed, so an empty page and a
-    /// failed fetch render differently. Cleared on the next successful load.
     failure: Option<PanelFailure>,
-    /// `Some` while the full-field detail read is open, over the table.
     detail: Option<Activity>,
     /// Queue location for the read-time fold; `None` (production) reads the
     /// shared XDG queue. Tests inject a scratch dir.
@@ -135,11 +92,6 @@ impl Activities {
         tokio::spawn(async move {
             match api.list_activities(&filters).await {
                 Ok(list) => {
-                    // Fold the pending queue over the fetched page — read-time
-                    // composition, re-read fresh on every fetch so a drained
-                    // intent's row settles to plain on the very next load.
-                    // Best-effort on the read side, like the timer fold: an
-                    // unreadable queue folds as empty (enqueue stays loud).
                     let intents = read_queue(&paths);
                     let _ = tx.send(Action::ActivitiesLoaded {
                         items: queue::fold_activities(list.data, &intents),
@@ -148,8 +100,6 @@ impl Activities {
                         total: list.meta.total,
                     });
                 }
-                // A 401 routes to re-auth; every other failure surfaces as
-                // itself in the Tier-2 panel — never a silent empty page.
                 Err(ApiError::Unauthorized) => {
                     let _ = tx.send(Action::SessionExpired);
                 }
@@ -163,8 +113,6 @@ impl Activities {
         });
     }
 
-    /// Total pages implied by `meta.total`/`per_page`. When the server omits
-    /// pagination metadata the screen behaves as a single page.
     fn total_pages(&self) -> u32 {
         if self.per_page == 0 {
             1
@@ -173,7 +121,6 @@ impl Activities {
         }
     }
 
-    /// The rows visible after the client-side `/` narrow (all rows when empty).
     fn visible(&self) -> Vec<&FoldedActivity> {
         if self.search.is_empty() {
             return self.items.iter().collect();
@@ -185,8 +132,6 @@ impl Activities {
             .collect()
     }
 
-    /// `n`/`N` — move the cursor to the next/previous *visible* row whose title
-    /// matches the live query, wrapping around (the search atom's stepper).
     fn step_match(&mut self, dir: i32) {
         let matches: Vec<usize> = {
             let vis = self.visible();
@@ -208,9 +153,7 @@ impl Activities {
             .and_then(|i| vis.get(i).cloned().cloned())
     }
 
-    /// The selected row when it names a real server record — the row actions'
-    /// gate. A provisional (still-queued) row has no server id to act on, so
-    /// the gesture refuses with the way forward instead of 404ing blind.
+    /// The row actions' gate: a provisional row has no server id to act on.
     fn selected_confirmed(&self) -> Result<Option<Activity>, (Level, String)> {
         match self.selected() {
             Some(f) if f.is_provisional() => Err((
@@ -222,7 +165,6 @@ impl Activities {
         }
     }
 
-    /// The detail read and the search prompt own keys before the global keymap.
     pub fn intercept_key(&mut self, key: crossterm::event::KeyEvent) -> Option<Action> {
         use crossterm::event::KeyCode;
         if self.detail.is_some() {
@@ -241,7 +183,6 @@ impl Activities {
                     text: "filter: type to narrow this page · Esc clears".into(),
                 });
             }
-            // `n`/`N` step matches once a query is live (applied, not capturing).
             if !self.search.is_empty() {
                 match key.code {
                     KeyCode::Char('n') => return Some(Action::ActivitiesMatchStep(1)),
@@ -276,8 +217,6 @@ impl Activities {
                 self.items = items;
                 self.loading = false;
                 self.failure = None;
-                // Adopt the server's echoed pagination when present; a missing
-                // `meta` (all zeros) leaves the requested page/size intact.
                 if page > 0 {
                     self.page = page;
                 }
@@ -339,10 +278,6 @@ impl Activities {
             }
             Action::ActivitiesOpenDetail => {
                 if let Some(f) = self.selected() {
-                    // Open instantly from the row, then refine with the full
-                    // record (segments count, generated notes the list omits).
-                    // A provisional row has no server record to refine from —
-                    // the local fold is everything there is, honestly.
                     let id = f.activity.id;
                     self.detail = Some(f.activity);
                     if id < 0 {
@@ -503,15 +438,12 @@ impl Activities {
                             Ok(q) => q,
                             Err(e) => return notify_seam_error(&tx, "timer start failed", e),
                         };
-                        // Start (switching away from any running timer) bound to
-                        // this activity, so the segment lands on the right work.
                         match queued.start_timer(Some(a.id), true).await {
                             Ok(WriteOutcome::Confirmed(t)) => {
                                 let _ = tx.send(Action::Notify {
                                     level: Level::Success,
                                     text: format!("timer started · {title}"),
                                 });
-                                // Refresh the app-owned header cell snapshot.
                                 let _ = tx.send(Action::TimerLoaded(Box::new(t)));
                             }
                             Ok(WriteOutcome::Provisional(t)) => {
@@ -542,8 +474,6 @@ impl Activities {
         None
     }
 
-    /// Shared reset when the loaded page changes (paging or filtering): drop the
-    /// page-scoped search, park the cursor at the top, and refetch.
     fn enter_page(&mut self, api: &ApiClient, tx: &UnboundedSender<Action>) {
         self.search.cancel();
         self.state.select(Some(0));
@@ -578,7 +508,6 @@ impl Activities {
         search::title_with_query(&base, &self.search)
     }
 
-    /// The bottom-border status line: `page N of M · X total` (+ a loading note).
     fn status_line(&self) -> Line<'static> {
         let total = if self.total > 0 {
             self.total
@@ -606,9 +535,6 @@ impl Activities {
         let block = bordered(self.panel_title()).title_bottom(self.status_line().right_aligned());
 
         if self.visible().is_empty() {
-            // A live query that hides every row on a non-empty page is a search
-            // exhaustion (its own muted line), distinct from a truly-empty page
-            // or a failed/loading read (the shared Tier-2 atom).
             if !self.search.is_empty() && !self.items.is_empty() {
                 frame.render_widget(
                     Paragraph::new(search::no_matches_line(&self.search.query)).block(block),
@@ -743,7 +669,6 @@ impl Activities {
             ("[ ]", "page"),
             ("/", "find"),
         ];
-        // Advertise match-stepping only while a query is live.
         if !self.search.is_empty() {
             hints.push(("n/N", "match"));
         }
@@ -770,9 +695,6 @@ fn activity_row(f: &FoldedActivity, now: Timestamp, query: &str) -> Row<'static>
         .map(|t| fmt_relative(t, now))
         .unwrap_or_default();
 
-    // §Segment audit · mixed: a still-queued create is a full ◔ row — the
-    // amber mark where the pill would be, the state named in the title cell,
-    // dim against the confirmed rows. Same table, one glyph.
     if f.is_provisional() {
         let amber = Style::default().fg(theme::WARN);
         let dur = a
@@ -797,8 +719,6 @@ fn activity_row(f: &FoldedActivity, now: Timestamp, query: &str) -> Row<'static>
     } else {
         Style::default()
     };
-    // Queued segment minutes ride beside the confirmed duration, marked —
-    // never summed into it as if the server had acknowledged them.
     let dur_cell = if f.queued_minutes > 0 {
         Cell::from(Line::from(vec![
             Span::styled(
@@ -820,8 +740,6 @@ fn activity_row(f: &FoldedActivity, now: Timestamp, query: &str) -> Row<'static>
         )
         .style(theme::muted())
     };
-    // Highlight the live `/` query inside the title (search atom); the base
-    // style stays the row's (muted when archived). An empty query is one span.
     let title_cell = Cell::from(Line::from(search::highlight(&a.title, query, title_style)));
     Row::new(vec![
         Cell::from(widgets::activity_status_pill(a.status.as_deref())),
@@ -833,9 +751,7 @@ fn activity_row(f: &FoldedActivity, now: Timestamp, query: &str) -> Row<'static>
     ])
 }
 
-/// The queue for the read-time fold — best-effort like every read-side queue
-/// touch: an unreadable queue reads as empty here (`engineer queue` is the
-/// loud surface for that), and the fetched page renders unfolded.
+/// Best-effort: `engineer queue` is the loud surface for an unreadable queue.
 fn read_queue(paths: &QueuePaths) -> Vec<crate::queue::Intent> {
     let store = match paths {
         Some((queue, _)) => QueueStore::at(queue.clone()),
@@ -847,9 +763,6 @@ fn read_queue(paths: &QueuePaths) -> Vec<crate::queue::Intent> {
     store.intents().unwrap_or_default()
 }
 
-/// A compact relative "when": `now`, `5m ago`, `3h ago`, `2d ago`, `3w ago`,
-/// then a bare `YYYY-MM-DD` for anything older. Future timestamps (a planned
-/// copy) read `soon`.
 fn fmt_relative(ts: Timestamp, now: Timestamp) -> String {
     let secs = now.as_second() - ts.as_second();
     if secs < 0 {
@@ -909,8 +822,6 @@ mod tests {
 
     fn loaded(items: Vec<Activity>, page: u32, per_page: u32, total: u32) -> Action {
         Action::ActivitiesLoaded {
-            // An empty queue folds to the confirmed rows unchanged — the
-            // shape `fetch` sends when nothing is pending.
             items: queue::fold_activities(items, &[]),
             page,
             per_page,
@@ -947,7 +858,6 @@ mod tests {
     async fn loaded_without_meta_keeps_requested_page() {
         let (mut s, api, tx) = setup();
         s.page = 3;
-        // meta all-zero (server omitted it) must not reset the page to 0.
         feed(&mut s, &api, &tx, loaded(three(), 0, 0, 0)).await;
         assert_eq!(s.page, 3);
         assert_eq!(s.total_pages(), 1);
@@ -1046,7 +956,6 @@ mod tests {
     async fn n_steps_between_visible_matches() {
         let (mut s, api, tx) = setup();
         feed(&mut s, &api, &tx, loaded(three(), 1, 25, 3)).await;
-        // A live query narrowing to the two titles containing "a".
         s.search.open();
         feed(&mut s, &api, &tx, Action::ActivitiesSearchInput('a')).await;
         feed(&mut s, &api, &tx, Action::ActivitiesSearchSubmit).await;
@@ -1079,7 +988,6 @@ mod tests {
             "no-matches line: {text}"
         );
         assert!(text.contains("zzzz"), "names the query: {text}");
-        // A filtered-to-nothing page is NOT dressed up as a failed/empty load.
         assert!(!text.contains("✖"), "not a failure: {text}");
     }
 
@@ -1144,7 +1052,6 @@ mod tests {
         assert_eq!(ago(3 * 3600), "3h ago");
         assert_eq!(ago(2 * 86_400), "2d ago");
         assert_eq!(ago(21 * 86_400), "3w ago");
-        // A future stamp (a planned copy) reads "soon".
         let future = Timestamp::from_second(now.as_second() + 3600).unwrap();
         assert_eq!(fmt_relative(future, now), "soon");
     }
@@ -1269,7 +1176,7 @@ mod tests {
         assert!(recv_matching(&mut rx, |a| matches!(a, Action::TimerLoaded(_))).await);
     }
 
-    // ---- provisional rows in the read (#109, §Segment audit · mixed) ----
+    // ---- provisional rows in the read ----
 
     use crate::queue::IntentKind;
 
@@ -1302,9 +1209,6 @@ mod tests {
             .collect()
     }
 
-    /// The full read path, offline work included: the fetch folds the pending
-    /// queue over the server page — the queued create is a `◔` row mixed with
-    /// the confirmed, and the queued segment's minutes ride its parent row.
     #[tokio::test]
     async fn fetch_folds_the_pending_queue_over_the_server_page() {
         let server = MockServer::start().await;
@@ -1366,12 +1270,13 @@ mod tests {
         let text = render_activities(&mut s);
         assert!(text.contains("◔ queued"), "the mark: {text}");
         assert!(text.contains("provisional · queued"), "the state: {text}");
-        assert!(text.contains("◔+14m"), "queued minutes beside DUR: {text}");
+        assert!(
+            text.contains("52m ◔+14m"),
+            "queued minutes ride beside the confirmed duration, never summed: {text}"
+        );
         assert!(text.contains("Raft leader election"), "mixed: {text}");
     }
 
-    /// The after-drain read: the same fetch with an emptied queue folds to the
-    /// plain page — provisional rows clear on the very next load.
     #[tokio::test]
     async fn provisional_rows_clear_after_the_drain() {
         let (mut s, api, tx) = setup();
@@ -1407,8 +1312,6 @@ mod tests {
         .await;
         assert_eq!(s.items.len(), 4, "the ◔ row is in the list");
 
-        // The next fetch after the drain: the queue is empty, the fold is
-        // identity — the row settled into (or left) the server page.
         feed(&mut s, &api, &tx, loaded(three(), 1, 25, 3)).await;
         assert_eq!(s.items.len(), 3);
         assert!(s.items.iter().all(|f| !f.is_provisional()));
@@ -1436,20 +1339,16 @@ mod tests {
             assert!(text.contains("still queued"), "{text}");
         }
 
-        // The detail opens from the local fold — there is no server record to
-        // refine from, and no fetch is spawned for a negative id.
         feed(&mut s, &api, &tx, Action::ActivitiesOpenDetail).await;
         assert_eq!(s.detail.as_ref().unwrap().title, "Paxos made live");
     }
 
-    // ---- offline row actions enqueue through the queue (#110) ----
+    // ---- offline row actions enqueue through the queue ----
 
     #[tokio::test]
     async fn offline_row_actions_enqueue_through_the_queue() {
-        // A dead address: each live write bounces (Transport) and the verb
-        // queues on its row's stream, confirming `queued (offline)` rather than
-        // failing — the wiring proof for the QueuedClient seam (its own
-        // enqueue/synthesis is covered in `queue::client`).
+        // The wiring proof for the QueuedClient seam; its own enqueue and
+        // synthesis are covered in `queue::client`.
         let (queue_path, _) = scratch_queue();
         let api = ApiClient::with_token(Url::parse("http://127.0.0.1:1/").unwrap(), "tok".into());
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -1482,5 +1381,105 @@ mod tests {
         assert_eq!(intents.len(), 2, "both verbs queued: {words:?}");
         assert!(words.contains(&"complete"), "{words:?}");
         assert!(words.contains(&"duplicate"), "{words:?}");
+    }
+
+    // ---- filters, search and the detail read ----
+
+    #[tokio::test]
+    async fn each_filter_asks_the_server_for_its_axis() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/activities"))
+            .and(query_param("status", "planned"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{ "id": 1, "title": "Planned one", "status": "planned" }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/activities"))
+            .and(query_param("archived", "true"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{ "id": 2, "title": "Archived one" }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = srv_client(&server);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (queue_path, _) = scratch_queue();
+        let mut s = Activities {
+            queue_paths: Some((queue_path, std::path::PathBuf::new())),
+            ..Activities::default()
+        };
+        for (label, title) in [("planned", "Planned one"), ("archived", "Archived one")] {
+            s.filter_idx = FILTERS.iter().position(|f| f.0 == label).unwrap();
+            s.on_enter(&api, &tx);
+            let got = match tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .expect("the load lands")
+            {
+                Some(Action::ActivitiesLoaded { items, .. }) => items,
+                other => panic!("{label}: unexpected {other:?}"),
+            };
+            assert_eq!(got[0].activity.title, title, "{label}");
+        }
+    }
+
+    #[tokio::test]
+    async fn search_matches_the_domain_name() {
+        let (mut s, api, tx) = setup();
+        let mut rows = three();
+        rows[1].domain_name = Some("Algorithms".into());
+        feed(&mut s, &api, &tx, loaded(rows, 1, 25, 3)).await;
+        s.search.open();
+        for c in "algo".chars() {
+            feed(&mut s, &api, &tx, Action::ActivitiesSearchInput(c)).await;
+        }
+        assert_eq!(s.visible().len(), 1);
+        assert_eq!(s.visible()[0].activity.id, 2);
+    }
+
+    #[tokio::test]
+    async fn changing_page_drops_the_page_scoped_search() {
+        let (mut s, api, tx) = setup();
+        feed(&mut s, &api, &tx, loaded(three(), 1, 25, 42)).await;
+        s.search.open();
+        feed(&mut s, &api, &tx, Action::ActivitiesSearchInput('s')).await;
+        feed(&mut s, &api, &tx, Action::ActivitiesSearchSubmit).await;
+        s.state.select(Some(1));
+        feed(&mut s, &api, &tx, Action::ActivitiesPageNext).await;
+        assert!(s.search.is_empty(), "the query belonged to the old page");
+        assert_eq!(s.state.selected(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn the_full_record_refines_the_detail_only_while_it_is_open() {
+        let (mut s, api, tx) = setup();
+        feed(&mut s, &api, &tx, loaded(three(), 1, 25, 3)).await;
+        let full = || {
+            Box::new(activity(serde_json::json!({
+                "id": 1, "title": "Read SICP", "segments_count": 3
+            })))
+        };
+
+        feed(&mut s, &api, &tx, Action::ActivitiesOpenDetail).await;
+        feed(&mut s, &api, &tx, Action::ActivitiesDetailLoaded(full())).await;
+        assert_eq!(s.detail.as_ref().unwrap().segments_count, Some(3));
+
+        feed(&mut s, &api, &tx, Action::ActivitiesCloseDetail).await;
+        feed(&mut s, &api, &tx, Action::ActivitiesDetailLoaded(full())).await;
+        assert!(s.detail.is_none(), "a late refine never reopens the detail");
+    }
+
+    #[test]
+    fn an_unreadable_queue_folds_as_empty() {
+        let (queue_path, _) = scratch_queue();
+        std::fs::write(&queue_path, "not json").unwrap();
+        let intents = read_queue(&Some((queue_path, std::path::PathBuf::new())));
+        assert!(intents.is_empty());
     }
 }

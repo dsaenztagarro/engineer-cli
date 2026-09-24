@@ -1,21 +1,4 @@
 //! The `:` command grammar — a single source of truth for the palette.
-//!
-//! One static table (`ENTRIES`) pins the whole verb inventory: navigation
-//! (`:home` `:books`
-//! `:activities` `:notes` `:review` `:progress` `:week` `:timer`), actions
-//! (`:timer start|pause|resume|stop`, `:note <text>`, `:log` the activity
-//! capture form, `:target` the Progress declare flow) and housekeeping (`:q`
-//! `:logs` `:w` `:logout`, plus `:help`). The dispatcher, Tab completion, the
-//! inline line-state hints, and `:help` all read this one table, so the grammar
-//! never drifts between what runs and what the UI advertises.
-//!
-//! Resolution is vim-flavoured: an exact verb or alias wins; otherwise an
-//! unambiguous prefix resolves (`:act` → activities, `:t start` → timer start),
-//! and an ambiguous prefix (`:l` → log/logs/logout) reports its candidates
-//! rather than guessing. `:target` ships as a full word only, with **no**
-//! `t`-prefixed alias: `timer` carries the exact alias `t` so `:t` still wins
-//! for the timer (exact beats prefix), the same way `:w` stays the write alias
-//! next to `:week`. So `:t` → timer, `:ta` → target, `:ti` → timer.
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -24,7 +7,6 @@ use crate::app::screens::timer::TimerVerb;
 use crate::app::screens::ScreenKind;
 use crate::ui::theme;
 
-/// The three verb families the grammar groups its verbs into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Nav,
@@ -32,32 +14,22 @@ pub enum Kind {
     Housekeeping,
 }
 
-/// The argument shape a verb accepts.
 #[derive(Debug, Clone, Copy)]
 pub enum Arg {
-    /// A bare verb — no argument.
     None,
-    /// A fixed set of sub-verbs (e.g. timer `start|pause|resume|stop`). Bare is
-    /// still valid for `timer` (it navigates); a non-empty argument is validated
-    /// against this set with the same prefix rules as the verb itself.
     Enum(&'static [&'static str]),
-    /// Free text captured verbatim (e.g. `:note <text>`).
     Text,
 }
 
-/// What a resolved verb dispatches to. Kept as data (not closures) so the table
-/// stays a `const`; `build` maps a `Target` + argument to a runnable `Command`.
+/// Data rather than closures, so the table stays a `const`.
 #[derive(Debug, Clone, Copy)]
 pub enum Target {
     Nav(ScreenKind),
-    /// Bare navigates to the Timer screen; an argument runs a timer action.
     Timer,
-    /// Opens quick-capture, prefilled when text is supplied.
     Note,
-    /// Opens the activity capture form (the `a` gesture, from any screen).
     Log,
-    /// Opens the Progress screen and starts the declare flow (the `:target`
-    /// verb; named for the dispatch, not the verb, to avoid the enum stutter).
+    /// Named for what it dispatches rather than the `:target` verb, to avoid a
+    /// `Target::Target` stutter.
     Declare,
     Quit,
     Write,
@@ -66,7 +38,6 @@ pub enum Target {
     Help,
 }
 
-/// One row of the grammar table.
 #[derive(Debug, Clone, Copy)]
 pub struct Entry {
     pub verb: &'static str,
@@ -77,7 +48,7 @@ pub struct Entry {
     pub target: Target,
 }
 
-/// The pinned verb inventory. Order is display order (help + empty-line hint).
+/// Order is `:help` display order.
 pub const ENTRIES: &[Entry] = &[
     Entry {
         verb: "home",
@@ -144,9 +115,6 @@ pub const ENTRIES: &[Entry] = &[
         target: Target::Nav(ScreenKind::Inbox),
     },
     Entry {
-        // Full word only — no `q`-prefixed alias: `:q` is the exact `quit`
-        // alias (exact beats prefix), so `:q` still quits, `:que` reaches the
-        // queue, `:qui` the quit; `:qu` lists both like any ambiguous prefix.
         verb: "queue",
         aliases: &[],
         kind: Kind::Nav,
@@ -172,9 +140,6 @@ pub const ENTRIES: &[Entry] = &[
     },
     Entry {
         verb: "timer",
-        // `t` is pinned to the timer as an exact alias so `:t` keeps resolving
-        // here (exact beats prefix) even though `target` also starts with `t` —
-        // the tested muscle-memory binding survives the new verb.
         aliases: &["t"],
         kind: Kind::Nav,
         arg: Arg::Enum(TimerVerb::NAMES),
@@ -199,9 +164,6 @@ pub const ENTRIES: &[Entry] = &[
     },
     Entry {
         verb: "target",
-        // Full word only — deliberately no `t`-prefixed alias; see the module
-        // doc. The Progress screen owns adjust (`e`) / retire (`x`); the verb
-        // opens the declare flow.
         aliases: &[],
         kind: Kind::Action,
         arg: Arg::None,
@@ -250,8 +212,6 @@ pub const ENTRIES: &[Entry] = &[
     },
 ];
 
-/// The bare navigation verbs, in display order — the empty-line hint and the
-/// help summary read from here.
 const NAV_VERBS: &[&str] = &[
     "home",
     "books",
@@ -265,16 +225,12 @@ const NAV_VERBS: &[&str] = &[
     "timer",
 ];
 
-/// A runnable command, produced once a verb (and any argument) fully resolves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Nav(ScreenKind),
     Timer(TimerVerb),
-    /// `None` opens a blank capture; `Some` prefills it with the text.
     Note(Option<String>),
-    /// Open the activity capture form.
     Log,
-    /// Open the Progress screen and start the declare flow.
     Target,
     Quit,
     Write,
@@ -283,24 +239,17 @@ pub enum Command {
     Help,
 }
 
-/// The outcome of parsing the command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Parse {
-    /// Just `:` — nothing to run.
     Empty,
-    /// A resolved, runnable command.
     Run(Command),
-    /// No verb matched (carries what was typed).
     Unknown(String),
-    /// A prefix matched several verbs.
     Ambiguous(Vec<&'static str>),
-    /// A verb resolved but its argument is not one of the accepted sub-verbs.
     BadArg {
         verb: &'static str,
         expected: &'static [&'static str],
         got: String,
     },
-    /// A verb resolved but its argument prefix matched several sub-verbs.
     AmbiguousArg {
         verb: &'static str,
         matches: Vec<&'static str>,
@@ -308,14 +257,11 @@ pub enum Parse {
 }
 
 enum VerbHit {
-    /// Exact verb or alias, or unambiguous prefix.
     One(&'static Entry),
     Many(Vec<&'static str>),
     None,
 }
 
-/// Resolve the first token to a table entry: exact verb/alias, else a unique
-/// prefix, else the ambiguous candidates (or nothing).
 fn resolve_verb(tok: &str) -> VerbHit {
     if let Some(e) = ENTRIES
         .iter()
@@ -340,8 +286,6 @@ enum ArgHit<'a> {
     None,
 }
 
-/// Resolve a sub-verb argument against a fixed set, with the same exact-then-
-/// prefix rules the verb uses (`:timer p` → pause, `:timer s` → start/stop).
 fn resolve_arg<'a>(names: &'a [&'a str], tok: &str) -> ArgHit<'a> {
     if let Some(n) = names.iter().find(|n| **n == tok) {
         return ArgHit::One(n);
@@ -358,8 +302,6 @@ fn resolve_arg<'a>(names: &'a [&'a str], tok: &str) -> ArgHit<'a> {
     }
 }
 
-/// Parse a command-line buffer (the text after `:`, no leading colon) into a
-/// [`Parse`] outcome.
 pub fn parse(input: &str) -> Parse {
     let input = input.trim();
     if input.is_empty() {
@@ -376,10 +318,8 @@ pub fn parse(input: &str) -> Parse {
     }
 }
 
-/// Map a resolved entry + argument to a runnable command (or an argument error).
 fn build(entry: &Entry, arg: &str) -> Parse {
     match entry.target {
-        // Nav verbs ignore any stray argument.
         Target::Nav(kind) => Parse::Run(Command::Nav(kind)),
         Target::Timer => {
             if arg.is_empty() {
@@ -401,8 +341,6 @@ fn build(entry: &Entry, arg: &str) -> Parse {
             }
         }
         Target::Note => Parse::Run(Command::Note((!arg.is_empty()).then(|| arg.to_string()))),
-        // Bare verbs — the activity form / declare flow ignore a stray argument
-        // (the form is structured; there is no free-text payload to route).
         Target::Log => Parse::Run(Command::Log),
         Target::Declare => Parse::Run(Command::Target),
         Target::Quit => Parse::Run(Command::Quit),
@@ -417,15 +355,10 @@ fn takes_arg(entry: &Entry) -> bool {
     matches!(entry.arg, Arg::Enum(_) | Arg::Text)
 }
 
-/// Tab completion: extend the buffer toward the longest common prefix of the
-/// matching verbs (vim's `wildmode=longest`), completing a lone match fully and
-/// opening an argument slot for verbs that take one. When several verbs still
-/// match, the buffer stops at the branch point and the inline hint lists them,
-/// so no cycle state has to be tracked between keystrokes. Returns the buffer
-/// unchanged when nothing matches.
+/// Tab completion to the longest common prefix — vim's `wildmode=longest`, so
+/// no cycle state is tracked between keystrokes.
 pub fn complete(input: &str) -> String {
     if let Some((verb_part, rest)) = input.split_once(char::is_whitespace) {
-        // Argument region — only enum arguments (timer) complete.
         let arg = rest.trim_start();
         if let VerbHit::One(entry) = resolve_verb(verb_part.trim()) {
             if let Arg::Enum(names) = entry.arg {
@@ -453,12 +386,8 @@ pub fn complete(input: &str) -> String {
     }
 }
 
-/// The inline tail shown after the cursor while typing — the four line states:
-/// empty (top verbs), partial (matches / completion), a resolved
-/// verb (its help + argument shape), and unknown (helpful, not hostile).
 pub struct Hint {
     pub text: String,
-    /// True for the unknown / bad-argument states, tinted to read as a soft warning.
     pub warn: bool,
 }
 
@@ -476,13 +405,10 @@ fn warn(text: impl Into<String>) -> Hint {
     }
 }
 
-/// Classify the current buffer into an inline [`Hint`].
 pub fn hint(input: &str) -> Hint {
-    // Empty line — advertise what's possible.
     if input.trim().is_empty() {
         return plain(format!("{} · :help · Tab completes", NAV_VERBS.join(" · ")));
     }
-    // Argument region (verb + space).
     if let Some((verb_part, rest)) = input.split_once(char::is_whitespace) {
         let verb = verb_part.trim();
         if verb.is_empty() {
@@ -511,7 +437,6 @@ pub fn hint(input: &str) -> Hint {
             _ => warn("unknown — try :help"),
         };
     }
-    // Single verb token.
     match resolve_verb(input.trim()) {
         VerbHit::One(entry) if entry.verb == input.trim() => plain(format!("→ {}", entry.help)),
         VerbHit::One(entry) => plain(format!("→ {} — {}", entry.verb, entry.help)),
@@ -520,7 +445,6 @@ pub fn hint(input: &str) -> Hint {
     }
 }
 
-/// The command line as a styled footer row: `:input█` plus the inline hint.
 pub fn render_line(input: &str) -> Line<'static> {
     let mut spans = vec![
         Span::styled(":", theme::focused()),
@@ -539,8 +463,6 @@ pub fn render_line(input: &str) -> Line<'static> {
     Line::from(spans)
 }
 
-/// A one-line reference of the whole table, shown by `:help`. Built from
-/// `ENTRIES` so it can never drift from what actually runs.
 pub fn help_summary() -> String {
     let mut nav = Vec::new();
     let mut action = Vec::new();
@@ -613,29 +535,21 @@ mod tests {
 
     #[test]
     fn queue_resolves_by_prefix_and_leaves_the_quit_alias_alone() {
-        // `:q` is the exact quit alias — exact beats prefix, so it never
-        // resolves as a prefix of queue.
         assert_eq!(cmd("q"), Command::Quit);
-        // `:qu` is an ambiguous prefix of both queue and quit.
         assert_eq!(parse("qu"), Parse::Ambiguous(vec!["queue", "quit"]));
-        // Past the branch point each side resolves.
         assert_eq!(cmd("que"), Command::Nav(ScreenKind::Queue));
         assert_eq!(cmd("qui"), Command::Quit);
     }
 
     #[test]
     fn week_resolves_by_prefix_and_leaves_the_write_alias_alone() {
-        // `:we` is an unambiguous prefix of the sole `week`-stemmed verb...
         assert_eq!(cmd("we"), Command::Nav(ScreenKind::Week));
         assert_eq!(cmd("wee"), Command::Nav(ScreenKind::Week));
-        // ...while the exact `:w` alias still submits the form (exact wins).
         assert_eq!(cmd("w"), Command::Write);
     }
 
     #[test]
     fn unambiguous_prefixes_resolve() {
-        // `:audit` moved in beside `:activities`, so the bare `:a` now lists
-        // its candidates like any ambiguous prefix; `:ac`/`:au` resolve.
         assert_eq!(cmd("act"), Command::Nav(ScreenKind::Activities));
         assert_eq!(cmd("ac"), Command::Nav(ScreenKind::Activities));
         assert_eq!(cmd("au"), Command::Nav(ScreenKind::Audit));
@@ -663,7 +577,6 @@ mod tests {
         assert_eq!(cmd("timer pause"), Command::Timer(TimerVerb::Pause));
         assert_eq!(cmd("timer resume"), Command::Timer(TimerVerb::Resume));
         assert_eq!(cmd("timer stop"), Command::Timer(TimerVerb::Stop));
-        // Verb prefix + argument prefix together.
         assert_eq!(cmd("t start"), Command::Timer(TimerVerb::Start));
         assert_eq!(cmd("timer p"), Command::Timer(TimerVerb::Pause));
         assert_eq!(cmd("timer r"), Command::Timer(TimerVerb::Resume));
@@ -671,7 +584,6 @@ mod tests {
 
     #[test]
     fn timer_ambiguous_argument_reports_candidates() {
-        // start and stop both begin with s.
         match parse("timer s") {
             Parse::AmbiguousArg { verb, matches } => {
                 assert_eq!(verb, "timer");
@@ -699,7 +611,6 @@ mod tests {
             cmd("note closures are objects"),
             Command::Note(Some("closures are objects".into()))
         );
-        // Internal spacing is preserved; only the ends are trimmed.
         assert_eq!(
             cmd("note  two  spaces"),
             Command::Note(Some("two  spaces".into()))
@@ -708,16 +619,13 @@ mod tests {
 
     #[test]
     fn ambiguous_prefixes_report_all_candidates() {
-        // `log` (the new capture verb) joins logs/logout under the `l` prefix.
         assert_eq!(parse("l"), Parse::Ambiguous(vec!["log", "logs", "logout"]));
         assert_eq!(parse("h"), Parse::Ambiguous(vec!["home", "help"]));
-        // note (action) and notes (nav) share the whole "note" stem.
         assert_eq!(parse("n"), Parse::Ambiguous(vec!["notes", "note"]));
     }
 
     #[test]
     fn exact_note_wins_over_the_notes_prefix() {
-        // :note is an exact verb, so it never resolves as a prefix of notes.
         assert_eq!(cmd("note"), Command::Note(None));
         assert_eq!(cmd("notes"), Command::Nav(ScreenKind::Notes));
     }
@@ -729,44 +637,29 @@ mod tests {
 
     #[test]
     fn completion_extends_to_the_longest_common_prefix() {
-        // `timer` and `target` now share the bare `t` prefix, so completion
-        // stops at the branch point (the `:t` → timer alias still runs it, and
-        // the inline hint names the resolution).
         assert_eq!(complete("t"), "t");
-        // Past the branch point each side completes: `ti` → timer (opens the
-        // argument slot), `ta` → target (no argument).
         assert_eq!(complete("ti"), "timer ");
         assert_eq!(complete("time"), "timer ");
         assert_eq!(complete("ta"), "target");
-        // Lone match with no argument completes fully.
         assert_eq!(complete("boo"), "books");
         assert_eq!(complete("act"), "activities");
-        // note / notes share the "note" stem.
         assert_eq!(complete("n"), "note");
-        // log / logs / logout share the "log" stem.
         assert_eq!(complete("lo"), "log");
-        // Argument completion: start / stop share "st".
         assert_eq!(complete("timer s"), "timer st");
         assert_eq!(complete("timer p"), "timer pause");
-        // Nothing matches — buffer is unchanged.
         assert_eq!(complete("zzz"), "zzz");
     }
 
     #[test]
     fn hint_states_read_as_the_four_line_states() {
-        // Empty: top verbs.
         let empty = hint("");
         assert!(empty.text.contains("home"));
         assert!(empty.text.contains("timer"));
         assert!(!empty.warn);
-        // Partial with several matches (Suggest).
         assert!(hint("l").text.contains("logs"));
         assert!(hint("l").text.contains("logout"));
-        // Resolved verb shows its help.
         assert!(hint("books").text.contains("browse books"));
-        // Timer argument region lists the sub-verbs.
         assert!(hint("timer ").text.contains("start"));
-        // Unknown: helpful, flagged as a soft warning.
         assert!(hint("zzz").warn);
         assert!(hint("zzz").text.contains(":help"));
     }
@@ -777,7 +670,6 @@ mod tests {
         assert!(s.contains("home"));
         assert!(s.contains("timer[start|pause|resume|stop]"));
         assert!(s.contains("note <text>"));
-        // The two new action verbs appear in the actions group.
         assert!(s.contains("log"));
         assert!(s.contains("target"));
         assert!(s.contains("logout"));
@@ -785,12 +677,8 @@ mod tests {
 
     #[test]
     fn log_and_target_verbs_resolve() {
-        // `:log` opens the activity capture form; a stray argument is ignored
-        // (the form is structured — there is no free-text payload to route).
         assert_eq!(cmd("log"), Command::Log);
         assert_eq!(cmd("log 45m reading"), Command::Log);
-        // `:target` opens the Progress declare flow; full word and unique
-        // prefixes past the `t` branch resolve.
         assert_eq!(cmd("target"), Command::Target);
         assert_eq!(cmd("ta"), Command::Target);
         assert_eq!(cmd("tar"), Command::Target);
@@ -798,17 +686,12 @@ mod tests {
 
     #[test]
     fn target_is_a_full_word_and_never_steals_the_timer_prefix() {
-        // The whole point of the deferral: adding `target` must not break `:t`.
-        // `t` is an exact alias of timer, so exact wins over the shared prefix.
         assert_eq!(cmd("t"), Command::Nav(ScreenKind::Timer));
         assert_eq!(cmd("t start"), Command::Timer(TimerVerb::Start));
-        // `ti`/`tim` stay timer by prefix; only `ta…` reaches target.
         assert_eq!(cmd("ti"), Command::Nav(ScreenKind::Timer));
         assert_eq!(cmd("tim"), Command::Nav(ScreenKind::Timer));
-        // `target` carries no `t`-prefixed alias — the alias lives on timer.
         let target = ENTRIES.iter().find(|e| e.verb == "target").unwrap();
         assert!(target.aliases.is_empty());
-        // And `:t` never lands as an ambiguous prefix.
         assert!(matches!(
             parse("t"),
             Parse::Run(Command::Nav(ScreenKind::Timer))
@@ -817,10 +700,36 @@ mod tests {
 
     #[test]
     fn log_verb_hint_and_completion_follow_the_table() {
-        // Resolved-verb hint reads the table's help.
         assert!(hint("log").text.contains("log a completed activity"));
         assert!(hint("target").text.contains("declare a weekly target"));
-        // The `t` branch hint names the timer resolution (exact alias).
         assert!(hint("t").text.contains("timer"));
+    }
+
+    #[test]
+    fn a_nav_verb_ignores_a_stray_argument() {
+        assert_eq!(cmd("books rust"), Command::Nav(ScreenKind::Books));
+    }
+
+    #[test]
+    fn the_empty_line_hint_advertises_only_table_nav_verbs() {
+        for verb in NAV_VERBS {
+            let entry = ENTRIES
+                .iter()
+                .find(|e| e.verb == *verb)
+                .unwrap_or_else(|| panic!(":{verb} is not in the table"));
+            assert_eq!(entry.kind, Kind::Nav, ":{verb}");
+        }
+    }
+
+    #[test]
+    fn help_summary_names_every_verb_in_the_table() {
+        let s = help_summary();
+        let words: Vec<&str> = s
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .collect();
+        for e in ENTRIES {
+            assert!(words.contains(&e.verb), ":{} missing from {s}", e.verb);
+        }
     }
 }

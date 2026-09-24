@@ -6,4 +6,5 @@ pub mod panel;
 pub mod picker;
 pub mod search;
 pub mod theme;
+pub mod tokens;
 pub mod widgets;

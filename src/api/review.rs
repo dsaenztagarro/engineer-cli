@@ -1,5 +1,4 @@
-//! The Review pillar — spaced repetition over topics. A topic is keyed by its subdomain_id;
-//! freshness is derived on read and a rating is the single write path.
+//! The Review pillar — spaced repetition over topics, keyed by `subdomain_id`.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;

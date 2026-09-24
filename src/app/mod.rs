@@ -1,9 +1,4 @@
 //! TUI shell. Owns terminal state, the event loop, and screen routing.
-//!
-//! Architecture: a single `tokio::select!` loop drains crossterm events,
-//! background HTTP results from a `mpsc` channel, and a tick timer. Screens
-//! interpret keys into `Action`s; `App::handle` mutates state and may spawn
-//! async work whose results come back as `Action`s.
 
 use color_eyre::eyre::Result;
 use crossterm::event::EventStream;
@@ -39,35 +34,20 @@ use screens::{Screen, ScreenKind};
 
 const TICK: Duration = Duration::from_millis(250);
 
-/// How often the header timer cell re-polls the server. Between polls the
-/// displayed elapsed is ticked locally from `elapsed_seconds` + a monotonic
-/// baseline, so the cell advances smoothly without a request per second.
+/// Between polls the header ticks elapsed locally from a monotonic baseline.
 const TIMER_POLL_INTERVAL: Duration = Duration::from_secs(15);
 
-/// The most often a key in the TUI marks presence (the idle-guard heartbeat).
-/// Matches the web pill's once-a-minute throttle — the server beat is
-/// presence-only, so the rate limit is the client's job.
+/// The server beat is presence-only, so throttling it is the client's job.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 
-/// A pending `$EDITOR` hand-off the run loop performs between frames: suspend the
-/// TUI, spawn the editor seeded with `seed`, and route the saved buffer to
-/// `target`.
 pub struct PendingEditor {
     seed: String,
     target: EditorTarget,
 }
 
-/// Where a finished `$EDITOR` buffer lands, and how an abort/empty save is read.
 pub enum EditorTarget {
-    /// The quick-capture overlay's draft (#88) — a non-empty save updates it; an
-    /// abort or an empty buffer keeps it (capture-is-sacred).
     Capture,
-    /// The week's retro reflection (#117) — a save persists (empty clears); an
-    /// abort keeps the stored note (abort ≠ empty-save).
     WeekNote { iso_week: String },
-    /// A rejected queued write's payload (#109, §Diverged · rejected segment) —
-    /// a save parses back through `queue::apply_edit` and retries the replay;
-    /// an abort keeps the intent diverged, untouched.
     QueueIntent { intent_id: u64 },
 }
 
@@ -78,56 +58,23 @@ pub struct App {
     pub current: Screen,
     pub notification: Option<Notification>,
     pub leader_pending: bool,
-    /// `g`-goto prefix pending — the next key picks a destination (`g t`/`g p`/
-    /// `g r`/…) or, on a `g`, the current list's top motion (`gg`).
     pub goto_pending: bool,
     pub command_buffer: Option<String>,
-    /// The quick-capture overlay, when open — modal over the current screen and
-    /// reachable from anywhere (`<Space>c`). `None` when closed.
     pub capture: Option<QuickCapture>,
     pub should_quit: bool,
     pub tx: mpsc::UnboundedSender<Action>,
-    /// Latest timer snapshot shared by every screen's header cell (`None` until
-    /// the first poll / when no timer is running).
     pub timer: Option<Timer>,
-    /// Monotonic instant the current `timer` snapshot was received — the base
-    /// for ticking the displayed elapsed between polls.
     pub timer_base: Option<Instant>,
-    /// True while `timer` is the folded local clock (a transport-failed poll
-    /// fell back to cache ⊕ queue) — the header cell wears the ` ~` staleness
-    /// marker until a live poll lands again.
     pub timer_stale: bool,
-    /// When the last header poll was dispatched, to honour `TIMER_POLL_INTERVAL`.
     pub timer_last_poll: Instant,
-    /// The shared write queue, for the header's ` ↑N` unsynced-writes count.
-    /// `None` when the state dir is unavailable (the count reads 0). Read-only
-    /// here — writes go through `QueuedClient`.
+    /// Read-only here; writes go through `QueuedClient`.
     pub queue: Option<QueueStore>,
-    /// Queued writes still in play (pending + diverged; parked intents are kept
-    /// for review and excluded), refreshed each tick — the header cell's ` ↑N`
-    /// complication (quiet accent, the shipped stale marker's family).
     pub queued_writes: usize,
-    /// True while the queue holds a diverged intent — the header wears the one
-    /// loud state in the vocabulary (a full ` diverged ` danger chip) until the
-    /// reconcile panel or `engineer queue resolve` settles it.
     pub queue_diverged: bool,
-    /// The per-user timer knobs, fetched once after sign-in — the header cell
-    /// reads them to spot a finished focus phase (the offer pill).
     pub settings: Option<crate::api::TimerSettings>,
-    /// Timer id already pinged for overrun — the ping fires once per timer,
-    /// never again on later polls of the same clock.
     pub overrun_pinged: Option<i64>,
-    /// When the last presence heartbeat was sent, to honour `HEARTBEAT_INTERVAL`.
     pub heartbeat_last: Instant,
-    /// A pending `$EDITOR` hand-off — the run loop suspends the TUI, spawns the
-    /// editor seeded with the current text, and routes the saved buffer to its
-    /// target. Set by the capture overlay's `Ctrl-E` (the draft) or the week
-    /// board's `i` (the retro reflection).
     pub pending_editor: Option<PendingEditor>,
-    /// The verb words replayed so far in the current reconnect drain — the
-    /// running one-line transcript (`back online · replaying the queue… start ·
-    /// pause`). Grows on each `ReplayProgress` and is emptied when the drain
-    /// finishes (`ReplayFinished`). Empty when no drain is in flight.
     pub reconnect_words: Vec<String>,
 }
 
@@ -148,8 +95,6 @@ async fn run_loop(
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Action>();
 
-    // Land on the Login screen when there is no stored refresh token; otherwise
-    // boot straight into the authenticated UI.
     let logged_in = crate::auth::is_logged_in(&config);
     let start = if logged_in {
         ScreenKind::Home
@@ -183,7 +128,6 @@ async fn run_loop(
         reconnect_words: Vec::new(),
     };
 
-    // Kick off initial loads (only meaningful once authenticated).
     if logged_in {
         app.dispatch(Action::FetchMe);
         app.dispatch(Action::RefreshTimer);
@@ -203,25 +147,15 @@ async fn run_loop(
             }
             maybe_event = events.next() => {
                 if let Some(Ok(ev)) = maybe_event {
-                    // A key in the TUI is the CLI's honest "still working"
-                    // signal — beat presence before the event is interpreted.
-                    if matches!(ev, crossterm::event::Event::Key(_)) {
-                        app.beat_presence_if_active();
-                    }
-                    if let Some(action) = event::translate(&mut app, ev) {
+                    if let Some(action) = app.on_terminal_event(ev) {
                         app.handle(action).await;
                     }
                 }
             }
-            _ = ticker.tick() => {
-                app.expire_stale_notification();
-                app.poll_timer_if_due();
-                app.refresh_queued_writes();
-            }
+            _ = ticker.tick() => app.on_tick(),
         }
 
-        // A note asked for the full editor (Ctrl-E) — suspend the TUI, run
-        // $EDITOR, restore. Blocking is fine: the terminal is ours meanwhile.
+        // Blocking is fine: the terminal is ours until the editor exits.
         if app.pending_editor.is_some() {
             if let Err(e) = run_editor(terminal, &mut app) {
                 app.notify(Level::Error, format!("editor failed: {e}"));
@@ -232,20 +166,19 @@ async fn run_loop(
     Ok(())
 }
 
-/// Suspend the TUI, open the seed in `$EDITOR`, and route the saved buffer to
-/// its target — the capture draft or the week reflection (the `git commit`
-/// pattern). The alt screen is handed to the child and re-entered after.
 fn run_editor(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
     let Some(pending) = app.pending_editor.take() else {
         return Ok(());
     };
-    restore_terminal(terminal)?; // leave the alt screen + raw mode to the child
+    restore_terminal(terminal)?;
     let edited = crate::editor::edit(&pending.seed);
     resume_terminal(terminal)?;
-    let outcome = edited?;
-    match pending.target {
-        // The capture draft: a non-empty save updates it; an abort or an empty
-        // buffer keeps the original (capture-is-sacred, empty-buffer-cancels).
+    route_editor_outcome(app, pending.target, edited?);
+    Ok(())
+}
+
+fn route_editor_outcome(app: &mut App, target: EditorTarget, outcome: EditorOutcome) {
+    match target {
         EditorTarget::Capture => {
             if let EditorOutcome::Saved(text) = outcome {
                 if !text.trim().is_empty() {
@@ -255,16 +188,10 @@ fn run_editor(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
                 }
             }
         }
-        // The reflection: a save persists (an empty buffer clears the note
-        // deliberately — abort ≠ empty-save); an abort keeps the stored note.
-        // Both route back to the week screen's queue seam, which owns the write.
         EditorTarget::WeekNote { iso_week } => match outcome {
             EditorOutcome::Saved(body) => app.dispatch(Action::WeekReflectSave { iso_week, body }),
             EditorOutcome::Aborted => app.dispatch(Action::WeekReflectAbort),
         },
-        // The rejected queued write: a save parses back and retries the
-        // replay; an abort changes nothing — the intent stays diverged and
-        // the panel reopens on the next poll.
         EditorTarget::QueueIntent { intent_id } => match outcome {
             EditorOutcome::Saved(buffer) => {
                 app.dispatch(Action::TimerReconcileEditApply { intent_id, buffer })
@@ -275,10 +202,8 @@ fn run_editor(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
             ),
         },
     }
-    Ok(())
 }
 
-/// Re-enter the alt screen + raw mode after the child editor exits.
 fn resume_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     enable_raw_mode()?;
     execute!(terminal.backend_mut(), EnterAlternateScreen)?;
@@ -296,8 +221,6 @@ fn format_minutes(minutes: u32) -> String {
     }
 }
 
-/// The synced-tile count, pluralized: `1 queued write reconciled` vs. `N queued
-/// writes reconciled`.
 fn writes_reconciled(n: usize) -> String {
     if n == 1 {
         "1 queued write reconciled".to_string()
@@ -306,27 +229,15 @@ fn writes_reconciled(n: usize) -> String {
     }
 }
 
-/// The header poll's task body. Reconnect-drains the queue first — streaming
-/// each landed intent's verb word into the ambient transcript, then the report
-/// the `✓ synced` tile reads — then reads the live snapshot (warming the read
-/// cache) or folds the cached clock on a transport failure. This is what makes
-/// the TUI reconcile on its own, not only on the next write.
-///
-/// Extracted from the `RefreshTimer` handler so the wiremock tests can drive the
-/// drain → transcript path with a scratch queue + cache. `queued` is the write
-/// seam (`None` when the state dir is unavailable); `cache_path` warms a scratch
-/// cache in tests (`None` → the shared XDG cache).
+/// `queued` is `None` when the state dir is unavailable; `cache_path` `None` is
+/// the shared XDG cache, and tests pass a scratch one.
 async fn run_timer_poll(
     api: ApiClient,
     tx: mpsc::UnboundedSender<Action>,
     queued: Option<QueuedClient>,
     cache_path: Option<PathBuf>,
 ) {
-    // Reconnect drain: replay any pending intents before the read so the poll
-    // reflects what just synced. `drain_reporting` streams a `ReplayProgress`
-    // per acknowledged intent (the transcript) and returns the report; it skips
-    // instantly — streaming nothing — on an empty queue or a held replay lock,
-    // so a false transcript can never appear.
+    // Drain before the read so the poll reflects what just synced.
     if let Some(q) = &queued {
         let tx2 = tx.clone();
         let report = q
@@ -343,20 +254,16 @@ async fn run_timer_poll(
 
     match api.timer().await {
         Ok(t) => {
-            // Warm the read cache with server truth (the headless read caches
-            // the same way at `timer_cli::fetch_timer`). Without a snapshot a
-            // TUI-only session would have nothing to synthesize an offline
-            // pause/resume/stop/bind/discard from, and would refuse the keystroke.
+            // Without a cached snapshot a TUI-only session would have nothing to
+            // synthesize an offline pause/resume/stop from, and would refuse it.
             match &cache_path {
                 Some(path) => crate::timer_cache::store_at(path, &t),
                 None => crate::timer_cache::store(&t),
             }
             let _ = tx.send(Action::TimerLoaded(Box::new(t)));
         }
-        // Offline (the same seam the headless read falls back on): render the
-        // effective local timer — cached snapshot ⊕ pending queue — instead of
-        // letting the header quietly extrapolate a clock the queue may have
-        // paused or stopped.
+        // Fold cache ⊕ queue rather than let the header extrapolate a clock
+        // the queue may have paused or stopped.
         Err(crate::api::ApiError::Transport(e)) => {
             tracing::warn!(target: "engineer_cli::api", error = %e, "timer poll failed; folding cache + queue");
             if let Some(q) = &queued {
@@ -395,7 +302,6 @@ impl App {
     }
 
     pub async fn handle(&mut self, action: Action) {
-        // Top-level actions handled here; everything else delegates to the screen.
         match action {
             Action::Quit => self.should_quit = true,
             Action::Notify { level, text } => self.notify(level, text),
@@ -419,8 +325,6 @@ impl App {
             }
             Action::SetUser(email) => {
                 self.user = Some(email);
-                // The knobs are needed screen-agnostically (the header cell's
-                // offer pill); fetch once per session.
                 if self.settings.is_none() {
                     let api = self.api.clone();
                     let tx = self.tx.clone();
@@ -431,10 +335,8 @@ impl App {
                     });
                 }
             }
-            // Header timer cell. Plain polling: `GET /api/v1/timer` returns the
-            // full snapshot on each request — the endpoint does not offer
-            // conditional revalidation (If-None-Match / 304), so every poll
-            // transfers the whole body.
+            // `GET /api/v1/timer` offers no conditional revalidation
+            // (If-None-Match / 304), so every poll transfers the whole body.
             Action::RefreshTimer => {
                 let api = self.api.clone();
                 let tx = self.tx.clone();
@@ -444,8 +346,7 @@ impl App {
                 });
             }
             Action::TimerLoaded(t) => {
-                // The overrun ping: once per timer, when a read first crosses
-                // the plan (the server gates `over` on the user's knob).
+                // The server gates `over` on the user's knob.
                 if t.over && t.id.is_some() && self.overrun_pinged != t.id {
                     self.overrun_pinged = t.id;
                     let planned = t.planned_minutes.unwrap_or(0);
@@ -460,26 +361,17 @@ impl App {
                 self.timer = Some((*t).clone());
                 self.timer_base = Some(Instant::now());
                 self.timer_stale = false;
-                // Forward to the Timer screen so its detailed view mirrors the
-                // same snapshot; other screens ignore it.
                 let _ = self
                     .current
                     .handle(Action::TimerLoaded(t), &self.api, &self.tx)
                     .await;
             }
-            // The offline twin of `TimerLoaded`: the folded local timer, worn
-            // with the stale marker. Header-only by design — the screens keep
-            // their last live snapshot (their own clocks already advance via
-            // `live_elapsed`'s arithmetic).
+            // Header-only: the screens keep their last live snapshot.
             Action::TimerStale(t) => {
                 self.timer = Some(*t);
                 self.timer_base = Some(Instant::now());
                 self.timer_stale = true;
             }
-            // A queued write's provisional clock. Updates the header snapshot
-            // (so the cell advances) and is forwarded to the Timer screen, which
-            // flips its `◔` marker on. Not stale — it is the freshest local
-            // truth; the ` ↑N` count (from the queue) says it is unsynced.
             Action::TimerProvisional(t) => {
                 self.timer = Some((*t).clone());
                 self.timer_base = Some(Instant::now());
@@ -489,10 +381,6 @@ impl App {
                     .handle(Action::TimerProvisional(t), &self.api, &self.tx)
                     .await;
             }
-            // The reconnect drain streamed a landed intent's verb word: append
-            // it to the running one-line transcript and render it in the shipped
-            // notify surface (`back online · replaying the queue… start · pause`)
-            // — quiet and ambient, never a modal takeover.
             Action::ReplayProgress { word } => {
                 self.reconnect_words.push(word);
                 self.notify(
@@ -503,11 +391,6 @@ impl App {
                     ),
                 );
             }
-            // The drain finished. A clean pass that reconciled ≥1 write lands one
-            // calm `✓ synced` tile (auto-dismissing on the notify TTL, ~4s). An
-            // empty pass shows nothing; a pass halted by divergence retires the
-            // transcript and lets the existing diverged markers stand — the loud
-            // reconcile panel is #106, not this ticket.
             Action::ReplayFinished(report) => {
                 let showed_transcript = !std::mem::take(&mut self.reconnect_words).is_empty();
                 if report.replayed >= 1 && !report.diverged {
@@ -519,8 +402,6 @@ impl App {
                     self.notification = None;
                 }
             }
-            // Store-and-forward like TimerLoaded: the app keeps the knobs for
-            // the header cell, the current screen gets its own copy.
             Action::SettingsLoaded(s) => {
                 self.settings = Some((*s).clone());
                 let _ = self
@@ -528,8 +409,6 @@ impl App {
                     .handle(Action::SettingsLoaded(s), &self.api, &self.tx)
                     .await;
             }
-            // Wipe the header cell without touching the current screen (used
-            // after a stop, so the segment confirmation view is preserved).
             Action::TimerCleared => {
                 self.timer = None;
                 self.timer_base = None;
@@ -542,11 +421,8 @@ impl App {
                 let cfg = self.config.clone();
                 let tx = self.tx.clone();
                 tokio::spawn(async move {
-                    // A discover() failure means the identity server is
-                    // unreachable / 5xx — the flow can't even start (Tier 3,
-                    // retry). A failure *after* discover (cancelled callback,
-                    // timeout, keyring) is recoverable in place: back to idle
-                    // with a notify tile.
+                    // Failing to discover means the flow can't start (Tier 3,
+                    // retry); a failure after it is recoverable in place.
                     let discovery = match crate::auth::discover(&cfg).await {
                         Ok(d) => d,
                         Err(e) => {
@@ -580,9 +456,8 @@ impl App {
                 self.notify(Level::Error, format!("login failed: {e}"));
             }
             Action::LoginServerError(e) => {
-                // The flow couldn't reach the identity server (Tier 3). Make
-                // sure we're on Login (a re-auth may have triggered the retry
-                // from elsewhere), then raise its blocking server-error state.
+                // A re-auth may have triggered the retry from elsewhere, so land
+                // on Login first.
                 if !matches!(self.current, Screen::Login(_)) {
                     self.current = Screen::new(ScreenKind::Login);
                 }
@@ -591,12 +466,6 @@ impl App {
                 }
             }
             Action::SessionExpired => {
-                // A 401 from some authenticated read/write invalidated the
-                // stored session. Route to Login in re-auth mode; `⏎` re-runs
-                // the OAuth flow. Guard against re-entrancy — a burst of 401s
-                // (several screens polling) must not stack Login screens. Any
-                // open capture overlay is dismissed — re-auth is a full-screen
-                // takeover, not something a modal should float over.
                 self.capture = None;
                 if !matches!(self.current, Screen::Login(_)) {
                     self.current = Screen::new(ScreenKind::Login);
@@ -609,9 +478,6 @@ impl App {
                 self.current = Screen::new(kind);
                 self.current.on_enter(&self.api, &self.tx);
             }
-            // Quick-capture overlay lifecycle. Open/close/saved are app-owned
-            // (they create or drop `self.capture`); the live-edit actions below
-            // route to the overlay's own reducer.
             Action::CaptureOpen => self.capture = Some(QuickCapture::new()),
             Action::CaptureOpenText(text) => self.capture = Some(QuickCapture::with_text(&text)),
             Action::CaptureOpenEdit(note) => self.capture = Some(QuickCapture::for_edit(*note)),
@@ -619,13 +485,10 @@ impl App {
             Action::CaptureSaved => {
                 self.capture = None;
                 self.notify(Level::Success, "note saved");
-                // If the browser is showing, reflect the new/edited note.
                 if self.current.kind() == ScreenKind::Notes {
                     self.dispatch(Action::RefreshNotes);
                 }
             }
-            // Stash the body for the run loop to open in $EDITOR (it owns the
-            // terminal, so the suspend/spawn/restore happens there, not here).
             Action::CaptureEditExternal => {
                 if let Some(cap) = &self.capture {
                     self.pending_editor = Some(PendingEditor {
@@ -634,19 +497,12 @@ impl App {
                     });
                 }
             }
-            // The week board's `i` reflect: stash the current note body for the
-            // run loop to open in $EDITOR, tagged to persist back to the week's
-            // note. Same terminal-owned suspend/spawn as the capture path — only
-            // the completion target differs.
             Action::WeekReflectEdit { iso_week, seed } => {
                 self.pending_editor = Some(PendingEditor {
                     seed,
                     target: EditorTarget::WeekNote { iso_week },
                 });
             }
-            // The reconcile panel's `e` (#109): stash the rejected write's
-            // editable payload for the same terminal-owned $EDITOR hand-off;
-            // the saved buffer comes back as `TimerReconcileEditApply`.
             Action::QueueIntentEdit { intent_id, seed } => {
                 self.pending_editor = Some(PendingEditor {
                     seed,
@@ -700,10 +556,6 @@ impl App {
         }
     }
 
-    /// Parse a submitted `:` line against the grammar table and act on it. The
-    /// table is the single source of truth: this dispatches, and the completion
-    /// / inline hints (`command::complete`, `command::render_line`) read the same
-    /// `ENTRIES`, so what runs and what the UI advertises can't drift.
     fn run_command(&mut self, buf: &str) {
         use command::Parse;
         match command::parse(buf) {
@@ -738,9 +590,6 @@ impl App {
         use command::Command;
         match cmd {
             Command::Nav(kind) => self.dispatch(Action::Goto(kind)),
-            // Timer actions run against the app-owned snapshot from any screen;
-            // the header cell shows the result, and an invalid transition surfaces
-            // the same warning the Timer screen would.
             Command::Timer(verb) => {
                 if let Some((level, text)) = screens::timer::palette_dispatch(
                     verb,
@@ -754,15 +603,7 @@ impl App {
             }
             Command::Note(None) => self.dispatch(Action::CaptureOpen),
             Command::Note(Some(text)) => self.dispatch(Action::CaptureOpenText(text)),
-            // `:log` = the `a` gesture from anywhere — open the activity capture
-            // form. The headless after-the-fact capture ships as `engineer log`
-            // (#87); the form is structured (title/kind/duration/notes) with no
-            // free-text seed, so the palette verb takes no payload.
             Command::Log => self.dispatch(Action::Goto(ScreenKind::ActivityNew)),
-            // `:target` routes to Progress and opens the declare flow (the
-            // screen's `n`). The Goto lands first, so `ProgressDeclareBegin`
-            // reaches the now-current Progress screen; adjust/retire stay on its
-            // `e`/`x`. Full word only — `:t` is pinned to the timer.
             Command::Target => {
                 self.dispatch(Action::Goto(ScreenKind::Progress));
                 self.dispatch(Action::ProgressDeclareBegin);
@@ -782,7 +623,6 @@ impl App {
         use crate::ui::layout::{render_chrome, Chrome};
 
         let host = self.config.identity_url.host_str().unwrap_or("identity");
-        // The open overlay owns the footer hints so its keymap is legible.
         let hints = match self.capture.as_ref() {
             Some(cap) => cap.hints(),
             None => self.current.hints(
@@ -795,26 +635,30 @@ impl App {
             user: self.user.as_deref(),
             identity_host: host,
             screen_title: self.current.title(),
-            // Narrow rail: below ~70 columns the cell drops its label down to
-            // glyph + clock so the breadcrumb keeps its room.
             timer: self.timer_cell_spans(frame.area().width < 70),
             notification: self.notification.as_ref(),
             hints,
         };
         let body = render_chrome(frame, frame.area(), chrome);
         self.current.render(frame, body);
-        // The quick-capture overlay renders last, as a modal over the body.
         if let Some(cap) = self.capture.as_mut() {
             cap.render(frame, body);
         }
     }
 
-    /// A key in the TUI marks presence: while a timer is running, unpaused,
-    /// and not already idle, POST a heartbeat so the idle guard reflects real
-    /// in-TUI work. Throttled to `HEARTBEAT_INTERVAL` (the server beat is
-    /// presence-only). Deliberately silent once the timer has gone idle — the
-    /// reclaim screen owns that decision (its `keep` verb is the explicit "I
-    /// was present"), so navigating the reclaim list never auto-resolves it.
+    fn on_terminal_event(&mut self, ev: crossterm::event::Event) -> Option<Action> {
+        if matches!(ev, crossterm::event::Event::Key(_)) {
+            self.beat_presence_if_active();
+        }
+        event::translate(self, ev)
+    }
+
+    fn on_tick(&mut self) {
+        self.expire_stale_notification();
+        self.poll_timer_if_due();
+        self.refresh_queued_writes();
+    }
+
     fn beat_presence_if_active(&mut self) {
         let active = self.user.is_some()
             && self
@@ -833,9 +677,6 @@ impl App {
         });
     }
 
-    /// Drop the active notification once it outlives its level's TTL — run each
-    /// tick. The `✓ synced` reconnect tile rides this to auto-dismiss (~4s,
-    /// `Level::Success`'s TTL), the same self-expiry every notification uses.
     fn expire_stale_notification(&mut self) {
         if self
             .notification
@@ -846,7 +687,6 @@ impl App {
         }
     }
 
-    /// Re-poll the header timer snapshot when a poll is due and we're signed in.
     fn poll_timer_if_due(&mut self) {
         if self.user.is_some() && self.timer_last_poll.elapsed() >= TIMER_POLL_INTERVAL {
             self.timer_last_poll = Instant::now();
@@ -854,32 +694,24 @@ impl App {
         }
     }
 
-    /// Refresh the unsynced-writes count and the diverged flag from the shared
-    /// queue for the header's ` ↑N` and ` diverged ` chip. Read on the tick
-    /// (≤4×/s of a tiny, lock-free file), so it also reflects a drain, a
-    /// divergence, or another process enqueuing or resolving — the queue file
-    /// is the single source of truth, exactly as `engineer timer` reads it.
+    /// Read every tick (a tiny file) so another process enqueuing or resolving
+    /// shows up too.
     fn refresh_queued_writes(&mut self) {
         let summary = self.queue.as_ref().and_then(|q| q.summary().ok());
         self.queued_writes = summary.map_or(0, |s| s.in_play());
         self.queue_diverged = summary.is_some_and(|s| s.diverged > 0);
     }
 
-    /// The header timer cell spans, with the displayed elapsed ticked locally
-    /// from the last snapshot, plus the ` diverged ` chip — the one loud state,
-    /// worn even when no clock is running. `None` when there is nothing to show.
     fn timer_cell_spans(&self, narrow: bool) -> Option<Vec<ratatui::text::Span<'static>>> {
         let mut spans = self.timer_clock_spans(narrow).unwrap_or_default();
         if self.queue_diverged {
             if !spans.is_empty() {
                 spans.push(ratatui::text::Span::raw(" "));
             }
-            // Full-row danger treatment, the notify Error tile's idiom: the
-            // queue holds a choice nothing will make for you.
             spans.push(ratatui::text::Span::styled(
                 " diverged ",
                 ratatui::style::Style::default()
-                    .fg(ratatui::style::Color::Black)
+                    .fg(crate::ui::theme::INK_ON_FILL)
                     .bg(crate::ui::theme::DANGER)
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ));
@@ -891,24 +723,18 @@ impl App {
         }
     }
 
-    /// The clock half of the header cell. `None` when no timer is running.
     fn timer_clock_spans(&self, narrow: bool) -> Option<Vec<ratatui::text::Span<'static>>> {
         let t = self.timer.as_ref()?;
         let elapsed = screens::timer::live_elapsed(t, self.timer_base);
-        // A finished focus phase shows as the offer pill on every screen.
         let offer = self
             .settings
             .as_ref()
             .and_then(|s| screens::timer::offer_for(t, s, jiff::Timestamp::now()))
             .is_some();
         let mut spans = crate::ui::widgets::timer_cell(t, elapsed, narrow, offer)?;
-        // The shipped staleness idiom (the `--short` string's ` ~`): the cell
-        // is showing the folded local clock, not a live server read.
         if self.timer_stale {
             spans.push(ratatui::text::Span::styled(" ~", crate::ui::theme::muted()));
         }
-        // ` ↑N` — unsynced local writes, the quiet queued complication (accent,
-        // the same idiom `engineer timer --short` prints).
         if self.queued_writes > 0 {
             spans.push(ratatui::text::Span::styled(
                 format!(" ↑{}", self.queued_writes),
@@ -987,8 +813,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_401_from_any_screen_routes_to_reauth() {
-        // The global interceptor: a session expiry replaces whatever screen is
-        // up with the Tier-3 re-auth prompt.
         let (mut app, _rx) = test_app(Some("alice@example.com".into()));
         assert!(matches!(app.current, Screen::Home(_)));
         app.handle(Action::SessionExpired).await;
@@ -999,8 +823,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_burst_of_401s_does_not_stack_login_screens() {
-        // Several screens polling can each surface a 401 — the guard keeps a
-        // single re-auth screen rather than re-entering.
         let (mut app, _rx) = test_app(Some("alice@example.com".into()));
         app.handle(Action::SessionExpired).await;
         app.handle(Action::SessionExpired).await;
@@ -1032,8 +854,6 @@ mod tests {
 
     #[tokio::test]
     async fn week_reflect_edit_stashes_the_seed_and_target_for_the_run_loop() {
-        // The week board's `i` hands the note seed to the app; the run loop reads
-        // `pending_editor` between frames to suspend the TUI and open $EDITOR.
         let (mut app, _rx) = test_app(Some("a@b.c".into()));
         app.handle(Action::WeekReflectEdit {
             iso_week: "2026-W29".into(),
@@ -1095,18 +915,90 @@ mod tests {
 
     #[tokio::test]
     async fn presence_never_beats_without_a_running_timer_or_a_user() {
-        // No timer.
         let (mut app, _rx) = test_app(Some("alice@example.com".into()));
         app.heartbeat_last = Instant::now() - HEARTBEAT_INTERVAL - Duration::from_secs(1);
         app.beat_presence_if_active();
         assert!(!beat_fired(&app), "nothing running → no presence beat");
 
-        // Running timer but signed out.
         let (mut app, _rx) = test_app(None);
         app.timer = Some(running_timer(300));
         app.heartbeat_last = Instant::now() - HEARTBEAT_INTERVAL - Duration::from_secs(1);
         app.beat_presence_if_active();
         assert!(!beat_fired(&app), "signed out → no presence beat");
+    }
+
+    fn stale_heartbeat() -> Instant {
+        Instant::now() - HEARTBEAT_INTERVAL - Duration::from_secs(1)
+    }
+
+    #[tokio::test]
+    async fn a_keystroke_marks_presence_once_the_interval_has_passed() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.timer = Some(running_timer(300));
+        app.heartbeat_last = stale_heartbeat();
+        app.on_terminal_event(crossterm::event::Event::Key(
+            crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('j')),
+        ));
+        assert!(beat_fired(&app));
+    }
+
+    #[tokio::test]
+    async fn a_non_key_terminal_event_is_not_presence() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.timer = Some(running_timer(300));
+        let last = stale_heartbeat();
+        app.heartbeat_last = last;
+        app.on_terminal_event(crossterm::event::Event::Resize(80, 24));
+        app.on_terminal_event(crossterm::event::Event::FocusGained);
+        assert_eq!(app.heartbeat_last, last);
+    }
+
+    #[tokio::test]
+    async fn without_input_the_tick_never_marks_presence() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.timer = Some(running_timer(300));
+        let last = stale_heartbeat();
+        app.heartbeat_last = last;
+        app.on_tick();
+        app.handle(Action::TimerLoaded(Box::new(running_timer(310))))
+            .await;
+        assert_eq!(app.heartbeat_last, last);
+    }
+
+    fn capture_with_draft(app: &mut App, draft: &str) {
+        app.capture = Some(QuickCapture::with_text(draft));
+    }
+
+    #[tokio::test]
+    async fn quitting_the_editor_without_writing_keeps_the_capture_draft() {
+        let (mut app, _rx) = test_app(Some("a@b.c".into()));
+        capture_with_draft(&mut app, "a half-formed thought");
+        route_editor_outcome(&mut app, EditorTarget::Capture, EditorOutcome::Aborted);
+        assert_eq!(app.capture.unwrap().body(), "a half-formed thought");
+    }
+
+    #[tokio::test]
+    async fn an_empty_editor_save_keeps_the_capture_draft() {
+        let (mut app, _rx) = test_app(Some("a@b.c".into()));
+        capture_with_draft(&mut app, "a half-formed thought");
+        route_editor_outcome(
+            &mut app,
+            EditorTarget::Capture,
+            EditorOutcome::Saved("  \n".into()),
+        );
+        assert_eq!(app.capture.unwrap().body(), "a half-formed thought");
+    }
+
+    #[tokio::test]
+    async fn a_written_editor_buffer_replaces_the_capture_draft() {
+        let (mut app, _rx) = test_app(Some("a@b.c".into()));
+        capture_with_draft(&mut app, "a half-formed thought");
+        route_editor_outcome(
+            &mut app,
+            EditorTarget::Capture,
+            EditorOutcome::Saved("the finished thought".into()),
+        );
+        assert_eq!(app.capture.unwrap().body(), "the finished thought");
     }
 
     #[tokio::test]
@@ -1115,8 +1007,6 @@ mod tests {
         app.timer = Some(running_timer(272));
         app.timer_base = Some(Instant::now());
         let text = rendered_text(&mut app);
-        // ● + mm:ss + the muted title (the v2 status-line grammar shows the
-        // label at full width — superseding the v1 "never a title" pill).
         assert!(text.contains("● 04:32"), "{text}");
         assert!(text.contains("consensus"), "{text}");
     }
@@ -1149,14 +1039,12 @@ mod tests {
     async fn a_stale_fold_wears_the_marker_until_a_live_poll_lands() {
         let (mut app, _rx) = test_app(Some("alice@example.com".into()));
 
-        // The folded local clock renders, wearing the shipped ` ~` idiom.
         app.handle(Action::TimerStale(Box::new(running_timer(272))))
             .await;
         assert!(app.timer_stale);
         let text = rendered_text(&mut app);
         assert!(text.contains("● 04:32 consensus ~"), "{text}");
 
-        // A live poll clears it — the header speaks server truth again.
         app.handle(Action::TimerLoaded(Box::new(running_timer(272))))
             .await;
         assert!(!app.timer_stale);
@@ -1170,11 +1058,9 @@ mod tests {
         let (mut app, _rx) = test_app(Some("alice@example.com".into()));
         app.timer = Some(running_timer(272));
         app.timer_base = Some(Instant::now());
-        // Two unsynced offline writes — the quiet ` ↑N` complication.
         app.queued_writes = 2;
         let text = rendered_text(&mut app);
         assert!(text.contains("↑2"), "{text}");
-        // It clears once the queue drains.
         app.queued_writes = 0;
         assert!(!rendered_text(&mut app).contains('↑'));
     }
@@ -1182,20 +1068,16 @@ mod tests {
     #[tokio::test]
     async fn header_wears_the_diverged_chip_even_without_a_clock() {
         let (mut app, _rx) = test_app(Some("alice@example.com".into()));
-        // No timer at all: the loud chip still shows — the choice outranks
-        // every other header state.
         app.queue_diverged = true;
         let text = rendered_text(&mut app);
         assert!(text.contains("diverged"), "{text}");
 
-        // With a clock, the chip rides next to the cell.
         app.timer = Some(running_timer(272));
         app.timer_base = Some(Instant::now());
         let text = rendered_text(&mut app);
         assert!(text.contains("● 04:32"), "{text}");
         assert!(text.contains("diverged"), "{text}");
 
-        // Resolved: the chip clears with the flag.
         app.queue_diverged = false;
         assert!(!rendered_text(&mut app).contains("diverged"));
     }
@@ -1209,7 +1091,7 @@ mod tests {
         assert!(!app.timer_stale, "a fresh local write is not a stale read");
     }
 
-    // --- Reconnect UX: the replay transcript + the synced tile (#105) ---
+    // --- Reconnect: the replay transcript and the synced tile ---
 
     fn replay_report(
         replayed: usize,
@@ -1228,7 +1110,6 @@ mod tests {
     async fn reconnect_transcript_streams_then_lands_the_synced_tile() {
         let (mut app, _rx) = test_app(Some("alice@example.com".into()));
 
-        // Each landed intent appends its verb word to the one-line transcript.
         app.handle(Action::ReplayProgress {
             word: "start".into(),
         })
@@ -1253,7 +1134,6 @@ mod tests {
             n.text
         );
 
-        // A clean drain lands one calm success tile and empties the transcript.
         app.handle(Action::ReplayFinished(replay_report(2, 0, false)))
             .await;
         let n = app.notification.as_ref().expect("the synced tile lands");
@@ -1283,12 +1163,9 @@ mod tests {
             .await;
         assert_eq!(app.notification.as_ref().unwrap().level, Level::Success);
 
-        // Still fresh — the tick's expiry leaves it be.
         app.expire_stale_notification();
         assert!(app.notification.is_some(), "not yet past its TTL");
 
-        // Past the Success TTL, the same self-expiry every notification uses
-        // clears it — the glance, not a report.
         tokio::time::advance(Level::Success.ttl() + Duration::from_secs(1)).await;
         app.expire_stale_notification();
         assert!(app.notification.is_none(), "auto-dismissed after ~4s");
@@ -1297,15 +1174,12 @@ mod tests {
     #[tokio::test]
     async fn a_diverged_drain_shows_no_synced_tile() {
         let (mut app, _rx) = test_app(Some("alice@example.com".into()));
-        // A transcript was showing when the server diverged mid-drain.
         app.handle(Action::ReplayProgress {
             word: "start".into(),
         })
         .await;
         assert!(app.notification.is_some());
 
-        // Divergence retires the transcript and shows no "synced" — the existing
-        // diverged markers stand (the reconcile panel is #106).
         app.handle(Action::ReplayFinished(replay_report(1, 1, true)))
             .await;
         assert!(app.notification.is_none(), "no synced tile on divergence");
@@ -1331,7 +1205,6 @@ mod tests {
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
-        // The queued pause replays on reconnect...
         Mock::given(method("POST"))
             .and(path("/api/v1/timer/pause"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -1340,7 +1213,6 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        // ...then the live read lands.
         Mock::given(method("GET"))
             .and(path("/api/v1/timer"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -1368,21 +1240,18 @@ mod tests {
         super::run_timer_poll(api, tx, Some(queued), Some(cache)).await;
 
         let actions = drain(&mut rx);
-        // The transcript: one ReplayProgress per replayed intent, its verb word.
         assert!(
             actions
                 .iter()
                 .any(|a| matches!(a, Action::ReplayProgress { word } if word == "pause")),
             "{actions:?}"
         );
-        // The report the synced tile reads.
         assert!(
             actions
                 .iter()
                 .any(|a| matches!(a, Action::ReplayFinished(r) if r.replayed == 1 && !r.diverged)),
             "{actions:?}"
         );
-        // The read landed after the drain.
         assert!(actions.iter().any(|a| matches!(a, Action::TimerLoaded(_))));
     }
 
@@ -1424,7 +1293,6 @@ mod tests {
 
     #[tokio::test]
     async fn capture_overlay_opens_and_renders_over_any_screen() {
-        // Home is showing; opening capture must draw the modal on top of it.
         let (mut app, _rx) = test_app(Some("alice@example.com".into()));
         app.handle(Action::CaptureOpen).await;
         assert!(app.capture.is_some());
@@ -1468,7 +1336,6 @@ mod tests {
     #[tokio::test]
     async fn command_week_verb_lands_on_the_week_board() {
         let (mut app, _rx) = test_app(Some("alice@example.com".into()));
-        // `:week` routes through Nav → Goto and the screen becomes current.
         submit_command(&mut app, "week").await;
         // Apply the enqueued Goto so the screen actually switches.
         app.handle(Action::Goto(ScreenKind::Week)).await;
@@ -1490,7 +1357,6 @@ mod tests {
         let (mut app, mut rx) = test_app(Some("alice@example.com".into()));
         submit_command(&mut app, "note closures are objects").await;
 
-        // The submit enqueues the prefilled open; apply it, then it must render.
         let opened = drain(&mut rx)
             .into_iter()
             .find(|a| matches!(a, Action::CaptureOpenText(t) if t == "closures are objects"));
@@ -1503,8 +1369,6 @@ mod tests {
     #[tokio::test]
     async fn command_log_opens_the_activity_capture_form() {
         let (mut app, mut rx) = test_app(Some("alice@example.com".into()));
-        // `:log` is the `a` gesture from anywhere — it routes to the activity
-        // capture form (ActivityNew), the same destination `a` opens.
         submit_command(&mut app, "log").await;
         let goto = drain(&mut rx)
             .into_iter()
@@ -1517,9 +1381,6 @@ mod tests {
     #[tokio::test]
     async fn command_target_lands_on_progress_and_opens_declare() {
         let (mut app, mut rx) = test_app(Some("alice@example.com".into()));
-        // `:target` navigates to Progress and starts the declare flow. The two
-        // actions enqueue in order — Goto first, then ProgressDeclareBegin —
-        // so the begin reaches the now-current Progress screen.
         submit_command(&mut app, "target").await;
         let actions = drain(&mut rx);
         let goto = actions
@@ -1531,9 +1392,7 @@ mod tests {
         assert!(goto.is_some(), "expected a Goto(Progress)");
         assert!(begin.is_some(), "expected a ProgressDeclareBegin");
         assert!(goto < begin, "Goto must land before the declare begins");
-        // Land on Progress, seed a loaded week (the screen renders the declare
-        // overlay only over loaded meters), then let the declare begin — the
-        // overlay must open.
+        // The declare overlay renders only over loaded meters, so seed a week.
         app.handle(Action::Goto(ScreenKind::Progress)).await;
         let progress = serde_json::from_value(serde_json::json!({
             "week": {
@@ -1554,9 +1413,6 @@ mod tests {
 
     #[tokio::test]
     async fn command_t_prefix_still_resolves_to_the_timer() {
-        // The muscle-memory guard, exercised end-to-end through the palette:
-        // adding `:target` must not make `:t` ambiguous. `:t` navigates to the
-        // timer, not the new verb.
         let (mut app, mut rx) = test_app(Some("alice@example.com".into()));
         submit_command(&mut app, "t").await;
         assert!(drain(&mut rx)
@@ -1577,8 +1433,6 @@ mod tests {
     #[tokio::test]
     async fn command_timer_stop_on_unbound_timer_warns() {
         let (mut app, _rx) = test_app(Some("alice@example.com".into()));
-        // A running-but-unbound timer: `:timer stop` must refuse with the same
-        // guidance the Timer screen gives.
         app.timer = Some(
             serde_json::from_value(serde_json::json!({ "running": true, "bound": false })).unwrap(),
         );
@@ -1621,16 +1475,14 @@ mod tests {
     async fn g_prefix_navigates_to_the_ambient_surfaces() {
         let (mut app, _rx) = test_app(None);
 
-        // `g` alone pends — no action yet.
         assert!(press(&mut app, 'g').is_none());
         assert!(app.goto_pending);
 
-        // `g t` / `g p` / `g r` — the footer's goto grammar.
         assert!(matches!(
             press(&mut app, 't'),
             Some(Action::Goto(ScreenKind::Timer))
         ));
-        assert!(!app.goto_pending); // prefix cleared after the destination
+        assert!(!app.goto_pending);
 
         press(&mut app, 'g');
         assert!(matches!(
@@ -1643,7 +1495,6 @@ mod tests {
             Some(Action::Goto(ScreenKind::Review))
         ));
 
-        // `g w` reaches the week board.
         press(&mut app, 'g');
         assert!(matches!(
             press(&mut app, 'w'),
@@ -1655,12 +1506,10 @@ mod tests {
     async fn gg_tops_a_list_and_is_inert_where_there_is_none() {
         let (mut app, _rx) = test_app(None);
 
-        // On a list screen, `gg` is the top motion (single-`g` became `gg`).
         app.current = Screen::new(ScreenKind::Books);
         press(&mut app, 'g');
         assert!(matches!(press(&mut app, 'g'), Some(Action::BooksJumpStart)));
 
-        // Home has no list — `gg` is a clean no-op.
         app.current = Screen::new(ScreenKind::Home);
         press(&mut app, 'g');
         assert!(press(&mut app, 'g').is_none());
@@ -1672,6 +1521,130 @@ mod tests {
         press(&mut app, 'g');
         assert!(app.goto_pending);
         assert!(press(&mut app, 'z').is_none());
-        assert!(!app.goto_pending); // consumed and cleared, no lingering prefix
+        assert!(!app.goto_pending);
+    }
+
+    fn overrun_snapshot(id: i64) -> Timer {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "running": true, "bound": true, "paused": false,
+            "elapsed_seconds": 7300, "planned_minutes": 120, "over": true,
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_overrun_ping_fires_once_per_timer() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.handle(Action::TimerLoaded(Box::new(overrun_snapshot(7))))
+            .await;
+        let ping = app
+            .notification
+            .take()
+            .expect("the first overrun read pings");
+        assert_eq!(ping.level, Level::Warning);
+        assert!(ping.text.contains("planned 2h 00m"), "{}", ping.text);
+
+        app.handle(Action::TimerLoaded(Box::new(overrun_snapshot(7))))
+            .await;
+        assert!(app.notification.is_none(), "a later poll of the same clock");
+
+        app.handle(Action::TimerLoaded(Box::new(overrun_snapshot(8))))
+            .await;
+        assert!(app.notification.is_some(), "a new timer pings again");
+    }
+
+    #[tokio::test]
+    async fn a_session_expiry_dismisses_the_capture_overlay() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.handle(Action::CaptureOpen).await;
+        app.handle(Action::SessionExpired).await;
+        assert!(app.capture.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_saved_note_refreshes_the_notes_browser_only_when_it_is_showing() {
+        let (mut app, mut rx) = test_app(Some("alice@example.com".into()));
+        app.handle(Action::CaptureSaved).await;
+        assert!(!drain(&mut rx)
+            .iter()
+            .any(|a| matches!(a, Action::RefreshNotes)));
+
+        app.current = Screen::new(ScreenKind::Notes);
+        app.handle(Action::CaptureSaved).await;
+        assert!(drain(&mut rx)
+            .iter()
+            .any(|a| matches!(a, Action::RefreshNotes)));
+    }
+
+    #[tokio::test]
+    async fn the_header_poll_waits_for_a_signed_in_user() {
+        let (mut app, mut rx) = test_app(None);
+        app.timer_last_poll = Instant::now() - TIMER_POLL_INTERVAL;
+        app.on_tick();
+        assert!(!drain(&mut rx)
+            .iter()
+            .any(|a| matches!(a, Action::RefreshTimer)));
+
+        app.user = Some("alice@example.com".into());
+        app.on_tick();
+        assert!(drain(&mut rx)
+            .iter()
+            .any(|a| matches!(a, Action::RefreshTimer)));
+    }
+
+    #[tokio::test]
+    async fn below_seventy_columns_the_header_cell_drops_its_label() {
+        let (mut app, _rx) = test_app(Some("alice@example.com".into()));
+        app.timer = Some(running_timer(272));
+        app.timer_base = Some(Instant::now());
+        let mut terminal = Terminal::new(TestBackend::new(69, 12)).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("● 04:32"), "{text}");
+        assert!(!text.contains("consensus"), "{text}");
+    }
+
+    fn week_note() -> EditorTarget {
+        EditorTarget::WeekNote {
+            iso_week: "2026-W29".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_emptied_reflection_is_saved_as_a_clear_not_read_as_an_abort() {
+        let (mut app, mut rx) = test_app(Some("a@b.c".into()));
+        route_editor_outcome(&mut app, week_note(), EditorOutcome::Saved(String::new()));
+        assert!(drain(&mut rx)
+            .iter()
+            .any(|a| matches!(a, Action::WeekReflectSave { body, .. } if body.is_empty())));
+    }
+
+    #[tokio::test]
+    async fn an_aborted_reflection_keeps_the_stored_note() {
+        let (mut app, mut rx) = test_app(Some("a@b.c".into()));
+        route_editor_outcome(&mut app, week_note(), EditorOutcome::Aborted);
+        let sent = drain(&mut rx);
+        assert!(sent.iter().any(|a| matches!(a, Action::WeekReflectAbort)));
+        assert!(!sent
+            .iter()
+            .any(|a| matches!(a, Action::WeekReflectSave { .. })));
+    }
+
+    #[tokio::test]
+    async fn an_aborted_queue_intent_edit_leaves_the_intent_diverged() {
+        let (mut app, mut rx) = test_app(Some("a@b.c".into()));
+        route_editor_outcome(
+            &mut app,
+            EditorTarget::QueueIntent { intent_id: 3 },
+            EditorOutcome::Aborted,
+        );
+        assert!(drain(&mut rx).is_empty(), "no retry is dispatched");
+        assert_eq!(app.notification.unwrap().level, Level::Info);
     }
 }

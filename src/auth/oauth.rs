@@ -1,7 +1,4 @@
 //! Authorization Code + PKCE (RFC 7636) over a loopback redirect (RFC 8252).
-//!
-//! Flow: bind 127.0.0.1:0 → build authorize URL → open browser →
-//! receive callback → exchange code → return tokens.
 
 use color_eyre::eyre::{eyre, Context, Result};
 use serde::Deserialize;
@@ -62,10 +59,8 @@ pub async fn discover(cfg: &Config) -> Result<Discovery> {
     })
 }
 
-/// Run the Authorization Code + PKCE flow. `cli` controls user feedback: the
-/// `login` subcommand (true) prints the authorize URL to stdout as a fallback;
-/// the TUI (false) must not write to stdout — it owns the alternate screen — so
-/// the URL goes to the log instead.
+/// With `cli` false (the TUI) nothing may be written to stdout — the TUI owns
+/// the alternate screen — so the authorize URL goes to the log instead.
 pub async fn login(cfg: &Config, discovery: &Discovery, cli: bool) -> Result<IssuedTokens> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await

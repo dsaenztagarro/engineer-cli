@@ -1,16 +1,5 @@
-//! The fold: server truth ⊕ pending intents → the *effective* picture every
-//! offline read renders (ADR 0004 — the queue is not a
-//! second ledger; the fold of it over the last server truth is what the user
-//! sees). [`fold_timer`] composes the effective local clock; its sibling
-//! [`fold_activities`] mixes still-queued activity/segment writes into a
-//! fetched list as `◔ … provisional · queued` rows (#109, §Segment audit ·
-//! mixed).
-//!
-//! Pure over their inputs and computed fresh on every read — callers re-read
-//! the queue each time, so a drained, dropped, or newly-enqueued intent shows
-//! up on the very next read with nothing to invalidate. Nothing here writes:
-//! the effective timer is never persisted, and `timer-cache.json` stays
-//! server-truth-only.
+//! The fold: server truth ⊕ pending intents, composed at read time into the
+//! effective picture every offline read renders (ADR 0004).
 
 use std::collections::HashSet;
 
@@ -20,29 +9,12 @@ use crate::timer_clock;
 
 use super::intent::{provisional_id, Intent, IntentKind};
 
-/// Where the effective timer came from — the honesty fields a caller renders
-/// next to the folded clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Provenance {
-    /// Seconds since the last server truth: the cached snapshot's age, or —
-    /// when the whole session is local (a start with nothing cached) — the
-    /// age of the oldest folded intent.
     pub stale_age_s: i64,
-    /// How many pending timer intents were folded into the result.
     pub queue_depth: usize,
 }
 
-/// Replay the pending timer intents over the last-known server snapshot,
-/// producing the effective local timer with `elapsed_seconds` materialized at
-/// `now`. The replays go through the same `timer_clock` transitions the write
-/// path synthesizes with, so a read after an offline write shows exactly what
-/// the write returned, advanced to now — an offline pause freezes the clock,
-/// an offline resume advances it, an offline stop reads as nothing running.
-///
-/// Ordering mirrors the drain: queue order, and nothing folds past the first
-/// diverged intent — an open choice gates the picture exactly as it gates the
-/// replay. Returns `None` when there is nothing to compose: no cached
-/// snapshot, and no queued start to seed a purely-local session from.
 pub fn fold_timer(
     cached: Option<&StaleTimer>,
     intents: &[Intent],
@@ -56,7 +28,7 @@ pub fn fold_timer(
     ordered.sort_by_key(|i| i.id);
     for intent in ordered {
         if intent.is_diverged() {
-            break; // nothing folds past an open choice — the drain's own rule
+            break;
         }
         if !intent.is_pending() {
             continue;
@@ -67,16 +39,9 @@ pub fn fold_timer(
                     activity_id, at, ..
                 },
                 _,
-            ) => {
-                // A queued start supersedes whatever ran before (the enqueue
-                // path settles the switch question). The intent carries no
-                // label — the reconcile re-read names the activity.
-                timer_clock::apply_start(*activity_id, None, *at)
-            }
-            // Without a base there is nothing the other verbs can honestly
-            // act on. The write path never enqueues them blind
-            // (`QueuedClient::defer` requires a snapshot), so refuse rather
-            // than invent one.
+            ) => timer_clock::apply_start(*activity_id, None, *at),
+            // `QueuedClient::defer` never enqueues these without a snapshot; refuse
+            // rather than invent a base.
             (_, None) => return None,
             (IntentKind::TimerPause { at }, Some(t)) => timer_clock::apply_pause(t, *at),
             (IntentKind::TimerResume { at }, Some(t)) => timer_clock::apply_resume(t, *at),
@@ -90,11 +55,6 @@ pub fn fold_timer(
                 t
             }
             (IntentKind::TimerDiscard, Some(_)) => Timer::default(),
-            // Non-timer intents never reach here — the `stream == "timer"` filter
-            // above admits only the timer stream — but the match stays exhaustive
-            // over `IntentKind`. The timer fold has nothing to say about a plan
-            // write or a week note; a later slice may fold an effective week the
-            // same way.
             (
                 IntentKind::ActivityCreate { .. }
                 | IntentKind::ActivityUpdate { .. }
@@ -122,9 +82,6 @@ pub fn fold_timer(
 
     let mut effective = timer?;
     if effective.running {
-        // Materialize the clock so `elapsed_seconds` *is* the folded local
-        // clock at `now` (frozen when the fold left it paused, advancing when
-        // running) — the headless renderers read this field verbatim.
         effective.elapsed_seconds = Some(timer_clock::elapsed(&effective, now));
     }
     let stale_age_s = cached
@@ -140,16 +97,9 @@ pub fn fold_timer(
     ))
 }
 
-/// One row of the folded activities read: the fetched (or synthesized) row
-/// plus what the queue says about it. A provisional row — a still-queued
-/// `ActivityCreate` — carries the negative `provisional_id` and renders
-/// `◔ … provisional · queued` (§Segment audit · mixed); a confirmed row with
-/// `queued_minutes > 0` has pending `SegmentCreate` minutes folded onto it,
-/// rendered `◔ +Nm queued` next to the server-confirmed duration.
 #[derive(Debug, Clone)]
 pub struct FoldedActivity {
     pub activity: Activity,
-    /// Minutes from pending `SegmentCreate` intents folded onto this row.
     pub queued_minutes: u32,
 }
 
@@ -161,31 +111,11 @@ impl FoldedActivity {
         }
     }
 
-    /// Whether the row itself is a still-queued create — the negative
-    /// provisional id is the marker, exactly as everywhere else (#108).
     pub fn is_provisional(&self) -> bool {
         self.activity.id < 0
     }
 }
 
-/// Fold the pending activity-write intents into a fetched activities list —
-/// the read-time composition the Activities table (and any segment-audit
-/// surface) renders, `fold_timer`'s sibling (§Segment audit · mixed). Pure
-/// over its inputs, computed fresh on every read, never written into any
-/// cache: a drained or dropped intent disappears from the picture on the
-/// very next fetch.
-///
-/// - A pending `ActivityCreate` appends a provisional row: negative
-///   `provisional_id`, the body's own title/kind/minutes, anchored at the
-///   moment the user gestured (`queued_at`).
-/// - A pending `SegmentCreate` folds its minutes onto the row it belongs to —
-///   a real fetched row, or a provisional one from earlier in the queue (the
-///   provisional parent id matches the synthesized row's id). Minutes on an
-///   activity that isn't in `rows` (another page, another filter) are
-///   dropped from *this* view only — the queue still holds them.
-/// - Ordering mirrors the drain's per-stream contract: nothing folds past the
-///   first diverged intent in its stream (an open choice gates the picture as
-///   it gates the replay), and parked intents never fold.
 pub fn fold_activities(rows: Vec<Activity>, intents: &[Intent]) -> Vec<FoldedActivity> {
     let mut folded: Vec<FoldedActivity> = rows.into_iter().map(FoldedActivity::confirmed).collect();
 
@@ -195,7 +125,7 @@ pub fn fold_activities(rows: Vec<Activity>, intents: &[Intent]) -> Vec<FoldedAct
     for intent in ordered {
         if intent.is_diverged() {
             blocked.insert(intent.stream.as_str());
-            continue; // a diverged write is a loud choice, never a calm ◔ row
+            continue;
         }
         if !intent.is_pending() || blocked.contains(intent.stream.as_str()) {
             continue;
@@ -217,9 +147,6 @@ pub fn fold_activities(rows: Vec<Activity>, intents: &[Intent]) -> Vec<FoldedAct
                 minutes,
                 ..
             } => {
-                // A segment whose parent create is diverged references a
-                // provisional id with no folded row — it falls through this
-                // find and stays out of the picture, like the drain holds it.
                 if let Some(row) = folded.iter_mut().find(|f| f.activity.id == *activity_id) {
                     row.queued_minutes += *minutes;
                 }
@@ -230,19 +157,10 @@ pub fn fold_activities(rows: Vec<Activity>, intents: &[Intent]) -> Vec<FoldedAct
     folded
 }
 
-/// The wall-clock moment the snapshot was taken, recovered from its age.
 fn snapshot_moment(s: &StaleTimer, now: jiff::Timestamp) -> jiff::Timestamp {
     jiff::Timestamp::from_second(now.as_second() - s.age_secs.max(0)).unwrap_or(now)
 }
 
-/// Give an older running payload (no `started_at`) the anchor the arithmetic
-/// needs, derived from what the snapshot did say: at `snapshot_at` the clock
-/// read `elapsed_seconds` with `paused_seconds` banked, so
-/// `started_at = frozen_at − elapsed_seconds − paused_seconds`, where
-/// `frozen_at` is the pause stamp (defaulted to the snapshot moment, the
-/// closest local truth, when the payload omitted it too) or the snapshot
-/// moment itself. Anchored once, the transitions and `timer_clock::elapsed`
-/// are exact over it.
 fn anchored(mut t: Timer, snapshot_at: jiff::Timestamp) -> Timer {
     if !t.running || t.started_at.is_some() {
         return t;
@@ -267,7 +185,6 @@ mod tests {
         s.parse().unwrap()
     }
 
-    /// `now` for every case; snapshots and intents are placed relative to it.
     fn now() -> jiff::Timestamp {
         ts("2026-07-15T10:00:00Z")
     }
@@ -472,8 +389,6 @@ mod tests {
         assert!(fold_timer(None, &[], now()).is_none(), "nothing to compose");
     }
 
-    // --- fold_activities (#109, §Segment audit · mixed) ---------------------
-
     fn parked(mut i: Intent) -> Intent {
         i.state = IntentState::Parked {
             reason: "skipped · Segment overlaps".into(),
@@ -559,7 +474,7 @@ mod tests {
     #[test]
     fn a_queued_segment_on_a_queued_create_folds_onto_the_provisional_row() {
         let create = create_intent(3, "Paxos made live", Some(20));
-        let segment = segment_intent(4, -3, 15); // references the create's provisional id
+        let segment = segment_intent(4, provisional_id(3), 15);
         let folded = fold_activities(vec![], &[create, segment]);
         assert_eq!(folded.len(), 1);
         assert!(folded[0].is_provisional());
@@ -567,8 +482,15 @@ mod tests {
     }
 
     #[test]
+    fn segment_minutes_for_a_row_off_this_page_stay_out_of_the_view() {
+        let rows = vec![fetched(12, "DDIA", 30)];
+        let folded = fold_activities(rows, &[segment_intent(4, 9, 20)]);
+        assert_eq!(folded.len(), 1, "no row is invented for activity 9");
+        assert_eq!(folded[0].queued_minutes, 0);
+    }
+
+    #[test]
     fn an_empty_queue_leaves_the_fetched_rows_untouched() {
-        // The after-drain read: intents left the queue, the fold is identity.
         let folded = fold_activities(vec![fetched(9, "Raft", 52)], &[]);
         assert_eq!(folded.len(), 1);
         assert!(!folded[0].is_provisional());
@@ -577,9 +499,6 @@ mod tests {
 
     #[test]
     fn a_diverged_create_never_folds_and_holds_its_dependent_segment() {
-        // The rejected create is a loud choice, not a calm ◔ row; the segment
-        // referencing its provisional id has no row to land on — out of the
-        // picture exactly as the drain holds it.
         let gated = diverged(create_intent(3, "Paxos made live", Some(20)));
         let dependent = segment_intent(4, -3, 15);
         let folded = fold_activities(vec![fetched(9, "Raft", 52)], &[gated, dependent]);
@@ -589,9 +508,6 @@ mod tests {
 
     #[test]
     fn a_diverged_intent_gates_only_its_stream_in_the_fold() {
-        // Streams mirror the drain: a diverged segment on activity:9 gates
-        // later intents on activity:9, while the shared activity stream's
-        // create still folds.
         let gated = diverged(segment_intent(3, 9, 45));
         let behind = segment_intent(4, 9, 10); // same stream — held
         let other = create_intent(5, "Paxos made live", None); // stream "activity" — flows

@@ -1,18 +1,4 @@
 //! The persisted queue document and its concurrency rules.
-//!
-//! One JSON document (`queue.json` in the XDG state dir, sibling to
-//! `timer-cache.json`), rewritten whole through write-temp + fsync + atomic
-//! rename — the queue is designed to stay small and short-lived, so a full
-//! rewrite beats an append log that would need compaction and torn-record
-//! handling.
-//!
-//! Concurrency: several processes share one queue (the TUI, a status-bar
-//! poller, ad-hoc one-shots). Writers serialize on an exclusive advisory lock
-//! held on a sidecar `queue.lock` — never on the data file itself, because the
-//! atomic rename swaps the inode out from under any lock held on it. Readers
-//! take no lock: the rename guarantees they always see one consistent
-//! document. Replay is single-flight via a non-blocking `try_lock` on a second
-//! sidecar, `replay.lock`.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
@@ -24,8 +10,6 @@ use crate::config::Config;
 
 use super::intent::{new_idempotency_key, Intent, IntentKind, IntentState};
 
-/// Errors are loud by design: a silently dropped intent is the one failure the
-/// write queue exists to prevent (unlike the best-effort read cache).
 #[derive(Debug, thiserror::Error)]
 pub enum QueueError {
     #[error("queue io: {0}")]
@@ -58,53 +42,39 @@ impl Default for QueueDoc {
     }
 }
 
-/// What a glance needs to know about the queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueSummary {
-    /// Every stored intent, parked included.
     pub depth: usize,
     pub oldest_age_s: Option<i64>,
-    /// Intents waiting to replay.
     pub pending: usize,
-    /// Intents waiting on a divergence choice.
     pub diverged: usize,
-    /// Intents kept for review by a take-server resolution — never replayed,
-    /// never counted as queued writes.
     pub parked: usize,
 }
 
 impl QueueSummary {
-    /// Intents still in play — pending + diverged. Parked intents are kept for
-    /// review only, so every "queued" surface (`↑N`, `queued=N`, drain skips)
-    /// counts this, not `depth`.
     pub fn in_play(&self) -> usize {
         self.pending + self.diverged
     }
 }
 
-/// Held by the single replaying process; the advisory lock releases on drop.
 pub struct ReplayGuard {
     _lock: File,
 }
 
-/// Handle on the queue document at one path.
 pub struct QueueStore {
     path: PathBuf,
 }
 
 impl QueueStore {
-    /// The shared queue in the XDG state dir.
     pub fn open_default() -> Result<Self, QueueError> {
         let dir = Config::log_dir().map_err(|e| QueueError::NoStateDir(e.to_string()))?;
         Ok(Self::at(dir.join("queue.json")))
     }
 
-    /// A store at an explicit path (tests).
     pub fn at(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
 
-    /// Append a fresh pending intent and persist it. Returns the stored record.
     pub fn enqueue(&self, kind: IntentKind) -> Result<Intent, QueueError> {
         self.mutate(|doc| {
             let intent = Intent {
@@ -122,12 +92,12 @@ impl QueueStore {
         })
     }
 
-    /// Every stored intent, in queue order. Lock-free (see module docs).
+    /// Lock-free: `persist` renames atomically, so a reader always sees one whole
+    /// document.
     pub fn intents(&self) -> Result<Vec<Intent>, QueueError> {
         Ok(self.load()?.intents)
     }
 
-    /// The pending subset, in replay order.
     pub fn pending(&self) -> Result<Vec<Intent>, QueueError> {
         Ok(self
             .load()?
@@ -137,7 +107,6 @@ impl QueueStore {
             .collect())
     }
 
-    /// Depth, oldest age, and the per-state counts the status surfaces read.
     pub fn summary(&self) -> Result<QueueSummary, QueueError> {
         let intents = self.intents()?;
         let now = jiff::Timestamp::now().as_second();
@@ -152,8 +121,6 @@ impl QueueStore {
         })
     }
 
-    /// Run a closure over the document under the writer lock, persisting the
-    /// result atomically. All mutation goes through here.
     pub fn mutate<R>(&self, f: impl FnOnce(&mut QueueDocView) -> R) -> Result<R, QueueError> {
         let _lock = self.writer_lock()?;
         let mut doc = self.load()?;
@@ -163,8 +130,6 @@ impl QueueStore {
         Ok(out)
     }
 
-    /// Claim the single-replayer slot. `None` means another process is already
-    /// draining — callers just skip; enqueues during a drain join the tail.
     pub fn try_replay_lock(&self) -> Result<Option<ReplayGuard>, QueueError> {
         let lock = self.open_lock_file(&self.sibling("replay.lock"))?;
         match lock.try_lock() {
@@ -186,6 +151,8 @@ impl QueueStore {
         })
     }
 
+    /// Rewritten whole: the queue stays small, so a full rewrite beats an append
+    /// log's compaction and torn-record handling.
     fn persist(&self, doc: &QueueDoc) -> Result<(), QueueError> {
         let json = serde_json::to_string(doc)
             .expect("queue document serialization is infallible for owned data");
@@ -199,7 +166,8 @@ impl QueueStore {
         Ok(())
     }
 
-    /// Blocking exclusive lock on the writer sidecar; released on drop.
+    /// On a sidecar, never on `queue.json`: the atomic rename in `persist` swaps
+    /// the inode out from under any lock held on the data file.
     fn writer_lock(&self) -> Result<File, QueueError> {
         let lock = self.open_lock_file(&self.sibling("queue.lock"))?;
         lock.lock()?;
@@ -222,14 +190,11 @@ impl QueueStore {
     }
 }
 
-/// The mutable view `mutate` closures work against — the document internals
-/// stay private to this module.
 pub struct QueueDocView<'a> {
     doc: &'a mut QueueDoc,
 }
 
 impl QueueDocView<'_> {
-    /// Claim the next queue sequence number.
     pub fn allocate_id(&mut self) -> u64 {
         let id = self.doc.next_id;
         self.doc.next_id += 1;
@@ -296,8 +261,6 @@ mod tests {
         std::fs::write(store.path.clone(), "{not json").unwrap();
 
         assert!(matches!(store.pending(), Err(QueueError::Corrupt { .. })));
-        // A write over a corrupt document must refuse too — never clobber
-        // intents we can no longer read.
         assert!(store.enqueue(pause_kind()).is_err());
     }
 
@@ -336,9 +299,6 @@ mod tests {
 
     #[test]
     fn a_pre_coded_conflict_document_still_loads() {
-        // A queue.json written before #107: the diverged state has no `code`
-        // and no `conflict`. The additive schema must load it unchanged —
-        // an upgrade never strands a stored intent.
         let store = tmp_store("pre-107");
         std::fs::create_dir_all(store.path.parent().unwrap()).unwrap();
         std::fs::write(
@@ -396,7 +356,6 @@ mod tests {
         }
         assert!(intents[1].is_pending());
 
-        // …and a mutation over the old document persists cleanly.
         store
             .enqueue(IntentKind::TimerPause {
                 at: "2026-07-15T10:00:00Z".parse().unwrap(),

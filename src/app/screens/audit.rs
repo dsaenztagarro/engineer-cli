@@ -1,9 +1,4 @@
-//! Segment audit (timer.dc.html §Segment audit): the flagged-segments list
-//! under Progress — implausibly long, zero/near-zero, missing metadata — with
-//! `a` looks-right (acknowledge), `t` trim (a segment-edit preset that
-//! shortens the duration to the user's long fence), and `d` delete (asks
-//! twice). Flags are derived server-side on read; a clean log means an empty
-//! screen and no badge anywhere.
+//! Segment audit screen — the server-flagged segments list under Progress.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -19,8 +14,7 @@ use crate::ui::notify::Level;
 use crate::ui::panel::{render_panel_state, PanelFailure, PanelState};
 use crate::ui::{layout::bordered, theme, widgets};
 
-/// Display groups, in rendering order. A row lands in its most severe group
-/// (duration shape before metadata); its remaining flags still show inline.
+/// Display groups, in rendering order.
 fn group_of(segment: &AuditSegment) -> usize {
     if segment.flags.iter().any(|f| f == "too_long") {
         0
@@ -36,18 +30,11 @@ const GROUP_TITLES: [&str; 3] = ["IMPLAUSIBLY LONG", "ZERO / NEAR-ZERO", "MISSIN
 #[derive(Default)]
 pub struct Audit {
     audit_count: u32,
-    /// Flagged rows, sorted by display group (server order within a group).
     rows: Vec<AuditSegment>,
     selected: usize,
     loading: bool,
-    /// Tier-2 state: set when the audit read failed, so an absent read reads as a
-    /// loud failure (with a retry key) rather than the calm "clean log" success.
-    /// Cleared on the next successful load.
     failure: Option<PanelFailure>,
-    /// A `d` on this row id armed the delete confirm; only the very next `d`
-    /// on the same row goes through.
     delete_armed: Option<i64>,
-    /// The long fence (hours) from settings — the trim preset's target.
     long_fence_hours: u32,
 }
 
@@ -68,7 +55,6 @@ impl Audit {
         api: &ApiClient,
         tx: &UnboundedSender<Action>,
     ) -> Option<(Level, String)> {
-        // The delete confirm is strictly two consecutive `d`s on one row.
         if self.delete_armed.is_some() && !matches!(action, Action::AuditDelete) {
             self.delete_armed = None;
         }
@@ -112,7 +98,6 @@ impl Audit {
                 if let Some(row) = self.rows.iter_mut().find(|r| r.id == ack.segment_id) {
                     row.flags = ack.flags.clone();
                 }
-                // Fully clean rows leave the list.
                 self.rows.retain(|r| !r.flags.is_empty());
                 self.selected = self.selected.min(self.rows.len().saturating_sub(1));
                 return Some((
@@ -159,8 +144,7 @@ impl Audit {
                 self.delete_armed = None;
                 spawn_delete(api, tx, activity_id, row_id);
             }
-            // The activity edit lives on the Activities table — a soft
-            // handoff until cross-screen deep-links exist.
+            // A soft handoff until cross-screen deep-links exist.
             Action::AuditFix if self.selected_row().is_some() => {
                 let title = self
                     .selected_row()
@@ -185,10 +169,6 @@ impl Audit {
         };
         let block = bordered(title);
 
-        // No rows → the body is a Tier-2 state. A failed read is loud (a retry
-        // key, never dressed up as a clean log); loading is calm; a genuinely
-        // clean log is the calm success state — a caught-up inbox, not an
-        // empty/failed panel.
         if self.rows.is_empty() {
             if let Some(f) = &self.failure {
                 render_panel_state(frame, area, block, &PanelState::Failed(f.clone()));
@@ -299,13 +279,9 @@ fn spawn_load(api: &ApiClient, tx: &UnboundedSender<Action>) {
             Ok(read) => {
                 let _ = tx.send(Action::AuditLoaded(Box::new(read)));
             }
-            // A 401 is a session problem, not an audit problem — route to
-            // re-auth (Tier 3) rather than a Tier-2 audit panel.
             Err(ApiError::Unauthorized) => {
                 let _ = tx.send(Action::SessionExpired);
             }
-            // Tier 2: report the failure as itself — never a swallowed read that
-            // looks like a clean log. The reason is spelled once (§C).
             Err(e) => {
                 let _ = tx.send(Action::AuditLoadFailed(messages::fail_reason(
                     api.host(),
@@ -342,8 +318,6 @@ fn spawn_acknowledge(api: &ApiClient, tx: &UnboundedSender<Action>, segment_id: 
     });
 }
 
-/// The trim preset: one PATCH that shortens the duration down to the long
-/// fence — the value that makes the row plausible again.
 fn spawn_trim(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
@@ -446,6 +420,113 @@ mod tests {
         assert_eq!(s.rows[0].id, 2);
         assert_eq!(s.rows[1].id, 3);
         assert_eq!(s.rows[2].id, 1);
+    }
+
+    #[tokio::test]
+    async fn a_row_sits_in_its_most_severe_group_and_keeps_its_other_flags_inline() {
+        let (mut s, api, tx) = setup();
+        let mixed = read(serde_json::json!({
+            "audit_count": 3,
+            "segments": [
+                { "id": 1, "activity_id": 9, "activity_title": "Untitled timer",
+                  "formatted_duration": "1h05m", "flags": ["missing_kind"] },
+                { "id": 2, "activity_id": 9, "activity_title": "Read DDIA ch.7",
+                  "formatted_duration": "8h05m", "flags": ["too_long", "missing_anchor"] },
+                { "id": 3, "activity_id": 9, "activity_title": "Implement Raft",
+                  "formatted_duration": "9h10m", "flags": ["too_long"] }
+            ]
+        }));
+        s.handle(Action::AuditLoaded(Box::new(mixed)), &api, &tx)
+            .await;
+        let order: Vec<i64> = s.rows.iter().map(|r| r.id).collect();
+        assert_eq!(
+            order,
+            vec![2, 3, 1],
+            "severity first, server order within a group"
+        );
+        let text = render_to_string(&mut s);
+        assert!(text.contains("IMPLAUSIBLY LONG 2"), "{text}");
+        assert!(text.contains("too long · missing anchor"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn trim_shortens_a_long_segment_to_the_long_fence() {
+        use wiremock::matchers::{body_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/activities/9/segments/2"))
+            .and(body_json(serde_json::json!({ "minutes": 360 })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 2, "activity_id": 9, "minutes": 360
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let api = ApiClient::with_token(url::Url::parse(&server.uri()).unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Audit {
+            long_fence_hours: 6,
+            ..Audit::default()
+        };
+        s.handle(Action::AuditLoaded(Box::new(sample())), &api, &tx)
+            .await;
+        assert!(s.handle(Action::AuditTrim, &api, &tx).await.is_none());
+        let got = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the trim lands")
+            .expect("channel open");
+        assert!(matches!(got, Action::AuditReload), "got {got:?}");
+    }
+
+    #[tokio::test]
+    async fn fix_hands_off_to_the_activities_table() {
+        let config = Config::for_environment(Environment::Development);
+        let api = ApiClient::with_token(config.api_url.clone(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Audit::default();
+        s.handle(Action::AuditLoaded(Box::new(sample())), &api, &tx)
+            .await;
+        let note = s.handle(Action::AuditFix, &api, &tx).await;
+        let (level, text) = note.expect("the handoff is announced");
+        assert_eq!(level, Level::Info);
+        assert!(text.contains("Read DDIA ch.7"), "{text}");
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Action::Goto(super::super::ScreenKind::Activities))
+        ));
+    }
+
+    async fn first_load_action_for_status(status: u16) -> Action {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/progress/audit"))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&server)
+            .await;
+        let api = ApiClient::with_token(url::Url::parse(&server.uri()).unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        spawn_load(&api, &tx);
+        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("a message arrives")
+            .expect("channel open")
+    }
+
+    #[tokio::test]
+    async fn a_401_from_the_audit_read_routes_to_reauth() {
+        let got = first_load_action_for_status(401).await;
+        assert!(matches!(got, Action::SessionExpired), "got {got:?}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_audit_read_reports_itself_as_a_failure() {
+        let got = first_load_action_for_status(500).await;
+        assert!(matches!(got, Action::AuditLoadFailed(_)), "got {got:?}");
     }
 
     #[tokio::test]

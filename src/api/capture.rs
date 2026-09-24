@@ -1,32 +1,9 @@
-//! Assisted-capture source connection (`/api/v1/capture/sources`, ADR 0035).
-//!
-//! The producers (git commit bursts, calendar events) turn activity into draft
-//! tasks the inbox triages (`automations.rs`); this is the other half — opting a
-//! *source* in so those drafts appear. Connecting is a settings-backed opt-in
-//! dispatched through the server's `Capture::Source` registry: `connect` flips a
-//! per-user flag (the calendar also stores a feed URL), `disconnect` flips it off
-//! **without deleting captured drafts** (disconnect ≠ delete), and `sync`
-//! enqueues a scan.
-//!
-//! Two contract shapes the client must render honestly:
-//!   - **trust** — every source read carries the plain-language `reads` /
-//!     `never_reads` / `promise` strings verbatim (the promise is the feature).
-//!     A terminal client states them *before* connecting; it never invents its own.
-//!   - **requirement** — GitHub OAuth is web-only (ADR 0018), so a git source
-//!     with no GitHub connection is not `connectable`: its read carries a
-//!     `requirement` pointer at the web connect page instead of `null`, and a
-//!     `connect` attempt returns `422` with a distinct problem type. The honest
-//!     move is to render the pointer, not retry.
+//! Assisted-capture source connection (`/api/v1/capture/sources`, engineer ADR 0035).
 
 use serde::{Deserialize, Serialize};
 
 use super::{ApiClient, ApiError, List};
 
-/// One capture source (`git` or `calendar`) with its connect state, the
-/// plain-language trust copy, and the `requirement` pointer that stands in for
-/// `null` when a prerequisite (the git source's web-only GitHub OAuth) is unmet.
-/// `params` lists the body keys `connect` accepts (`["feed_url"]` for the
-/// calendar, `[]` for git).
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct CaptureSource {
     pub key: String,
@@ -41,16 +18,12 @@ pub struct CaptureSource {
 }
 
 impl CaptureSource {
-    /// True when this source's `connect` body expects a feed URL (the calendar).
     pub fn wants_feed_url(&self) -> bool {
         self.params.iter().any(|p| p == "feed_url")
     }
 }
 
-/// The web-only prerequisite a source can't satisfy over the API (ADR 0018): the
-/// git source's GitHub connection. `detail` is the plain-language reason and
-/// `url` points at the web connect page — the client renders both instead of
-/// failing opaquely.
+/// A prerequisite the API can't satisfy: GitHub OAuth is web-only (engineer ADR 0018).
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct Requirement {
     pub kind: String,
@@ -59,9 +32,7 @@ pub struct Requirement {
     pub url: Option<String>,
 }
 
-/// The plain-language trust copy, part of the contract (ADR 0035): what the
-/// source reads, what it never reads, and the shared promise that nothing
-/// auto-logs. Rendered verbatim before connecting.
+/// Contract copy (engineer ADR 0035): rendered verbatim, never reworded.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct Trust {
     pub reads: String,
@@ -82,17 +53,11 @@ struct ConnectBody<'a> {
 }
 
 impl ApiClient {
-    /// List the capture sources with their connect state, trust copy, and
-    /// requirement pointers.
     pub async fn list_capture_sources(&self) -> Result<Vec<CaptureSource>, ApiError> {
         let list: List<CaptureSource> = self.get("/api/v1/capture/sources", &[]).await?;
         Ok(list.data)
     }
 
-    /// Opt a source in. The calendar carries `feed_url`; git sends no body. On a
-    /// git source with no GitHub connection the server returns `422` with the
-    /// `capture-source-requirement` problem type; a bad feed URL is a field-level
-    /// `422`. Either way the caller renders the problem honestly.
     pub async fn connect_capture_source(
         &self,
         key: &str,
@@ -105,15 +70,11 @@ impl ApiClient {
         }
     }
 
-    /// Turn a source off. Returns the fresh (disconnected) source. Captured
-    /// drafts already in the inbox **survive** — disconnect is not delete.
     pub async fn disconnect_capture_source(&self, key: &str) -> Result<CaptureSource, ApiError> {
         self.delete_json(&format!("/api/v1/capture/sources/{key}/connect"))
             .await
     }
 
-    /// Enqueue a scan for a connected source (`202`). A disconnected source is a
-    /// `422` and enqueues nothing.
     pub async fn sync_capture_source(&self, key: &str) -> Result<SyncQueued, ApiError> {
         self.post_empty(&format!("/api/v1/capture/sources/{key}/sync"))
             .await

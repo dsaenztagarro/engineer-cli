@@ -1,10 +1,4 @@
-//! Headless `engineer inbox` — triage the assisted-capture drafts
-//! (the TUI ↔ headless contract, ADR 0003). Bare `inbox` lists pending drafts;
-//! `accept` / `reject` / `ack` act on one; `show` reads one in full. `--json`
-//! for machines, plain otherwise, exit 0 on success, 1 on refusal — the
-//! `engineer timer`/`target` contract. Accepting writes the activity (the
-//! server's `complete`), so a stale draft is a `422` surfaced as "already
-//! moved on", not a crash.
+//! Headless `engineer inbox` — triage the assisted-capture drafts (ADR 0003).
 
 use std::io::{IsTerminal, Write};
 
@@ -16,16 +10,13 @@ use crate::api::{ApiClient, ApiError, CaptureSource, Task};
 use crate::auth::TokenProvider;
 use crate::config::Config;
 use crate::messages;
+use crate::ui::tokens;
 
-/// The past-tense outcome word each triage verb confirms. Shared with the TUI
-/// inbox screen (`src/app/screens/inbox.rs`) so the headless verbs and the
-/// screen speak one vocabulary — the accept/reject/ack copy is spelled once.
+/// Shared with the TUI inbox screen, so both surfaces confirm a verb in one word.
 pub const ACCEPTED: &str = "accepted";
 pub const REJECTED: &str = "rejected";
 pub const ACKNOWLEDGED: &str = "acknowledged";
 
-/// The stale-draft (`422`) line: a soft re-read, never a crash. The design's
-/// §Inbox notify tile copy, shared so both surfaces render the same phrase.
 pub const ALREADY_MOVED_ON: &str = "this draft already moved on — inbox re-read";
 
 #[derive(Args)]
@@ -77,10 +68,8 @@ pub async fn run(cfg: &Config, args: InboxArgs) -> Result<i32> {
     let api = ApiClient::with_token(cfg.api_url.clone(), token);
     let colored = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
 
-    // The interactive connect confirm can't be buffered — the trust statement
-    // must be shown *and flushed* before the y/N is read (capture-is-sacred: you
-    // see what you're opting into first) — so it's handled ahead of `dispatch`.
-    // Off a TTY, or with `--yes`, it falls through to the buffered `dispatch`.
+    // The interactive confirm can't go through the buffered `dispatch`: the
+    // trust statement must be flushed before the y/N is read.
     if let Some(InboxCmd::Connect {
         key,
         feed_url,
@@ -131,8 +120,6 @@ impl Outcome {
         }
     }
 
-    /// Keep the informational `out` lines (e.g. the trust statement) but refuse
-    /// with a reason on stderr and exit 1 — the honest "shown, but not done".
     fn refuse_after(out: Vec<String>, reason: impl Into<String>) -> Self {
         Self {
             out,
@@ -199,8 +186,6 @@ async fn list(api: &ApiClient, json: bool, colored: bool) -> Outcome {
     Outcome::lines(out)
 }
 
-/// The result of a triage verb — a one-line confirmation, or a graceful refusal
-/// when the draft already moved on (`422`).
 fn act(result: Result<Task, ApiError>, verb: &str, id: i64, json: bool, colored: bool) -> Outcome {
     match result {
         Ok(t) if json => Outcome::ok(to_json(&t)),
@@ -219,11 +204,8 @@ fn act(result: Result<Task, ApiError>, verb: &str, id: i64, json: bool, colored:
     }
 }
 
-// ---- the git-source connect flow (`/api/v1/capture/sources`, ADR 0035) -------
+// ---- the git-source connect flow (`/api/v1/capture/sources`, engineer ADR 0035)
 
-/// `engineer inbox sources` — the capture sources with their connect state and
-/// the plain-language trust lines, so a terminal user sees what each source
-/// reads before wiring anything.
 async fn sources(api: &ApiClient, json: bool, colored: bool) -> Outcome {
     let sources = match api.list_capture_sources().await {
         Ok(s) => s,
@@ -242,8 +224,6 @@ async fn sources(api: &ApiClient, json: bool, colored: bool) -> Outcome {
             paint(&source_state(s), state_color(s), colored),
             s.name
         ));
-        // The trust `reads` line, or — for a git source that needs GitHub — the
-        // requirement pointer, rendered honestly rather than as a bare "off".
         match &s.requirement {
             Some(req) => {
                 let mut hint = format!("    {}", req.detail);
@@ -262,10 +242,6 @@ async fn sources(api: &ApiClient, json: bool, colored: bool) -> Outcome {
     Outcome::lines(out)
 }
 
-/// `engineer inbox connect <key>` (non-interactive) — prints the trust statement,
-/// then connects if `proceed` (the `--yes` gate) is set and the source is
-/// connectable. A git source with no GitHub connection prints the requirement
-/// pointer and refuses; a bad calendar feed URL surfaces the server's `422`.
 async fn connect_dispatch(
     api: &ApiClient,
     key: &str,
@@ -282,8 +258,7 @@ async fn connect_dispatch(
         Err(e) => return refuse_problem(e),
     };
 
-    // The trust statement, rendered verbatim BEFORE connecting (human output;
-    // `--json` callers read it from `sources --json`).
+    // `--json` callers read the trust statement from `sources --json`.
     let mut out = if json {
         Vec::new()
     } else {
@@ -321,9 +296,6 @@ async fn connect_dispatch(
     }
 }
 
-/// The interactive TTY confirm: show the trust statement, ask, then connect on a
-/// yes. Kept out of `dispatch` because the trust must be flushed *before* the
-/// read — a buffered outcome would prompt before showing what you're opting into.
 async fn connect_interactive(
     api: &ApiClient,
     key: &str,
@@ -385,8 +357,6 @@ async fn connect_interactive(
     Ok(outcome.code)
 }
 
-/// `engineer inbox disconnect <key>` — turns the source off. Drafts already
-/// captured survive (disconnect ≠ delete), and the confirmation says so.
 async fn disconnect(api: &ApiClient, key: &str, json: bool, colored: bool) -> Outcome {
     match api.disconnect_capture_source(key).await {
         Ok(s) if json => Outcome::ok(to_json(&s)),
@@ -399,8 +369,6 @@ async fn disconnect(api: &ApiClient, key: &str, json: bool, colored: bool) -> Ou
     }
 }
 
-/// `engineer inbox sync <key>` — enqueues a scan for a connected source; a
-/// disconnected source is the server's honest `422`.
 async fn sync(api: &ApiClient, key: &str, json: bool, colored: bool) -> Outcome {
     match api.sync_capture_source(key).await {
         Ok(q) if json => Outcome::ok(to_json(&q)),
@@ -413,17 +381,12 @@ async fn sync(api: &ApiClient, key: &str, json: bool, colored: bool) -> Outcome 
     }
 }
 
-/// Read one source by key from the index (`None` when the key isn't one the
-/// server serves — the route fences `git|calendar`, but a typo still shouldn't
-/// crash).
 async fn load_source(api: &ApiClient, key: &str) -> Result<Option<CaptureSource>, ApiError> {
     let sources = api.list_capture_sources().await?;
     Ok(sources.into_iter().find(|s| s.key == key))
 }
 
-/// The plain-language trust statement — `reads` / `never_reads` / `promise`,
-/// rendered verbatim from the payload (the promise is the feature; the client
-/// never invents its own wording).
+/// Verbatim from the payload: the copy is contract (engineer ADR 0035).
 fn trust_lines(source: &CaptureSource, colored: bool) -> Vec<String> {
     vec![
         paint(
@@ -437,8 +400,6 @@ fn trust_lines(source: &CaptureSource, colored: bool) -> Vec<String> {
     ]
 }
 
-/// The requirement pointer — GitHub isn't connected, so the source can't connect
-/// over the API; render the server's detail and the web URL, not a bare failure.
 fn requirement_lines(source: &CaptureSource, colored: bool) -> Vec<String> {
     let Some(req) = &source.requirement else {
         return Vec::new();
@@ -458,8 +419,6 @@ fn requirement_lines(source: &CaptureSource, colored: bool) -> Vec<String> {
     lines
 }
 
-/// A connect `422`'s honest one-liner: the problem detail, plus any field errors
-/// (a bad calendar feed URL), or the title as a fallback.
 fn connect_problem(e: ApiError) -> String {
     if let ApiError::Problem { detail, errors, .. } = &e {
         let fields: Vec<String> = errors
@@ -474,8 +433,6 @@ fn connect_problem(e: ApiError) -> String {
     problem_reason(e)
 }
 
-/// `● connected` / `⚠ needs GitHub` / `○ not connected` — the one-word source
-/// state, in the state colour.
 fn source_state(s: &CaptureSource) -> String {
     if s.connected {
         "● connected".to_string()
@@ -496,7 +453,6 @@ fn state_color(s: &CaptureSource) -> u8 {
     }
 }
 
-/// `#42  Log commit "fix parser"?  · Crafting Interpreters · expires 8h`
 fn task_line(t: &Task, colored: bool) -> String {
     let prompt = t.prompt.as_deref().unwrap_or("(draft)");
     let who = t
@@ -538,7 +494,6 @@ fn show_lines(t: &Task, colored: bool) -> Vec<String> {
     out
 }
 
-/// ` · expires 8h` / ` · expired`, or empty when the draft has no expiry.
 fn expires_badge(t: &Task, colored: bool) -> String {
     let Some(expires) = t.expires_at else {
         return String::new();
@@ -571,9 +526,6 @@ fn refuse_problem(e: ApiError) -> Outcome {
     }
 }
 
-/// The honest one-line reason for a failed capture-source call — the problem
-/// detail (the connect requirement, the sync-not-connected `422`), or a clear
-/// offline line for a transport failure (the flow is live-only).
 fn problem_reason(e: ApiError) -> String {
     match e {
         ApiError::Unauthorized => messages::not_authenticated().to_string(),
@@ -584,10 +536,10 @@ fn problem_reason(e: ApiError) -> String {
     }
 }
 
-const COLOR_OK: u8 = 108;
-const COLOR_WARN: u8 = 179;
-const COLOR_ACCENT: u8 = 105;
-const COLOR_MUTED: u8 = 244;
+const COLOR_OK: u8 = tokens::NOTICE_SUCCESS;
+const COLOR_WARN: u8 = tokens::NOTICE_WARNING;
+const COLOR_ACCENT: u8 = tokens::ACCENT;
+const COLOR_MUTED: u8 = tokens::TEXT_SECONDARY;
 
 fn paint(s: &str, color: u8, colored: bool) -> String {
     if colored {
@@ -643,7 +595,6 @@ mod tests {
         })
     }
 
-    /// Mount the sources index returning the given sources.
     async fn mount_sources(server: &MockServer, sources: serde_json::Value) {
         Mock::given(method("GET"))
             .and(path("/api/v1/capture/sources"))
@@ -741,8 +692,6 @@ mod tests {
         let out = dispatch(&client(&server), Some(InboxCmd::Sources), false, false).await;
         assert_eq!(out.code, 0);
         let text = out.out.join("\n");
-        // The un-connectable git source shows the requirement pointer, not a bare
-        // "reads" line; the connected calendar shows its state + trust.
         assert!(text.contains("needs GitHub"), "git state: {text}");
         assert!(text.contains("Connect GitHub first"), "requirement: {text}");
         assert!(
@@ -777,7 +726,6 @@ mod tests {
         )
         .await;
         assert_eq!(out.code, 1);
-        // The trust statement is printed before the gate refuses.
         let trust = out.out.join("\n");
         assert!(trust.contains("Commit times and counts"), "reads: {trust}");
         assert!(

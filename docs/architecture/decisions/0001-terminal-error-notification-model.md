@@ -4,7 +4,7 @@
 
 ## Context
 
-`docs/designs/design-system.dc.html` (§ERROR & NOTIFICATION MODEL, §NOTIFICATION & SEARCH STATES, §SIGN IN · SERVER ERROR) defines one model every screen must speak: every message the client shows lands in exactly one of three tiers, chosen by *scope × lifetime*, and the wording is identical across the TUI tile, the inline panel line, and the headless `stderr` a script greps (§C — "one spelling per outcome").
+[`design-system.dc.html`](https://github.com/dsaenztagarro/engineer-cli-ds/blob/master/pages/design-system.dc.html) in `engineer-cli-ds` (§ERROR & NOTIFICATION MODEL, §NOTIFICATION & SEARCH STATES, §SIGN IN · SERVER ERROR) defines one model every screen must speak: every message the client shows lands in exactly one of three tiers, chosen by *scope × lifetime*, and the wording is identical across the TUI tile, the inline panel line, and the headless `stderr` a script greps (§C — "one spelling per outcome").
 
 Before this epic only **Tier 1** (the footer notify tile, `src/ui/notify.rs`) existed. Tiers 2–3 and the search-state contract were absent or ad-hoc, and — the concrete failure this epic set out to fix — **12 of 16 screens collapsed a read *failure* into an *empty* result** (a fetch closure sending `Loaded(vec![])` on error), so "the server is down" and "you have no books" rendered identically. That violates the model's one hard rule (distinguish empty from failed) and the governing honesty principle (§0·4: offline / stale / failed always render, never hidden to look tidy).
 

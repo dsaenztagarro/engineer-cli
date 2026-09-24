@@ -235,14 +235,8 @@ impl ApiClient {
 /// lands in `content`, so truncating the title never loses input.
 pub(crate) const TITLE_MAX: usize = 120;
 
-/// Split a captured thought into `(title, content)`: the title is the first
-/// non-empty line (clipped to `TITLE_MAX`), and the full text is kept verbatim
-/// in `content` so nothing is lost. The server's note model requires a title;
-/// capture is content-first, so we derive one.
-///
-/// One spelling of the rule, home in the notes domain and reused by both note
-/// surfaces: the quick-capture overlay (`src/app/capture.rs`) and the headless
-/// `engineer note capture` (`src/note_cli.rs`).
+/// The server's note model requires a title; capture is content-first, so one
+/// is derived.
 pub(crate) fn derive_title_content(text: &str) -> (String, Option<String>) {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -305,6 +299,14 @@ mod tests {
             content.as_deref(),
             Some("closures are objects\n\nthe env model")
         );
+    }
+
+    #[test]
+    fn a_long_first_line_is_clipped_in_the_title_but_kept_whole_in_content() {
+        let long = "x".repeat(TITLE_MAX + 5);
+        let (title, content) = derive_title_content(&long);
+        assert_eq!(title.chars().count(), TITLE_MAX);
+        assert_eq!(content.as_deref(), Some(long.as_str()));
     }
 
     #[test]

@@ -1,13 +1,4 @@
-//! A reusable Telescope-flavoured fuzzy picker overlay — the kit's "fuzzy over
-//! navigate" rule (`docs/designs/README.md`, `cross-cutting-concerns.dc.html`).
-//!
-//! One source-agnostic widget any screen mounts over its content: `j`/`k` move,
-//! type to filter, `⏎` picks, `Esc` cancels — the neovim grammar the footer
-//! already advertises. It ranks with [`super::fuzzy`] (a subsequence match, not
-//! the substring narrow the lists use), and renders from shipped atoms only
-//! (`bordered()`, `▌` selection, dim-vs-bright). A module picks a *source* — a
-//! local slice of books / repos / domains / activities, or a candidate stream —
-//! not a bespoke screen, so every pick feels identical.
+//! The one fuzzy picker overlay a screen mounts over its content, ranked by [`super::fuzzy`].
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
@@ -16,8 +7,6 @@ use ratatui::Frame;
 
 use crate::ui::{fuzzy, layout::bordered, theme};
 
-/// One choice: what the user sees (`label`, matched fuzzily) and what the caller
-/// gets back on pick (`value`).
 pub struct PickerItem<T> {
     pub label: String,
     pub value: T,
@@ -32,14 +21,10 @@ impl<T> PickerItem<T> {
     }
 }
 
-/// A modal fuzzy picker over a fixed set of `T`. The owning screen holds it as an
-/// `Option<Picker<T>>`, routes keys to it while open, and reads [`selected`] on
-/// `⏎`.
 pub struct Picker<T> {
     title: String,
     items: Vec<PickerItem<T>>,
     query: String,
-    /// Cursor into the *filtered* view (reset to 0 whenever the query changes).
     cursor: usize,
 }
 
@@ -70,8 +55,6 @@ impl<T> Picker<T> {
         }
     }
 
-    /// Indices into `items` that match the query, best score first. The sort is
-    /// stable, so equal-scoring matches keep their input order.
     fn ranked(&self) -> Vec<usize> {
         let mut scored: Vec<(usize, i32)> = self
             .items
@@ -83,13 +66,11 @@ impl<T> Picker<T> {
         scored.into_iter().map(|(i, _)| i).collect()
     }
 
-    /// The value under the cursor, or `None` when the query filters everything out.
     pub fn selected(&self) -> Option<&T> {
         let ranked = self.ranked();
         ranked.get(self.cursor).map(|&i| &self.items[i].value)
     }
 
-    /// The label under the cursor — for callers that echo the chosen row.
     pub fn selected_label(&self) -> Option<&str> {
         let ranked = self.ranked();
         ranked
@@ -144,7 +125,6 @@ impl<T> Picker<T> {
     }
 }
 
-/// A rect `pct_x` × `pct_y` percent of `area`, centered — the modal footprint.
 fn centered_rect(pct_x: u16, pct_y: u16, area: Rect) -> Rect {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -193,7 +173,6 @@ mod tests {
             p.input(c);
         }
         let ranked = p.ranked();
-        // "dda" is a subsequence of the DDIA title only.
         assert_eq!(ranked.len(), 1);
         assert_eq!(p.selected(), Some(&1));
     }
@@ -212,15 +191,14 @@ mod tests {
     #[test]
     fn query_change_resets_cursor_and_backspace_restores() {
         let mut p = books();
-        p.move_cursor(2); // on "Rust"
-        p.input('r'); // matches DDIA, SICP (interpretation), Rust... reranks, cursor -> 0
+        p.move_cursor(2);
+        p.input('r');
         assert!(p.selected().is_some());
-        // Narrow to only Rust, then widen again.
         for c in "ust".chars() {
             p.input(c);
         }
         assert_eq!(p.selected(), Some(&3));
-        p.backspace(); // "rus"
+        p.backspace();
         assert_eq!(p.selected(), Some(&3));
     }
 

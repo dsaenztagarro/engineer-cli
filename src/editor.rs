@@ -1,50 +1,28 @@
-//! The `$EDITOR` hand-off — the `git commit` pattern shared by the quick-capture
-//! overlay (#88) and the week retro reflection (#117): seed a temp file, spawn
-//! `$VISUAL`/`$EDITOR`, and read the saved buffer back.
-//!
-//! The TUI suspends the alt-screen around this (`app::run_editor`); the headless
-//! `engineer week reflect` calls it straight from the shell. Both share the seed
-//! → spawn → read-back mechanics; only the surrounding terminal handling differs.
+//! The `$EDITOR` hand-off: seed a temp file, spawn the editor, read the saved buffer back.
 
 use std::io::Result;
 
-/// How the editor session ended. The two are kept distinct because the retro
-/// reflection treats them differently: an **abort** (a non-zero exit — `:cq`,
-/// `false`) keeps the note untouched — capture-is-sacred across the boundary —
-/// while a **saved** buffer persists, and a saved-but-empty buffer clears the
-/// note deliberately (the server's `week_notes` contract treats empty as clear).
-/// The quick-capture overlay collapses both non-writes to "keep the draft".
 #[derive(Debug, PartialEq, Eq)]
 pub enum EditorOutcome {
-    /// The editor exited non-zero — an abort; nothing to persist.
     Aborted,
-    /// The editor exited zero — the saved buffer, trailing newline trimmed. May
-    /// be empty (a deliberate clear).
     Saved(String),
 }
 
-/// `$VISUAL` then `$EDITOR`, else `vi`.
 pub fn resolve_editor() -> String {
-    std::env::var("VISUAL")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            std::env::var("EDITOR")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-        })
+    resolve_editor_from(|name| std::env::var(name).ok())
+}
+
+fn resolve_editor_from(var: impl Fn(&str) -> Option<String>) -> String {
+    ["VISUAL", "EDITOR"]
+        .into_iter()
+        .find_map(|name| var(name).filter(|s| !s.trim().is_empty()))
         .unwrap_or_else(|| "vi".to_string())
 }
 
-/// Open the seed in `$VISUAL`/`$EDITOR` (falling back to `vi`) and read it back.
 pub fn edit(seed: &str) -> Result<EditorOutcome> {
     edit_with(&resolve_editor(), seed)
 }
 
-/// Write the seed to a temp file, run `editor` on it, and read it back.
-/// `editor` may carry flags (`code -w`), so split on whitespace. Returns
-/// [`EditorOutcome::Aborted`] on a non-zero exit and [`EditorOutcome::Saved`]
-/// (trailing newline trimmed, possibly empty) on a clean save.
 pub fn edit_with(editor: &str, seed: &str) -> Result<EditorOutcome> {
     // Unique per call, not just per process: concurrent sessions in one
     // process (parallel tests; a TUI overlay racing a spawned task) must
@@ -85,8 +63,7 @@ mod tests {
     }
 
     #[test]
-    fn roundtrips_the_edited_buffer() {
-        // A fake editor that overwrites the file it's given ($1).
+    fn a_clean_exit_saves_the_edited_buffer() {
         let editor = write_fake_editor("fakeed", "printf 'edited body' > \"$1\"");
         let out = edit_with(editor.to_str().unwrap(), "seed").unwrap();
         let _ = std::fs::remove_file(&editor);
@@ -95,7 +72,6 @@ mod tests {
 
     #[test]
     fn an_empty_save_is_distinct_from_an_abort() {
-        // A clean exit with an emptied buffer is a deliberate clear, NOT an abort.
         let editor = write_fake_editor("emptyed", ": > \"$1\"");
         let out = edit_with(editor.to_str().unwrap(), "seed").unwrap();
         let _ = std::fs::remove_file(&editor);
@@ -104,7 +80,52 @@ mod tests {
 
     #[test]
     fn a_nonzero_exit_is_an_abort() {
-        // `false` exits 1 without touching the file — the abort keeps the seed.
         assert_eq!(edit_with("false", "seed").unwrap(), EditorOutcome::Aborted);
+    }
+
+    #[test]
+    fn quitting_without_writing_is_an_abort_even_after_the_buffer_changed() {
+        let editor = write_fake_editor("quitbang", "printf 'half typed' > \"$1\"; exit 1");
+        let out = edit_with(editor.to_str().unwrap(), "seed").unwrap();
+        let _ = std::fs::remove_file(&editor);
+        assert_eq!(out, EditorOutcome::Aborted);
+    }
+
+    #[test]
+    fn a_saved_buffer_loses_its_trailing_newlines() {
+        let editor = write_fake_editor("nled", "printf 'body\\n\\n' > \"$1\"");
+        let out = edit_with(editor.to_str().unwrap(), "seed").unwrap();
+        let _ = std::fs::remove_file(&editor);
+        assert_eq!(out, EditorOutcome::Saved("body".into()));
+    }
+
+    #[test]
+    fn an_editor_command_may_carry_its_own_flags() {
+        let editor =
+            write_fake_editor("flagged", "[ \"$1\" = --wait ] && printf 'waited' > \"$2\"");
+        let out = edit_with(&format!("{} --wait", editor.to_str().unwrap()), "seed").unwrap();
+        let _ = std::fs::remove_file(&editor);
+        assert_eq!(out, EditorOutcome::Saved("waited".into()));
+    }
+
+    #[test]
+    fn the_editor_is_visual_then_editor_then_vi_skipping_blank_values() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        assert_eq!(
+            resolve_editor_from(env(&[("VISUAL", "code -w"), ("EDITOR", "nano")])),
+            "code -w"
+        );
+        assert_eq!(
+            resolve_editor_from(env(&[("VISUAL", "  "), ("EDITOR", "nano")])),
+            "nano"
+        );
+        assert_eq!(resolve_editor_from(env(&[])), "vi");
     }
 }

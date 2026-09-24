@@ -5,10 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{ApiClient, ApiError};
 
-// `Serialize` lets the headless read cache the last-known timer for the offline
-// status-bar fallback (see `crate::timer_cache`). `Default` is the blank
-// "nothing running" shape the pure transitions in `crate::timer_clock` build
-// synthesized timers from.
+// `Serialize` is for the offline read cache (`crate::timer_cache`); `Default`
+// is the "nothing running" shape `crate::timer_clock` synthesizes from.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Timer {
     pub running: bool,
@@ -35,12 +33,11 @@ pub struct Timer {
     /// Focus only: work intervals banked so far this session.
     #[serde(default)]
     pub intervals_completed: Option<u32>,
-    /// Server-side idle guard verdict: the clock has gone quiet and a reclaim
-    /// decision is pending.
+    /// The server's idle-guard verdict: a reclaim decision is pending.
     #[serde(default)]
     pub idle: Option<bool>,
-    /// The server's presence mark — reclaim verbs anchor to it (a reclaimed
-    /// `stop` ends the segment here). The idle span is `now − this`.
+    /// The server's presence mark — reclaim verbs anchor to it, and the idle
+    /// span is `now − this`.
     #[serde(default)]
     pub last_interacted_at: Option<jiff::Timestamp>,
     #[serde(default)]
@@ -50,8 +47,8 @@ pub struct Timer {
     /// Focus only: when the current work/break phase began.
     #[serde(default)]
     pub phase_started_at: Option<jiff::Timestamp>,
-    /// Overrun contract — non-null only when the timer is bound, the activity
-    /// has a plan, and the overrun ping is enabled.
+    /// Non-null only when the timer is bound, the activity has a plan, and the
+    /// overrun ping is enabled.
     #[serde(default)]
     pub planned_minutes: Option<u32>,
     /// Minutes already logged on the bound activity before this session.
@@ -62,8 +59,8 @@ pub struct Timer {
     pub over: bool,
 }
 
-/// The per-user timer knobs from `GET /api/v1/timer/settings` — read-only in
-/// the CLI (editing is web-only). The server always serves all twelve.
+/// The per-user timer knobs. The server always serves all twelve, so none
+/// defaults.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TimerSettings {
     /// `"stopwatch"` or `"focus"`.
@@ -93,7 +90,6 @@ pub struct TimerStopped {
     pub minutes: u32,
 }
 
-/// The idle-tail reclaim verbs — one server verb per §Idle reclaim row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReclaimVerb {
     /// Idle span becomes paused time; the timer keeps running.
@@ -125,8 +121,6 @@ impl ReclaimVerb {
     }
 }
 
-/// What a reclaim left behind: trim/keep return the still-running timer,
-/// stop returns the written segment.
 #[derive(Debug, Clone)]
 pub enum Reclaimed {
     Running(Box<Timer>),
@@ -160,38 +154,31 @@ impl ApiClient {
         self.get("/api/v1/timer", &[]).await
     }
 
-    /// The per-user timer knobs (view-only in the CLI; edit on the web).
     pub async fn timer_settings(&self) -> Result<TimerSettings, ApiError> {
         self.get("/api/v1/timer/settings", &[]).await
     }
 
-    /// Mark presence — the CLI's honest "the user is working in the TUI" beat,
-    /// the twin of the web pill's heartbeat. Keeps the idle guard from tripping
-    /// on real in-TUI work; the caller throttles to at most once a minute.
-    /// 404 when nothing is running.
+    /// Mark presence so the idle guard doesn't trip on in-TUI work; the caller
+    /// throttles it. 404 when nothing is running.
     pub async fn heartbeat_timer(&self) -> Result<(), ApiError> {
         self.post_empty("/api/v1/timer/heartbeat").await
     }
 
-    /// Drive a focus phase transition — transitions never fire on their own;
-    /// the server validates and applies. `to` is `"work"` or `"break"`.
-    /// 422 when the transition isn't available from the current phase.
+    /// `to` is `"work"` or `"break"`; 422 when the transition isn't available
+    /// from the current phase.
     pub async fn timer_phase(&self, to: &str) -> Result<Timer, ApiError> {
         self.post("/api/v1/timer/phase", &serde_json::json!({ "to": to }))
             .await
     }
 
-    /// Switch the running timer's mode in place — elapsed is preserved.
-    /// Entering focus opens a work phase; leaving clears it. 422 when the
-    /// timer is already in that mode.
+    /// Entering focus opens a work phase; leaving clears it. 422 when the timer
+    /// is already in that mode.
     pub async fn timer_mode(&self, mode: &str) -> Result<Timer, ApiError> {
         self.post("/api/v1/timer/mode", &serde_json::json!({ "mode": mode }))
             .await
     }
 
-    /// Apply an idle-tail reclaim decision. The response shape follows the
-    /// verb: `trim`/`keep` return the running timer, `stop` the written
-    /// segment. 422 on `stop` when the timer is unbound.
+    /// 422 on `stop` when the timer is unbound.
     pub async fn reclaim_timer(&self, verb: ReclaimVerb) -> Result<Reclaimed, ApiError> {
         let body = serde_json::json!({ "verb": verb.as_str() });
         match verb {
@@ -206,7 +193,7 @@ impl ApiClient {
         }
     }
 
-    /// Start a timer, optionally bound to an activity. `switch` stops the running timer first.
+    /// `switch` stops & saves the running timer first.
     pub async fn start_timer(
         &self,
         activity_id: Option<i64>,
@@ -230,12 +217,12 @@ impl ApiClient {
         self.post_empty("/api/v1/timer/resume").await
     }
 
-    /// Stop the timer, writing a segment on the bound activity. Fails if unbound.
+    /// Writes a segment on the bound activity; 422 when unbound.
     pub async fn stop_timer(&self) -> Result<TimerStopped, ApiError> {
         self.post_empty("/api/v1/timer/stop").await
     }
 
-    /// Bind an unnamed timer to an existing activity or a new one created from `title`.
+    /// Binds to an existing activity, or to a new one created from `title`.
     pub async fn bind_timer(
         &self,
         activity_id: Option<i64>,
@@ -259,12 +246,9 @@ impl ApiClient {
     }
 
     // --- replay variants (`crate::queue::replay`) ---------------------------
-    // The same endpoints, re-sent with the queued intent's stored
-    // `Idempotency-Key` so a replay whose ack was lost cannot double-write
-    // (engineer#806). They return `Keyed` so the pass can tell a stored replay
-    // (`Idempotency-Replayed: true`) from a first execution. `discard_timer`
-    // has no variant: DELETE is naturally idempotent, so the replay pass calls
-    // it as-is.
+    // The stored `Idempotency-Key` means a replay whose ack was lost cannot
+    // double-write. `discard_timer` has no variant: DELETE is naturally
+    // idempotent.
 
     pub(crate) async fn start_timer_idempotent(
         &self,
@@ -541,7 +525,7 @@ mod tests {
         use wiremock::matchers::header;
         let server = MockServer::start().await;
         // A stored replay: the body is the first execution's, byte-identical,
-        // flagged with the header (engineer#806).
+        // flagged with the header.
         Mock::given(method("POST"))
             .and(path("/api/v1/timer/pause"))
             .and(header("Idempotency-Key", "key-1"))

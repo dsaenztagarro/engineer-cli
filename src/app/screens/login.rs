@@ -10,18 +10,12 @@ use crate::ui::blocking::{render_blocking, Blocking, Recovery};
 use crate::ui::notify::Level;
 use crate::ui::{layout::bordered, theme, widgets};
 
-/// Shown when there is no stored refresh token, or when the session must be
-/// re-established. `Idle`/`Pending` are the plain sign-in prompt; `ServerError`
-/// and `Expired` are the design's Tier-3 blocking states (§SIGN IN · SERVER
-/// ERROR): the whole screen carries the failure and its one recovery key.
 #[derive(Default)]
 enum State {
     #[default]
     Idle,
     Pending,
-    /// The identity server was unreachable / 5xx — the flow can't start.
     ServerError(String),
-    /// A 401 invalidated the stored session — re-authenticate.
     Expired,
 }
 
@@ -33,22 +27,18 @@ pub struct Login {
 impl Login {
     pub fn on_enter(&mut self, _api: &ApiClient, _tx: &UnboundedSender<Action>) {}
 
-    /// The browser flow has started — wait for the callback.
     pub fn set_pending(&mut self) {
         self.state = State::Pending;
     }
 
-    /// The flow ended without a token (cancelled, timed out, keyring error).
     pub fn set_idle(&mut self) {
         self.state = State::Idle;
     }
 
-    /// The identity server couldn't be reached (Tier 3, retry).
     pub fn set_server_error(&mut self, reason: impl Into<String>) {
         self.state = State::ServerError(reason.into());
     }
 
-    /// A 401 invalidated the session (Tier 3, re-auth).
     pub fn set_expired(&mut self) {
         self.state = State::Expired;
     }
@@ -63,7 +53,6 @@ impl Login {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
-        // The Tier-3 states take the whole content area.
         match &self.state {
             State::ServerError(reason) => {
                 render_blocking(
@@ -99,7 +88,6 @@ impl Login {
             State::Idle | State::Pending => {}
         }
 
-        // Idle / Pending: the compact centred sign-in prompt.
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([

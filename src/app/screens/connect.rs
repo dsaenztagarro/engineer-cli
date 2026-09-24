@@ -1,35 +1,8 @@
-//! Connect — the git-source connect flow over the assisted-capture sources
-//! (`/api/v1/capture/sources`, ADR 0035; assisted-capture.dc.html §Connect · git
-//! source). Reachable from the Inbox screen via `c` (the design's footer key):
-//! the inbox triages the drafts, this is where a source is opted in so those
-//! drafts appear in the first place.
-//!
-//! One screen, a list of the capture sources (git / calendar) with their connect
-//! state, and three verbs behind a modal prompt:
-//!
-//!   connect     — `c` opens the trust statement (`reads` / `never_reads` /
-//!                 `promise`, rendered **verbatim before connecting** — a
-//!                 contract obligation, engineer ADR 0035: changing the copy
-//!                 is an API change), then a confirm. The git source
-//!                 takes no body; the calendar captures a feed URL first.
-//!   disconnect  — `d` arms the confirm; disconnect turns the source *off*
-//!                 without deleting captured drafts (disconnect ≠ delete).
-//!   sync        — `s` enqueues a scan for a connected source.
-//!
-//! When the git source has no GitHub connection it is not `connectable`: `c`
-//! renders the server's **requirement pointer** honestly (the detail + the web
-//! URL — "connect GitHub on the web first") instead of offering a connect that
-//! would only 422. GitHub OAuth is web-only (engineer ADR 0018); the CLI never
-//! fakes a second auth path.
-//!
-//! The verbs are **live-only** — connecting needs the server, so an offline
-//! gesture can't synthesize an opt-in that never happened. The honest move is a
-//! clear offline refusal, the same deviation the triage verbs took (#94, epic
-//! #118 decision log).
+//! Connect — opting an assisted-capture source in, so its drafts reach the inbox.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::Frame;
@@ -42,23 +15,22 @@ use crate::ui::notify::Level;
 use crate::ui::panel::{render_panel_state, PanelFailure, PanelState};
 use crate::ui::{layout::bordered, theme, widgets};
 
-/// A modal prompt open over the sources list.
 enum Prompt {
-    /// The trust statement + a confirm, for a `connectable` source. `feed` is
-    /// `Some` (the captured URL) for a source that takes a feed URL (calendar),
-    /// `None` for one that takes no body (git).
+    /// `feed` is `Some` for a source whose `connect` takes a feed URL.
     Connect {
         source: CaptureSource,
         feed: Option<String>,
     },
-    /// The honest requirement pointer — the git source can't connect until
-    /// GitHub is connected on the web. No connect is offered; only dismiss.
-    Requirement { source: CaptureSource },
-    /// The disconnect confirm — drafts survive, so the copy says so.
-    Disconnect { source: CaptureSource },
+    /// GitHub OAuth is web-only (engineer ADR 0018), so an unmet requirement
+    /// is pointed at, never worked around.
+    Requirement {
+        source: CaptureSource,
+    },
+    Disconnect {
+        source: CaptureSource,
+    },
 }
 
-/// One connect/disconnect/sync verb, carrying what its server call needs.
 enum Verb {
     Connect { key: String, feed: Option<String> },
     Disconnect { key: String },
@@ -70,11 +42,8 @@ pub struct Connect {
     sources: Vec<CaptureSource>,
     selected: usize,
     loading: bool,
-    /// Tier-2 state: set when the sources read failed, so no-sources and a
-    /// failed fetch render differently. Cleared on the next successful load.
     failure: Option<PanelFailure>,
     prompt: Option<Prompt>,
-    /// A verb is in flight — guards a second fire before the re-read.
     in_flight: bool,
 }
 
@@ -91,8 +60,6 @@ impl Connect {
                 Ok(sources) => {
                     let _ = tx.send(Action::ConnectLoaded(sources));
                 }
-                // A 401 routes to re-auth; every other failure surfaces as
-                // itself in the Tier-2 panel — never a silent empty list.
                 Err(ApiError::Unauthorized) => {
                     let _ = tx.send(Action::SessionExpired);
                 }
@@ -106,13 +73,9 @@ impl Connect {
         });
     }
 
-    /// The feed-URL capture (calendar) owns keys before the global keymap while
-    /// open; the confirm prompts own their submit/cancel keys.
     pub fn intercept_key(&mut self, key: KeyEvent) -> Option<Action> {
         let prompt = self.prompt.as_ref()?;
         match prompt {
-            // The calendar feed-URL field swallows every key so the URL is never
-            // disturbed by the global keymap.
             Prompt::Connect { feed: Some(_), .. } => Some(match key.code {
                 KeyCode::Enter => Action::ConnectPromptSubmit,
                 KeyCode::Esc => Action::ConnectPromptCancel,
@@ -228,7 +191,6 @@ impl Connect {
                 Some(Prompt::Disconnect { source }) => {
                     self.fire(Verb::Disconnect { key: source.key }, api, tx);
                 }
-                // The requirement pointer has no submit — dismissing is all.
                 other => self.prompt = other,
             },
             Action::ConnectPromptCancel => self.prompt = None,
@@ -248,8 +210,8 @@ impl Connect {
         None
     }
 
-    /// Fire a live-only verb against the server and, on a resolved outcome,
-    /// re-read the sources. A transport failure is the honest offline refusal.
+    /// Live-only: offline, a connect can't be synthesized — the opt-in never
+    /// happened.
     fn fire(&mut self, verb: Verb, api: &ApiClient, tx: &UnboundedSender<Action>) {
         if self.in_flight {
             return;
@@ -334,8 +296,6 @@ impl Connect {
         let block = bordered("Connect · sources");
 
         if self.sources.is_empty() {
-            // Failed (loud) is kept distinct from no-sources (calm) via the
-            // shared Tier-2 atom; loading is its own calm state.
             let state = if let Some(f) = &self.failure {
                 PanelState::Failed(f.clone())
             } else if self.loading {
@@ -406,8 +366,6 @@ impl Connect {
     }
 }
 
-/// The problem's own detail (or title) — the 422s render honestly (the git
-/// requirement's "Connect GitHub first…", a bad feed URL's field message).
 fn problem_text(e: &ApiError) -> String {
     match e {
         ApiError::Unauthorized => messages::not_authenticated().to_string(),
@@ -417,18 +375,16 @@ fn problem_text(e: &ApiError) -> String {
     }
 }
 
-/// One source row: a state pill, the source name, and the plain-language `reads`
-/// line (or, for a git source that needs GitHub, the requirement detail).
 fn source_row(s: &CaptureSource) -> Row<'static> {
     let state = if s.connected {
         Span::styled(
             " connected ",
-            Style::default().fg(Color::Black).bg(theme::SUCCESS),
+            Style::default().fg(theme::INK_ON_FILL).bg(theme::SUCCESS),
         )
     } else if !s.connectable {
         Span::styled(
             " needs GitHub ",
-            Style::default().fg(Color::Black).bg(theme::WARN),
+            Style::default().fg(theme::INK_ON_FILL).bg(theme::WARN),
         )
     } else {
         Span::styled("not connected", theme::muted())
@@ -445,8 +401,6 @@ fn source_row(s: &CaptureSource) -> Row<'static> {
     ])
 }
 
-/// The trust statement (rendered **verbatim before connecting**) plus the
-/// confirm — a feed-URL field for the calendar, a `y`/`⏎` confirm for git.
 fn render_connect(frame: &mut Frame, area: Rect, source: &CaptureSource, feed: Option<&str>) {
     let mut lines = trust_lines(source);
     lines.push(Line::from(""));
@@ -486,8 +440,6 @@ fn render_connect(frame: &mut Frame, area: Rect, source: &CaptureSource, feed: O
     );
 }
 
-/// The honest requirement pointer — GitHub isn't connected, so the source can't
-/// connect over the API. Render the server's detail and the web URL; don't retry.
 fn render_requirement(frame: &mut Frame, area: Rect, source: &CaptureSource) {
     let mut lines = vec![
         Line::from(Span::styled(
@@ -521,8 +473,6 @@ fn render_requirement(frame: &mut Frame, area: Rect, source: &CaptureSource) {
     );
 }
 
-/// The disconnect confirm — disconnect turns the source off; it does not delete
-/// the drafts it already produced, and the copy says so.
 fn render_disconnect(frame: &mut Frame, area: Rect, source: &CaptureSource) {
     let lines = vec![
         Line::from(Span::styled(
@@ -554,9 +504,8 @@ fn render_disconnect(frame: &mut Frame, area: Rect, source: &CaptureSource) {
     );
 }
 
-/// The plain-language trust statement, rendered **verbatim** from the payload —
-/// the promise is the feature, so it is stated before anything connects and the
-/// client never invents its own wording.
+/// Verbatim from the payload: the copy is contract (engineer ADR 0035), so
+/// changing it is an API change, never a client edit.
 fn trust_lines(source: &CaptureSource) -> Vec<Line<'static>> {
     vec![
         Line::from(Span::styled(
@@ -683,7 +632,6 @@ mod tests {
         let text = render(&mut s);
         assert!(text.contains("Git activity"), "git row: {text}");
         assert!(text.contains("Study calendar"), "calendar row: {text}");
-        // The un-connectable git source wears the requirement, not connect.
         assert!(text.contains("needs GitHub"), "git state pill: {text}");
     }
 
@@ -755,7 +703,6 @@ mod tests {
         feed(&mut s, &api, &tx, Action::ConnectBegin).await;
         assert!(matches!(s.prompt, Some(Prompt::Connect { feed: None, .. })));
         let text = render(&mut s);
-        // The trust strings are rendered verbatim, before any connect fires.
         assert!(
             text.contains("Commit times and counts"),
             "reads verbatim: {text}"
@@ -810,12 +757,10 @@ mod tests {
         assert!(matches!(s.prompt, Some(Prompt::Disconnect { .. })));
         let text = render(&mut s);
         assert!(text.contains("Disconnect Git activity?"), "{text}");
-        // The confirm states the honesty: disconnect ≠ delete.
         assert!(
             text.contains("kept") || text.contains("doesn't delete"),
             "{text}"
         );
-        // Esc cancels without a call.
         feed(&mut s, &api, &tx, Action::ConnectPromptCancel).await;
         assert!(s.prompt.is_none());
     }
@@ -980,7 +925,7 @@ mod tests {
 
     #[tokio::test]
     async fn offline_connect_refuses_and_clears_the_guard() {
-        // No server — the request is a transport failure (offline).
+        // No server: the request is a transport failure.
         let api = ApiClient::with_token(Url::parse("http://127.0.0.1:1").unwrap(), "tok".into());
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut s = Connect::default();
@@ -1030,5 +975,48 @@ mod tests {
             s.intercept_key(press(KeyCode::Char('h'))),
             Some(Action::ConnectFeedInput('h'))
         ));
+    }
+
+    #[tokio::test]
+    async fn the_requirement_pointer_offers_no_connect() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::ConnectLoaded(vec![git(false, false)]),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::ConnectBegin).await;
+        feed(&mut s, &api, &tx, Action::ConnectPromptSubmit).await;
+        assert!(
+            matches!(s.prompt, Some(Prompt::Requirement { .. })),
+            "submit leaves the pointer up"
+        );
+        assert!(!s.in_flight, "nothing fired");
+    }
+
+    #[tokio::test]
+    async fn a_second_verb_while_one_is_in_flight_does_not_fire() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/capture/sources/calendar/sync"))
+            .respond_with(
+                ResponseTemplate::new(202)
+                    .set_body_json(serde_json::json!({ "queued": true, "key": "calendar" }))
+                    .set_delay(Duration::from_millis(200)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Connect::default();
+        s.handle(Action::ConnectLoaded(vec![calendar(true)]), &api, &tx)
+            .await;
+        s.handle(Action::ConnectSync, &api, &tx).await;
+        s.handle(Action::ConnectSync, &api, &tx).await;
+        assert!(recv_matching(&mut rx, |a| matches!(a, Action::RefreshConnect)).await);
+        server.verify().await;
     }
 }

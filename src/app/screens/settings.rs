@@ -1,7 +1,4 @@
-//! Timer settings, view-only (timer.dc.html §Timer settings): the CLI reads
-//! the per-user knobs and reflects them everywhere ("your 50m work", "your
-//! long fence") — it does not edit them. Editing lives on the web, so there
-//! is exactly one writer and no divergence.
+//! Timer settings screen — the per-user knobs, read-only (the web is the one writer).
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -21,8 +18,6 @@ use crate::ui::{layout::bordered, theme, widgets};
 pub struct Settings {
     settings: Option<TimerSettings>,
     loading: bool,
-    /// Tier-2 state: set when the read failed, so an absent-and-failed panel and
-    /// an absent-and-still-loading panel read differently. Cleared on load.
     failure: Option<PanelFailure>,
 }
 
@@ -65,8 +60,6 @@ impl Settings {
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
         let block = bordered("Your timer · read-only — edit on the web");
 
-        // No knobs yet → a Tier-2 state, not a blank panel: a failed read is
-        // loud and distinct from the calm loading spinner.
         let Some(s) = self.settings.as_ref() else {
             let state = if let Some(f) = &self.failure {
                 PanelState::Failed(f.clone())
@@ -139,13 +132,9 @@ fn spawn_load(api: &ApiClient, tx: &UnboundedSender<Action>) {
             Ok(s) => {
                 let _ = tx.send(Action::SettingsLoaded(Box::new(s)));
             }
-            // A 401 is a session problem, not a settings problem — route to
-            // re-auth (Tier 3) rather than a Tier-2 settings panel.
             Err(ApiError::Unauthorized) => {
                 let _ = tx.send(Action::SessionExpired);
             }
-            // Tier 2: report the failure as itself. The reason is spelled once
-            // (§C) so the panel matches the catalogue.
             Err(e) => {
                 let _ = tx.send(Action::SettingsLoadFailed(messages::fail_reason(
                     api.host(),
@@ -209,6 +198,79 @@ mod tests {
         assert!(content.contains("15m without input"), "idle threshold");
         assert!(content.contains("≥ 6h · < 60s"), "audit fences");
         assert!(content.contains("edit on the web"), "web pointer");
+    }
+
+    fn render_to_string(screen: &mut Settings) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(84, 26)).unwrap();
+        terminal
+            .draw(|frame| screen.render(frame, frame.area()))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_pending_read_renders_loading_not_a_failure() {
+        let mut screen = Settings {
+            loading: true,
+            ..Settings::default()
+        };
+        let content = render_to_string(&mut screen);
+        assert!(content.contains("loading…"), "{content}");
+        assert!(!content.contains('✖'), "{content}");
+    }
+
+    #[tokio::test]
+    async fn a_successful_load_clears_a_prior_failure() {
+        let config = Config::for_environment(Environment::Development);
+        let api = ApiClient::with_token(config.api_url.clone(), "tok".into());
+        let (tx, rx) = mpsc::unbounded_channel();
+        Box::leak(Box::new(rx));
+
+        let mut screen = Settings::default();
+        screen
+            .handle(Action::SettingsLoadFailed("boom".into()), &api, &tx)
+            .await;
+        screen
+            .handle(Action::SettingsLoaded(Box::new(settings_json())), &api, &tx)
+            .await;
+        assert!(screen.failure.is_none());
+    }
+
+    async fn first_action_for_status(status: u16) -> Action {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/timer/settings"))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&server)
+            .await;
+        let api = ApiClient::with_token(url::Url::parse(&server.uri()).unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        spawn_load(&api, &tx);
+        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("a message arrives")
+            .expect("channel open")
+    }
+
+    #[tokio::test]
+    async fn a_401_from_the_settings_read_routes_to_reauth() {
+        let got = first_action_for_status(401).await;
+        assert!(matches!(got, Action::SessionExpired), "got {got:?}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_settings_read_reports_itself_as_a_failure() {
+        let got = first_action_for_status(500).await;
+        assert!(matches!(got, Action::SettingsLoadFailed(_)), "got {got:?}");
     }
 
     #[tokio::test]

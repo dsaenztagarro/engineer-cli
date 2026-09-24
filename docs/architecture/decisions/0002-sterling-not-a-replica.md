@@ -60,4 +60,4 @@ Its watch-native core is **capture** (`engineer log`, `t` to bind the timer) and
 
 **Light mode is never in scope.** The terminal client is dark-first by medium.
 
-**Where the visual half of this law lives.** `docs/designs/README.md` is the design kit — the palette mapping, the chrome conventions, and the translate / don't-translate rules that say *how* a distilled surface must look in a character grid. This record says *what* earns a surface; the kit says how to draw it. The two are read together, and `docs/designs/README.md` links here.
+**Where the visual half of this law lives.** [`references/terminal-design-kit.md`](https://github.com/dsaenztagarro/engineer-cli-ds/blob/master/references/terminal-design-kit.md) in `engineer-cli-ds` is the design kit — the palette mapping, the chrome conventions, and the translate / don't-translate rules that say *how* a distilled surface must look in a character grid. This record says *what* earns a surface; the kit says how to draw it. The two are read together, and the kit links here.
