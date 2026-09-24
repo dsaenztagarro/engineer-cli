@@ -1625,4 +1625,97 @@ mod tests {
             "an unacknowledged resolution changes nothing — loud, not lossy"
         );
     }
+
+    #[test]
+    fn a_composed_segment_rounds_to_the_nearest_minute() {
+        assert_eq!(to_minutes(89), 1);
+        assert_eq!(to_minutes(90), 2);
+        assert_eq!(to_minutes(2832), 47);
+        assert_eq!(
+            to_minutes(-30),
+            0,
+            "a negative elapsed never writes minutes"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_ending_in_a_queued_discard_refuses_keep_both() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("discard-keep-both");
+        let start = store
+            .enqueue(IntentKind::TimerStart {
+                activity_id: Some(9),
+                switch: false,
+                at: ts("2026-07-15T09:13:00Z"),
+            })
+            .unwrap();
+        store.enqueue(IntentKind::TimerDiscard).unwrap();
+        diverge(&store, start.id);
+
+        let err = resolve(
+            &client(&server),
+            &store,
+            None,
+            start.id,
+            Resolution::KeepBoth,
+            now(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ResolveError::CannotCompose(_)), "{err}");
+        assert_eq!(store.intents().unwrap().len(), 2, "nothing left the queue");
+        assert!(store.intents().unwrap()[0].is_diverged());
+    }
+
+    #[tokio::test]
+    async fn a_diverged_plan_write_parks_but_has_no_keep_local_or_keep_both() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("plan-write-resolve");
+        let adjust = store
+            .enqueue(IntentKind::ActivityUpdate {
+                id: 9,
+                title: "revised".into(),
+            })
+            .unwrap();
+        diverge(&store, adjust.id);
+
+        for resolution in [Resolution::KeepLocal, Resolution::KeepBoth] {
+            let err = resolve(
+                &client(&server),
+                &store,
+                Some(&cached_running()),
+                adjust.id,
+                resolution,
+                now(),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, ResolveError::CannotCompose(_)), "{err}");
+            assert!(store.intents().unwrap()[0].is_diverged(), "kept diverged");
+        }
+
+        let resolved = resolve(
+            &client(&server),
+            &store,
+            None,
+            adjust.id,
+            Resolution::TakeServer,
+            now(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolved, Resolved::Parked { count: 1 });
+    }
 }

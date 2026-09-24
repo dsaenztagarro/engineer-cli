@@ -763,6 +763,34 @@ mod tests {
         assert!(!s.confirm_drop, "moving off the row disarms");
     }
 
+    #[tokio::test]
+    async fn a_retry_disarms_a_pending_drop_confirm() {
+        let paths = scratch_paths();
+        let store = store_at(&paths);
+        store
+            .enqueue(IntentKind::SegmentCreate {
+                activity_id: 9,
+                started_at: "2026-07-15T14:02:00Z".parse().unwrap(),
+                minutes: 45,
+            })
+            .unwrap();
+        diverge_first(&store);
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut s = screen(paths);
+        feed(
+            &mut s,
+            &dead_api(),
+            &tx,
+            Action::QueueLoaded(store.intents().unwrap()),
+        )
+        .await;
+        s.handle(Action::QueueDropSelected, &dead_api(), &tx).await;
+        assert!(s.confirm_drop);
+        feed(&mut s, &dead_api(), &tx, Action::QueueRetry).await;
+        assert!(!s.confirm_drop, "another gesture disarms the drop");
+    }
+
     // ---- ⏎ route to the shipped reconcile panel ----
 
     #[tokio::test]

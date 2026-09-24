@@ -1597,4 +1597,62 @@ mod tests {
         );
         assert!(store.intents().unwrap()[0].is_diverged(), "untouched");
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn resolve_edit_exits_four_when_the_server_still_refuses() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch();
+        let (store, id) = seeded_rejected_segment(&dir);
+        let editor = dir.join("fake-editor.sh");
+        std::fs::write(&editor, "#!/bin/sh\nprintf 'minutes: 30\\n' > \"$1\"\n").unwrap();
+        std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/activities/9/segments"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "title": "Segment overlaps", "status": 422, "detail": "still overlaps"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let outcome = dispatch(
+            &client(&server),
+            &store,
+            None,
+            Some(resolve_gesture(id, true, false, false, false)),
+            true,
+            false,
+            editor.to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.code, EXIT_DIVERGED);
+        let v: serde_json::Value = serde_json::from_str(&outcome.out[0]).unwrap();
+        assert_eq!(v["outcome"], "edited-still-diverged");
+        assert!(store.intents().unwrap()[0].is_diverged());
+    }
+
+    #[tokio::test]
+    async fn colour_is_painted_only_when_the_caller_asks_for_it() {
+        let dir = scratch();
+        let store = seeded(&dir, 1);
+        diverge_first(&store);
+
+        let plain = dispatch(&dead_api(), &store, None, None, false, false, "false")
+            .await
+            .unwrap();
+        assert!(
+            plain.out.iter().all(|l| !l.contains('\x1b')),
+            "{:?}",
+            plain.out
+        );
+
+        let painted = dispatch(&dead_api(), &store, None, None, false, true, "false")
+            .await
+            .unwrap();
+        assert!(painted.out.iter().any(|l| l.contains("\x1b[38;5;")));
+    }
 }
