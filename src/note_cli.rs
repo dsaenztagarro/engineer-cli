@@ -1,16 +1,4 @@
-//! Headless `engineer note` — the notes module's §C twin (docs/designs/notes.dc.html
-//! §Headless): five-second capture and the browse reads as one-shots, so a shell
-//! user never needs the TUI for a thought.
-//!
-//! Mirrors the `engineer timer` contract exactly: an `Args` root with a
-//! `Subcommand`, a testable `dispatch() -> Outcome`, `--json` beside piped-plain
-//! rows, TTY-gated ANSI colour (never when `NO_COLOR` is set), and meaningful
-//! exit codes — `0` on success, `1` on a refusal with the reason on stderr.
-//!
-//! `capture` is the only write, routed through `QueuedClient` like every other
-//! mutation: offline it queues a loose thought and prints the provisional line.
-//! The reads (`list` / `search` / `show`) are deliberately live-only — there is
-//! no note read-cache, so offline they refuse honestly rather than lie.
+//! Headless `engineer note` — capture and the browse reads as one-shots (ADR 0003).
 
 use std::io::{IsTerminal, Read};
 
@@ -85,9 +73,8 @@ pub async fn run(cfg: &Config, args: NoteArgs) -> Result<i32> {
     let queued = QueuedClient::new(&api).map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
     let colored = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
 
-    // Resolve a capture's text (stdin / `$EDITOR`) up front, on the real streams —
-    // the buffered, testable `dispatch` only ever sees already-resolved text. An
-    // aborted or empty editor is nothing to write: exit 1, nothing queued.
+    // Resolved here, on the real streams, so the testable `dispatch` only ever
+    // sees text.
     let cmd = match args.cmd {
         Some(NoteCmd::Capture(mut c)) => match resolve_capture_text(c.text.as_deref())? {
             Some(text) => {
@@ -174,19 +161,12 @@ async fn capture(
         return Ok(Outcome::refuse("note is empty — type a thought first"));
     }
 
-    // The `--book` anchor is a *live* candidates read (the same book search the
-    // capture overlay uses). Offline we can't fuzzy-match, and guessing would
-    // anchor the wrong book — so refuse with the way forward, exactly like a
-    // query'd `timer start`. A loose capture needs no read and rides the queue.
     let book_id = match resolve_book(api, args.book.as_deref()).await? {
         Resolved::Id(id) => id,
         Resolved::Refuse(reason) => return Ok(Outcome::refuse(reason)),
     };
 
-    // One spelling of the content-first rule, shared with the TUI overlay.
     let (title, content) = derive_title_content(&text);
-    // The simplest faithful anchor is a book plus a page; a page with no book
-    // can't be anchored, so it's dropped (the overlay's `build_input` rule).
     let anchors = match (book_id, args.page) {
         (Some(_), Some(p)) => Some(vec![Anchor {
             page: Some(p),
@@ -228,16 +208,12 @@ async fn capture(
     }
 }
 
-/// The book-search result: a resolved id (`None` when no `--book` was given), or
-/// a refusal reason (no match, or offline).
+/// `Id(None)` when no `--book` was given.
 enum Resolved {
     Id(Option<i64>),
     Refuse(String),
 }
 
-/// Resolve a book query to its id via the live book search — the same
-/// candidates/search the capture overlay's picker uses (`list_books`, first
-/// match wins). `None` query → no filter; offline → a refusal, never a guess.
 async fn resolve_book(api: &ApiClient, query: Option<&str>) -> Result<Resolved, ApiError> {
     let Some(q) = query else {
         return Ok(Resolved::Id(None));
@@ -254,18 +230,13 @@ async fn resolve_book(api: &ApiClient, query: Option<&str>) -> Result<Resolved, 
     }
 }
 
-/// Resolve capture text the way `week reflect` resolves a reflection body: an
-/// explicit `-` or piped stdin reads the whole stream; a bare positional is the
-/// text; nothing on a TTY opens `$EDITOR` (git-commit style). `None` means the
-/// editor aborted — nothing to capture.
+/// `None` means the editor aborted — nothing to capture.
 fn resolve_capture_text(inline: Option<&str>) -> std::io::Result<Option<String>> {
     resolve_capture_text_with(inline, std::io::stdin().is_terminal(), read_stdin, || {
         crate::editor::edit("")
     })
 }
 
-/// The pure core of [`resolve_capture_text`], with the stdin-TTY check and the
-/// stdin/editor readers injected so the resolution idiom is unit-testable.
 fn resolve_capture_text_with(
     inline: Option<&str>,
     stdin_is_tty: bool,
@@ -273,12 +244,10 @@ fn resolve_capture_text_with(
     open_editor: impl FnOnce() -> std::io::Result<crate::editor::EditorOutcome>,
 ) -> std::io::Result<Option<String>> {
     match inline {
-        // `engineer note capture -` — the explicit stdin form.
         Some("-") => Ok(Some(trim_trailing_newlines(&read_stdin()?))),
         Some(t) => Ok(Some(t.to_string())),
         None => {
             if !stdin_is_tty {
-                // Piped with no positional (`git log -1 --format=%B | … capture`).
                 Ok(Some(trim_trailing_newlines(&read_stdin()?)))
             } else {
                 match open_editor()? {
@@ -352,8 +321,6 @@ async fn show(api: &ApiClient, id: i64, json: bool, colored: bool) -> Result<Out
     }
 }
 
-/// `list`/`search` share a rendering: a stable JSON array, or one piped-plain
-/// row per note (the anchor read-back + age), or the calm "no notes" line.
 fn render_rows(notes: &[Note], json: bool, colored: bool) -> Result<Outcome, ApiError> {
     if json {
         let arr: Vec<serde_json::Value> = notes.iter().map(json_note).collect();
@@ -367,9 +334,6 @@ fn render_rows(notes: &[Note], json: bool, colored: bool) -> Result<Outcome, Api
     ))
 }
 
-/// One list row: the derived title, the server's one-line `address_label`
-/// read-back (`—` for a loose thought — never a blank column), and an age.
-/// Archived notes wear a muted `· archived` tail so the `--archived` fold reads.
 fn note_row(n: &Note, colored: bool) -> String {
     let anchor = anchor_label(n).unwrap_or_else(|| "—".into());
     let mut meta = anchor;
@@ -389,8 +353,6 @@ fn note_row(n: &Note, colored: bool) -> String {
     )
 }
 
-/// The full read (`show`, piped-plain): the note's content verbatim, then each
-/// citation's `address_label` on its own line — the anchor is the payoff line.
 fn show_lines(n: &Note, colored: bool) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let body = n.content.clone().unwrap_or_else(|| n.title.clone());
@@ -402,7 +364,6 @@ fn show_lines(n: &Note, colored: bool) -> Vec<String> {
             anchored = true;
         }
     }
-    // A book link with no citation still names its place.
     if !anchored {
         if let Some(book) = &n.book_title {
             out.push(paint(book, COLOR_MUTED, colored));
@@ -416,9 +377,6 @@ fn show_lines(n: &Note, colored: bool) -> Vec<String> {
 
 // ------------------------------------------------------------- shared bits
 
-/// The one-line anchor read-back: the first citation's server-rendered
-/// `address_label` (`SICP · ch 3 · p.142`), falling back to the book title when
-/// a link carries no citation. `None` is a loose thought.
 fn anchor_label(n: &Note) -> Option<String> {
     n.citations
         .iter()
@@ -426,8 +384,6 @@ fn anchor_label(n: &Note) -> Option<String> {
         .or_else(|| n.book_title.clone())
 }
 
-/// The compact stable object for `list`/`search`/`capture` — id, title, the
-/// anchor read-back, the book id, and the archived flag.
 fn json_note(n: &Note) -> serde_json::Value {
     serde_json::json!({
         "id": n.id,
@@ -438,8 +394,6 @@ fn json_note(n: &Note) -> serde_json::Value {
     })
 }
 
-/// The fuller object for `show` — the compact fields plus the full content and
-/// every citation.
 fn json_note_full(n: &Note) -> serde_json::Value {
     let citations: Vec<serde_json::Value> = n
         .citations
@@ -464,9 +418,6 @@ fn json_note_full(n: &Note) -> serde_json::Value {
     })
 }
 
-/// `--archived all` → both, `--archived only` (also `true`/`archived`) →
-/// archived alone; anything else (or absent) reads active-only, the browse
-/// default. Maps to the server's `archived=` param the `NoteFilters` carries.
 fn normalize_archived(mode: Option<&str>) -> Option<String> {
     match mode.map(str::to_ascii_lowercase).as_deref() {
         Some("all") => Some("all".into()),
@@ -475,7 +426,6 @@ fn normalize_archived(mode: Option<&str>) -> Option<String> {
     }
 }
 
-/// A muted relative age from the note's `updated_at` — `2h`, `1d`, `2w`, `1mo`.
 fn age_label(n: &Note) -> String {
     let Some(ts) = n.updated_at else {
         return String::new();
@@ -494,8 +444,6 @@ fn age_label(n: &Note) -> String {
     }
 }
 
-/// Clip a title to `max` characters with an ellipsis, so a long first line never
-/// blows out a row.
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
@@ -504,9 +452,6 @@ fn truncate(s: &str, max: usize) -> String {
     format!("{head}…")
 }
 
-/// The honest one-line reason for a failed read — offline is loud (there is no
-/// note cache to fall back on), a `404` is handled by the caller, otherwise the
-/// server's own problem text; auth and the unclassifiable rest propagate.
 fn read_refuse(e: ApiError) -> Result<Outcome, ApiError> {
     match e {
         ApiError::Transport(_) => Ok(Outcome::refuse(
@@ -518,8 +463,6 @@ fn read_refuse(e: ApiError) -> Result<Outcome, ApiError> {
     }
 }
 
-/// A failed write's reason — the server's problem text (a queued write never
-/// reaches here; `create_note` only surfaces a live problem or an auth error).
 fn write_refuse(e: ApiError) -> Result<Outcome, ApiError> {
     match e {
         ApiError::Problem { detail, .. } if !detail.is_empty() => Ok(Outcome::refuse(detail)),
@@ -600,8 +543,6 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        // The derived title is the first line; the full text lands in content;
-        // the book+page becomes a single-page anchor.
         Mock::given(method("POST"))
             .and(path("/api/v1/notes"))
             .and(body_partial_json(serde_json::json!({
@@ -629,7 +570,6 @@ mod tests {
         let out = run_dispatch(&client(&server), cmd, false).await.unwrap();
         assert_eq!(out.code, 0);
         assert!(out.out[0].contains("captured"), "{}", out.out[0]);
-        // The one-line anchor read-back comes from the server's address_label.
         assert!(out.out[0].contains("SICP · ch 3 · p.142"), "{}", out.out[0]);
     }
 
@@ -714,6 +654,29 @@ mod tests {
             0,
             "an anchored offline capture enqueues nothing"
         );
+    }
+
+    #[tokio::test]
+    async fn a_page_without_a_book_is_dropped() {
+        let api = dead_api();
+        let dir = scratch();
+        let queued = queued_at(&api, &dir);
+        let cmd = Some(NoteCmd::Capture(CaptureArgs {
+            text: Some("a thought with nowhere to anchor".into()),
+            book: None,
+            page: Some(142),
+        }));
+        let out = dispatch(&api, &queued, cmd, false, false).await.unwrap();
+        assert_eq!(out.code, 0);
+        let intents = crate::queue::QueueStore::at(dir.join("queue.json"))
+            .pending()
+            .unwrap();
+        match &intents[0].kind {
+            crate::queue::IntentKind::NoteCreate { body } => {
+                assert_eq!(body.anchors, None, "no book, so nothing to anchor")
+            }
+            other => panic!("expected a NoteCreate intent, got {other:?}"),
+        }
     }
 
     // ------------------------------------------------- stdin / editor idiom
@@ -809,7 +772,6 @@ mod tests {
             "the address_label reads back: {}",
             out.out[0]
         );
-        // A loose thought shows the em dash, never a blank column.
         assert!(out.out[1].contains('—'), "{}", out.out[1]);
     }
 
@@ -972,6 +934,48 @@ mod tests {
         assert_eq!(out.code, 1);
         assert!(out.err[0].contains("offline"), "{}", out.err[0]);
         assert!(out.err[0].contains("notes reads need the server"));
+    }
+
+    fn note(json: serde_json::Value) -> Note {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn an_archived_row_wears_an_archived_tail() {
+        let n = note(serde_json::json!({
+            "id": 1, "title": "shelved", "archived_at": "2026-07-01T00:00:00Z"
+        }));
+        assert!(note_row(&n, false).contains("— · archived"));
+    }
+
+    #[test]
+    fn a_book_link_without_a_citation_still_names_its_place() {
+        let n = note(serde_json::json!({
+            "id": 1, "title": "t", "content": "body", "book_id": 3, "book_title": "SICP"
+        }));
+        assert_eq!(show_lines(&n, false), vec!["body", "SICP"]);
+    }
+
+    #[test]
+    fn age_reads_the_largest_whole_unit() {
+        let ago = |secs: i64| {
+            let ts = jiff::Timestamp::now()
+                .checked_sub(jiff::SignedDuration::from_secs(secs))
+                .unwrap();
+            age_label(&note(
+                serde_json::json!({ "id": 1, "title": "t", "updated_at": ts.to_string() }),
+            ))
+        };
+        assert_eq!(ago(2 * 3600 + 60), "2h");
+        assert_eq!(ago(3 * 86_400 + 60), "3d");
+        assert_eq!(ago(15 * 86_400), "2w");
+        assert_eq!(ago(40 * 86_400), "1mo");
+    }
+
+    #[test]
+    fn a_long_title_is_clipped_with_an_ellipsis() {
+        assert_eq!(truncate("abcdef", 3), "abc…");
+        assert_eq!(truncate("abc", 3), "abc");
     }
 
     #[test]

@@ -1,16 +1,9 @@
-//! `GET /api/v1/progress` — the weekly pace aggregate (progress.html §F).
-//!
-//! One derived object the web dashboard, this CLI's `engineer pace` meters, and
-//! the MCP weekly-review all read: the ISO study week, one reading per active
-//! target (behind-first / largest-gap-first), plus kind-mix, Bloom, and totals
-//! roll-ups. Nothing here is stored server-side — it is recomputed from segments
-//! at read time, so a single object (not a paginated `List`) comes back.
+//! The weekly pace aggregate (`GET /api/v1/progress`).
 
 use serde::Deserialize;
 
 use super::{ApiClient, ApiError};
 
-/// Top-level payload of `GET /api/v1/progress`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Progress {
     pub week: Week,
@@ -19,16 +12,14 @@ pub struct Progress {
     pub targets: Vec<ProgressReading>,
     #[serde(default)]
     pub kind_mix: Vec<KindMix>,
-    // Bloom is parsed for parity with the web/MCP payload but the terminal screen
-    // renders only the pace meters and kind-mix (a bar chart doesn't reduce to a
-    // single scannable line); see the PR notes.
+    // Parsed for parity with the web/MCP payload; a Bloom bar chart doesn't
+    // reduce to a scannable terminal line, so nothing renders it.
     #[allow(dead_code)]
     #[serde(default)]
     pub bloom: Vec<BloomLevel>,
     pub totals: Totals,
-    /// Exactly 7 entries Monday→Sunday when the server serves it (0-minute
-    /// days included); empty on older payloads — the rail degrades to the
-    /// today-only block.
+    /// Seven entries Monday→Sunday, 0-minute days included; empty on older
+    /// payloads.
     #[serde(default)]
     pub by_day: Vec<DayMinutes>,
 }
@@ -41,8 +32,7 @@ pub struct DayMinutes {
     pub minutes: u32,
 }
 
-/// The ISO study week frame. `now_fraction` (0.0..=1.0) is where the gray
-/// now-tick sits: `elapsed_days / 7`, or 1.0 for any closed week.
+/// `now_fraction` (0.0..=1.0) is `elapsed_days / 7`, or 1.0 for a closed week.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Week {
     pub id: String,
@@ -53,7 +43,6 @@ pub struct Week {
     pub now_fraction: f64,
 }
 
-/// One target's reading for the week: the target itself plus derived actuals.
 // `hours_per_week` is duplicated at this level and on `target`; both mirror the
 // wire format. Minute fields are `i64` because `delta_minutes` goes negative.
 #[allow(dead_code)]
@@ -76,7 +65,6 @@ impl ProgressReading {
         self.delta_minutes as f64 / 60.0
     }
 
-    /// Fraction of the target reached (0.0..=1.0), for the meter fill.
     pub fn progress_fraction(&self) -> f64 {
         let target_minutes = self.hours_per_week * 60.0;
         if target_minutes <= 0.0 {
@@ -86,8 +74,6 @@ impl ProgressReading {
     }
 }
 
-/// The three pace states (progress.html §A.1). There is deliberately no red
-/// state — `behind` is as loud as pace gets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PaceState {
@@ -106,14 +92,13 @@ impl PaceState {
     }
 }
 
-/// A weekly time Target version row. `id` is a version id (adjusting hours mints
-/// a successor), so a lineage is addressed by axis + scope, not by id.
-// Only `scope` and `hours_per_week` drive the meter today; the rest mirror the
-// wire format for parity with the web/MCP consumers.
-// `Default` lets the offline target-write seam synthesize a provisional row from
-// only what a queued gesture knows (a negative id + the hours), the scope left
-// empty — the caller renders such a stand-in from its own label, never the
-// scope (`QueuedClient::adjust_target`/`retire_target`).
+/// `id` is a version id — an adjust can mint a successor — so a lineage is
+/// addressed by axis + scope, not by id.
+// Only `scope` and `hours_per_week` drive the meter; the rest mirror the wire
+// format for parity with the web/MCP consumers.
+// `Default` lets the offline seam synthesize a provisional row from what a queued
+// gesture knows (a negative id + the hours); its empty scope is never rendered
+// (`QueuedClient::adjust_target`/`retire_target`).
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TargetRef {
@@ -141,8 +126,6 @@ pub struct Scope {
 }
 
 impl Scope {
-    /// Human label for the meter: the domain name for domain targets, else the
-    /// kind/intent enum string. Falls back to the axis when nothing resolves.
     pub fn name(&self) -> String {
         if let Some(name) = self.domain.as_ref().and_then(|d| d.name.as_deref()) {
             return name.to_string();
@@ -189,8 +172,6 @@ pub struct Totals {
 }
 
 impl ApiClient {
-    /// Fetch the pace aggregate. `week` is an ISO week id (`YYYY-Www`); `None`
-    /// asks the server for the current week.
     pub async fn get_progress(&self, week: Option<&str>) -> Result<Progress, ApiError> {
         let mut query: Vec<(&str, String)> = vec![];
         if let Some(week) = week {

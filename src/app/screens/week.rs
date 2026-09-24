@@ -1,27 +1,4 @@
-//! Week board — the planned-vs-done readout for one ISO week, and the plan-write
-//! gestures (week-planning.dc.html §Week · board / §Week · add an intent). One
-//! row per plan item with a derived state pill (` done ` / ` live ` / ` hold ` /
-//! ` untouched `), a logged-vs-planned meter, the summary line, and the retro
-//! band that reads the stored week note. Step weeks with `[` / `]`; `t` returns
-//! to this week. The TUI twin of the shipped `engineer week` readout — the plan
-//! and the actuals stay one ledger (`GET /api/v1/weeks/:iso_week`).
-//!
-//! Declaring the week is a keystroke: `a` opens the one-line intent input and
-//! `⏎` declares a `planned` activity carrying `planned_on` for the shown week
-//! (a plan item *is* a planned activity — no second ledger); `e` adjusts the
-//! selected item's title; `d` drops it (archived, confirmed on a second press).
-//! Every write routes through `QueuedClient`, so an offline gesture queues and
-//! the board renders it provisionally (`◔ … queued`) until it replays.
-//!
-//! `s` is the Plan↔timer seam (#116): it starts — or stops & switches — the
-//! timer bound to the selected item's activity through the same
-//! `QueuedClient::start_timer` plumbing the Timer screen uses (the verb, not a
-//! copy of the screen). Nothing running starts it outright; a timer already
-//! elsewhere warns first (naming the running session) and switches on the
-//! second `s`; a still-queued row refuses (the server hasn't minted the
-//! activity yet). The board marks the running item with a green `● live` pill,
-//! read straight off the header timer snapshot. The `$EDITOR` reflection write
-//! is the remaining follow-on slice of the epic.
+//! Week board — the planned-vs-done readout and plan gestures for one ISO week.
 
 use jiff::civil::Date;
 use jiff::{ToSpan, Zoned};
@@ -46,13 +23,8 @@ use crate::ui::{layout::bordered, theme, widgets};
 
 use super::{notify_seam_error, open_queued, QueuePaths};
 
-/// Meter bar width in cells (matches the Progress screen's ten-block bar).
 const BAR_WIDTH: usize = 10;
 
-/// The one-line intent input (§Week · add an intent), when open. `Add` declares
-/// a new plan item; `Edit` adjusts the selected item's title in place. Both
-/// share the `i`/`Esc` insert grammar: typing fills the buffer, `⏎` writes, an
-/// empty buffer or `Esc` cancels.
 enum Input {
     Add { buf: String },
     Edit { id: i64, buf: String },
@@ -78,37 +50,20 @@ pub struct Week {
     /// Weeks relative to the current study week: 0 = this week, -1 = last week.
     offset: i32,
     loading: bool,
-    /// Tier-2 state: set when the read failed, so an absent week reads as a loud
-    /// failure (with a retry key) rather than a blank/loading body. Cleared on
-    /// the next successful load.
     failure: Option<PanelFailure>,
-    /// Full-row `▌` cursor over the plan rows — the row `e` (adjust) / `d`
-    /// (drop) act on.
     selected: usize,
-    /// The one-line intent input, when open (`a` to add, `e` to adjust).
     input: Option<Input>,
-    /// The plan item armed for drop; a second `d` on the same row confirms.
     drop_armed: Option<i64>,
-    /// The activity id armed for a stop-&-switch start; a second `s` on the same
-    /// row (while a timer runs elsewhere) confirms the switch. Cleared by any
-    /// cursor move or reload — the switch-confirm idiom, the Timer screen's verb.
     start_armed: Option<i64>,
-    /// The header timer snapshot, cached from the app's forwarded `TimerLoaded` /
-    /// `TimerProvisional` polls. The board reads it two ways: to mark the running
-    /// item ` live ` (when its `activity_id` is on the shown week) and to name a
-    /// session the seam would switch away from. `None` = nothing running.
+    /// The header timer snapshot the app forwards from its poll; `None` while
+    /// nothing runs.
     running: Option<Timer>,
-    /// Titles declared offline this session — rendered as provisional `◔ …
-    /// queued` rows until the create replays and a live refetch returns the real
-    /// row. The queue is the ledger; this is only the render of what's pending,
-    /// cleared on any authoritative reload or week step.
+    /// Offline declares awaiting replay — only their render; the queue is the
+    /// ledger.
     provisional: Vec<String>,
-    /// A reflection written offline this session — the retro band renders it
-    /// marked `◔ queued` until the note write replays and a live refetch returns
-    /// the stored note. Like `provisional`, only the render of what's pending.
+    /// An offline reflection awaiting replay — only its render, like `provisional`.
     provisional_note: Option<String>,
-    /// Queue + read-cache paths for the write seam (`None` = shared XDG; tests
-    /// inject a scratch dir so a spawned write never touches the real queue).
+    /// `None` = the shared XDG queue; tests inject a scratch dir.
     queue_paths: QueuePaths,
 }
 
@@ -116,16 +71,11 @@ impl Week {
     pub fn on_enter(&mut self, api: &ApiClient, tx: &UnboundedSender<Action>) {
         self.loading = true;
         self.fetch(api, tx);
-        // Pull a fresh header timer snapshot so the seam knows — right away, not
-        // one poll interval later — whether a timer is running (the running row
-        // marker, and the switch-confirm's naming of the running session). The
-        // app's poll forwards `TimerLoaded`/`TimerProvisional` to this screen.
+        // Without this the live mark and the switch-confirm wait a poll interval
+        // for the app to forward a snapshot.
         let _ = tx.send(Action::RefreshTimer);
     }
 
-    /// While the one-line intent input is open it owns every key, so a typed
-    /// letter fills the buffer rather than firing the board keymap (the same
-    /// modal-input idiom the Progress inline editor uses).
     pub fn intercept_key(&mut self, key: KeyEvent) -> Option<Action> {
         self.input.as_ref()?;
         match key.code {
@@ -140,22 +90,17 @@ impl Week {
     fn fetch(&self, api: &ApiClient, tx: &UnboundedSender<Action>) {
         let api = api.clone();
         let tx = tx.clone();
-        // `get_week` needs a concrete ISO week — the current week can't defer to
-        // a server default the way Progress does, so offset 0 resolves too.
+        // The weeks route has no current-week default, so offset 0 resolves to a
+        // concrete id too.
         let iso = super::iso_week_for_offset(self.offset);
         tokio::spawn(async move {
             match api.get_week(&iso).await {
                 Ok(week) => {
                     let _ = tx.send(Action::WeekLoaded(Box::new(week)));
                 }
-                // A 401 is a session problem, not a week problem — route to
-                // re-auth (Tier 3) rather than a Tier-2 week panel.
                 Err(ApiError::Unauthorized) => {
                     let _ = tx.send(Action::SessionExpired);
                 }
-                // Tier 2: report the failure as itself — never a blank board. The
-                // reason is spelled once (§C) so the panel matches a headless
-                // `engineer week`'s stderr.
                 Err(e) => {
                     let _ = tx.send(Action::WeekLoadFailed(messages::fail_reason(
                         api.host(),
@@ -177,15 +122,10 @@ impl Week {
                 self.data = Some(*week);
                 self.loading = false;
                 self.failure = None;
-                // Server truth supersedes the provisional rows and note: a synced
-                // declare/reflection is now in the payload, and the queue still
-                // holds any that haven't replayed (the header `↑N` and
-                // `engineer queue` show it).
                 self.provisional.clear();
                 self.provisional_note = None;
                 self.drop_armed = None;
                 self.start_armed = None;
-                // Keep the cursor in range as the plan changes week to week.
                 let n = self.item_count();
                 self.selected = self.selected.min(n.saturating_sub(1));
             }
@@ -217,9 +157,6 @@ impl Week {
                 self.fetch(api, tx);
             }
             Action::WeekSelectMove(delta) => {
-                // The cursor spans the real rows *and* the provisional queued
-                // rows below them — `s` on a queued row is where the seam's
-                // "still queued" refusal lives.
                 let n = self.total_rows() as i32;
                 if n > 0 {
                     self.selected = (self.selected as i32 + delta).clamp(0, n - 1) as usize;
@@ -227,7 +164,6 @@ impl Week {
                 self.drop_armed = None;
                 self.start_armed = None;
             }
-            // --- plan writes (#115) ---
             Action::WeekAddBegin => {
                 if self.input.is_none() {
                     self.input = Some(Input::Add { buf: String::new() });
@@ -235,7 +171,6 @@ impl Week {
                 }
             }
             Action::WeekAdjustBegin => {
-                // Prefill with the current title so the edit starts from the truth.
                 if self.input.is_none() {
                     if let Some((id, title)) = self.selected_item().map(|i| (i.id, i.title.clone()))
                     {
@@ -258,7 +193,6 @@ impl Week {
             Action::WeekInputSubmit => {
                 let input = self.input.take()?;
                 let title = input.buf().trim().to_string();
-                // An empty buffer cancels — never declare a nameless intent.
                 if title.is_empty() {
                     return None;
                 }
@@ -293,15 +227,11 @@ impl Week {
                 }
             }
             Action::WeekPlanQueued(title) => self.provisional.push(title),
-            // `i` — the retro reflection (#117). Seed the editor with the current
-            // note body and hand off to the app, which owns the terminal suspend
-            // + `$EDITOR` spawn (the git-commit pattern). No-op until loaded.
+            // The app owns the terminal suspend and the `$EDITOR` spawn; this
+            // only hands it the seed.
             Action::WeekReflect => {
                 if let Some(data) = &self.data {
                     let iso_week = data.week.id.clone();
-                    // Seed from the local pending note if one is queued, else the
-                    // stored server note — so re-editing an offline reflection
-                    // starts from what the user just wrote, not the stale server body.
                     let seed = self
                         .provisional_note
                         .clone()
@@ -309,20 +239,14 @@ impl Week {
                     let _ = tx.send(Action::WeekReflectEdit { iso_week, seed });
                 }
             }
-            // The editor saved — persist through the queue seam (empty clears).
             Action::WeekReflectSave { iso_week, body } => {
                 spawn_reflect(api, tx, self.queue_paths.clone(), iso_week, body);
             }
-            // The editor aborted — the note is untouched; just say so.
             Action::WeekReflectAbort => {
                 return Some((Level::Info, "reflection unchanged".into()));
             }
-            // An offline reflection landed in the queue — render it marked queued.
             Action::WeekReflectQueued(body) => self.provisional_note = Some(body),
             Action::WeekStartTimer => return self.start_on_selected(api, tx),
-            // The header poll forwards its snapshot to the current screen; cache
-            // it (only while a clock runs) so the board can mark the running row
-            // and the seam can name a session it would switch away from.
             Action::TimerLoaded(t) | Action::TimerProvisional(t) => {
                 self.running = if t.running { Some(*t) } else { None };
             }
@@ -331,20 +255,11 @@ impl Week {
         None
     }
 
-    /// The `s` gesture (the Plan↔timer seam): start — or stop & switch — the
-    /// timer bound to the selected plan item's activity. Nothing running starts
-    /// it outright (`switch: false`); a timer already elsewhere warns first,
-    /// naming the running session, and switches on the second press
-    /// (`switch: true`) — the Timer screen's confirm idiom, reused as the verb.
-    /// A still-queued row (an offline declare the server hasn't minted) refuses:
-    /// there is no activity id to bind to yet.
     fn start_on_selected(
         &mut self,
         api: &ApiClient,
         tx: &UnboundedSender<Action>,
     ) -> Option<(Level, String)> {
-        // Past the real rows sits a provisional (queued-declare) row — no server
-        // activity yet, so the start can't bind. Refuse honestly.
         if self.selected >= self.item_count() {
             self.start_armed = None;
             return Some((
@@ -356,8 +271,7 @@ impl Week {
             let item = self.selected_item()?;
             (item.id, item.title.clone())
         };
-        // Defensive twin of the check above: a negative sentinel id is a
-        // not-yet-minted create, same refusal.
+        // A negative id is a row the queue synthesized, not yet minted.
         if id < 0 {
             self.start_armed = None;
             return Some((
@@ -367,14 +281,10 @@ impl Week {
         }
 
         match self.running.as_ref().filter(|t| t.running) {
-            // Already timing this very item — a fresh start would only stop &
-            // restart the same work; say so rather than churn a segment.
             Some(t) if t.activity_id == Some(id) => {
                 self.start_armed = None;
                 Some((Level::Info, format!("already timing {title}")))
             }
-            // A timer runs on something else: the switch-confirm. First press
-            // names the running session and asks again; the second switches.
             Some(t) => {
                 if self.start_armed == Some(id) {
                     self.start_armed = None;
@@ -391,7 +301,6 @@ impl Week {
                     ))
                 }
             }
-            // Nothing running: start bound outright, no switch.
             None => {
                 self.start_armed = None;
                 spawn_start_on_plan(api, tx, self.queue_paths.clone(), id, false, title);
@@ -400,8 +309,6 @@ impl Week {
         }
     }
 
-    /// Clear the per-week transient UI (open input, armed drop, provisional
-    /// rows) — run when the shown week changes so nothing leaks across weeks.
     fn reset_transient(&mut self) {
         self.input = None;
         self.drop_armed = None;
@@ -414,24 +321,16 @@ impl Week {
         self.data.as_ref()?.items().nth(self.selected)
     }
 
-    /// Every selectable board row: the server's plan items plus the provisional
-    /// queued-declare rows the cursor also moves over.
     fn total_rows(&self) -> usize {
         self.item_count() + self.provisional.len()
     }
 
-    /// Whether a running timer is bound to this activity — the board's ` live `
-    /// mark, read off the cached header snapshot (only present while running).
     fn is_live(&self, id: i64) -> bool {
         self.running
             .as_ref()
             .is_some_and(|t| t.running && t.activity_id == Some(id))
     }
 
-    /// The day a board declare lands on: today when the shown week is the current
-    /// week, else the shown week's Monday. The design's `Add intent · <week>`
-    /// header anchors the intent to the shown week, not a specific weekday, and
-    /// this mirrors `engineer plan add`'s today-default for the live week.
     fn planned_on(&self) -> Date {
         let today = Zoned::now().date();
         if self.offset == 0 {
@@ -452,9 +351,6 @@ impl Week {
         let block = bordered("Week · planned vs done");
 
         let Some(data) = &self.data else {
-            // No week aggregate → the whole body is a Tier-2 state: a loud
-            // failure (with a retry key) when the read failed, else the calm
-            // loading state. The header/footer nav lives outside this block.
             let state = if let Some(f) = &self.failure {
                 PanelState::Failed(f.clone())
             } else {
@@ -467,7 +363,6 @@ impl Week {
         let items: Vec<&PlanItem> = data.items().collect();
         let mut lines: Vec<Line> = vec![week_header(data), Line::from("")];
 
-        // The one-line intent input rides above the rows while open.
         if let Some(input) = &self.input {
             lines.push(input_line(input, data));
             lines.push(Line::from(""));
@@ -491,8 +386,6 @@ impl Week {
                     self.is_live(item.id),
                 ));
             }
-            // Declared-offline rows, still waiting on the queue — selectable so
-            // `s` on one can refuse honestly (no server activity to bind yet).
             for (j, title) in self.provisional.iter().enumerate() {
                 lines.push(provisional_row(
                     title,
@@ -500,7 +393,6 @@ impl Week {
                     self.selected == items.len() + j,
                 ));
             }
-            // The drop confirm prompt, under the rows when a row is armed.
             if self.drop_armed.is_some() {
                 lines.push(Line::from(Span::styled(
                     "  drop this intent? press d again — archived, not deleted",
@@ -539,10 +431,6 @@ impl Week {
     }
 }
 
-/// Declare a plan item — a `planned` activity with `planned_on` set — through
-/// the queue seam (`a` + `⏎`). A confirmed create refetches the week (the server
-/// now has the row); an offline one queues and the board renders the provisional
-/// title until it replays.
 fn spawn_declare(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
@@ -576,8 +464,6 @@ fn spawn_declare(
     });
 }
 
-/// Adjust the selected plan item's title in place (`e` + `⏎`) through the queue
-/// seam. Confirmed refetches; offline queues.
 fn spawn_adjust(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
@@ -610,8 +496,6 @@ fn spawn_adjust(
     });
 }
 
-/// Drop the selected plan item — archive it (`d`, second press) through the
-/// queue seam. Confirmed refetches; offline queues.
 fn spawn_drop(api: &ApiClient, tx: &UnboundedSender<Action>, paths: QueuePaths, id: i64) {
     let (api, tx) = (api.clone(), tx.clone());
     tokio::spawn(async move {
@@ -638,12 +522,8 @@ fn spawn_drop(api: &ApiClient, tx: &UnboundedSender<Action>, paths: QueuePaths, 
     });
 }
 
-/// Start (or stop & switch) the timer bound to a plan item's activity through
-/// the queue seam (`s`). `switch` rides the intent, so an offline switch replays
-/// as stop & save then start — the same server verb the Timer screen defers. A
-/// confirmed start forwards the fresh snapshot (`TimerLoaded`), which lands the
-/// header cell *and*, forwarded back to this screen, marks the running row; an
-/// offline start streams the provisional clock (`TimerProvisional`) the same way.
+/// The snapshot this sends back lands the header cell, and the app forwards it
+/// back here to mark the running row.
 fn spawn_start_on_plan(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
@@ -678,12 +558,8 @@ fn spawn_start_on_plan(
     });
 }
 
-/// Persist the week's retro reflection through the queue seam (`i`, save-quit).
-/// The route upserts, so an offline write replays idempotently. A confirmed
-/// write refetches the week (the note is now on the server); an offline one
-/// queues and the retro band renders the local body marked `◔ queued` until it
-/// replays. An empty `body` is a deliberate clear (the server treats empty as
-/// clear) — the same call, so the confirm/queue paths are identical.
+/// The note route upserts, so a replayed write is idempotent; an empty `body`
+/// clears through the same call.
 fn spawn_reflect(
     api: &ApiClient,
     tx: &UnboundedSender<Action>,
@@ -722,9 +598,6 @@ fn spawn_reflect(
     });
 }
 
-/// The one-line intent input (§Week · add an intent): an INSERT badge, the
-/// context label (`Add intent · <week>` or `Adjust intent`), and the buffer with
-/// a block cursor.
 fn input_line(input: &Input, data: &WeekData) -> Line<'static> {
     let label = match input {
         Input::Add { .. } => format!("Add intent · {}", data.week.id),
@@ -741,9 +614,6 @@ fn input_line(input: &Input, data: &WeekData) -> Line<'static> {
     ])
 }
 
-/// A plan item declared offline — a `◔ … queued` stand-in the board shows until
-/// the create replays and a live refetch returns the real row. Selectable (`▌`)
-/// so `s` can land on it and refuse the start — the server hasn't minted it yet.
 fn provisional_row(title: &str, title_w: usize, selected: bool) -> Line<'static> {
     let marker = if selected { "▌ " } else { "  " };
     Line::from(vec![
@@ -754,10 +624,6 @@ fn provisional_row(title: &str, title_w: usize, selected: bool) -> Line<'static>
     ])
 }
 
-/// `2026-W29 · wed · day 3 of 7` — the same week frame Progress speaks, minus the
-/// now-tick the weeks endpoint doesn't carry. The `weekday · day N of 7` tail is
-/// derived from the week's Monday and today; a payload without a Monday shows the
-/// bare id.
 fn week_header(data: &WeekData) -> Line<'static> {
     let mut spans = vec![Span::styled(data.week.id.clone(), theme::header())];
     if let Some(monday) = data.week.monday {
@@ -774,9 +640,6 @@ fn week_header(data: &WeekData) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Which day of the week (0..=6) is being lived: the count of whole days from the
-/// week's Monday to `today`, clamped into the week. A future week reads day 1, a
-/// closed (past) week day 7 — the same clamp Progress applies to its server tick.
 fn elapsed_index(monday: Date, today: Date) -> u32 {
     let mut idx = 0u32;
     let mut day = monday;
@@ -790,12 +653,6 @@ fn elapsed_index(monday: Date, today: Date) -> u32 {
     idx
 }
 
-/// One plan row: `▌ read  SICP — chapters 2 & 3  ██████████  done   3h10 / 3h`.
-/// The kind column, the title, a logged-vs-planned meter tinted by the derived
-/// state, the state pill, and the time. `▌` (accent) flags the selected row; a
-/// row a timer is running on wins the marker with a green `●` and a green
-/// ` live ` pill (§board · live now), overriding the selection mark and derived
-/// pill — the running clock is louder than the cursor.
 fn plan_row(item: &PlanItem, title_w: usize, selected: bool, live: bool) -> Line<'static> {
     let state = item.retro_state();
     let color = if live {
@@ -829,9 +686,6 @@ fn plan_row(item: &PlanItem, title_w: usize, selected: bool, live: bool) -> Line
             super::pad_or_truncate(&item.title, title_w)
         )),
     ];
-    // A tick-free pace bar coloured by the derived state (green while live);
-    // empty cells read as the dim `··········` the design shows for an untouched
-    // intent.
     spans.extend(widgets::pace_bar(fraction, 0.0, BAR_WIDTH, color, false));
     spans.push(Span::raw("  "));
     spans.push(if live { live_pill() } else { plan_pill(state) });
@@ -843,9 +697,8 @@ fn plan_row(item: &PlanItem, title_w: usize, selected: bool, live: bool) -> Line
     Line::from(spans)
 }
 
-/// The running-now pill: the board's ` live ` treatment for the item a timer is
-/// bound to (green, §board panel). Distinct from the derived `PlanState::Live` —
-/// this reads the client's live clock, not the server's canvas state.
+/// The client's running clock — distinct from the server-derived
+/// `PlanState::Live`.
 fn live_pill() -> Span<'static> {
     Span::styled(
         " live ",
@@ -853,8 +706,6 @@ fn live_pill() -> Span<'static> {
     )
 }
 
-/// The derived state as a black-ink pill, the shipped `status_pill` idiom keyed
-/// to the week's own vocabulary (` done ` / ` live ` / ` hold ` / ` untouched `).
 fn plan_pill(state: PlanState) -> Span<'static> {
     let (label, bg) = match state {
         PlanState::Done => (" done ", theme::SUCCESS),
@@ -874,8 +725,6 @@ fn state_color(state: PlanState) -> Color {
     }
 }
 
-/// `planned 3 · done 1 · 4.2h logged` — the same summary the headless
-/// `engineer week` readout prints, read from the server's `planned_vs_done`.
 fn summary_line(data: &WeekData) -> Line<'static> {
     let pvd = &data.planned_vs_done;
     Line::from(Span::styled(
@@ -889,13 +738,7 @@ fn summary_line(data: &WeekData) -> Line<'static> {
     ))
 }
 
-/// The retro band — the one stored line (`i` writes it in `$EDITOR`). Renders a
-/// reflection written offline this session (`provisional`, marked `◔ queued`)
-/// over the stored `note.body`; an unwritten week shows the calm empty state
-/// that teaches the `i` gesture.
 fn retro_lines(data: &WeekData, provisional: Option<&str>) -> Vec<Line<'static>> {
-    // A queued reflection is what the user just wrote — show it, marked pending,
-    // until the write replays and a live refetch returns the stored note.
     let (body, queued) = match provisional {
         Some(p) => (p.trim(), true),
         None => (data.note.body.trim(), false),
@@ -927,9 +770,6 @@ fn retro_lines(data: &WeekData, provisional: Option<&str>) -> Vec<Line<'static>>
     lines
 }
 
-/// §Week · nothing declared — the calm invitation. Points at the in-app `a`
-/// gesture first (it exists now), then the shipped `engineer plan add` one-liner
-/// (the design shows both).
 fn empty_lines() -> Vec<Line<'static>> {
     vec![
         Line::from(Span::styled(
@@ -946,7 +786,6 @@ fn empty_lines() -> Vec<Line<'static>> {
     ]
 }
 
-/// Compact hours:minutes for a row's logged/planned: `0`, `45m`, `1h`, `3h10`.
 fn fmt_hm(minutes: u32) -> String {
     if minutes == 0 {
         return "0".to_string();
@@ -1010,8 +849,7 @@ mod tests {
         }
     }
 
-    /// A running header snapshot bound to `activity_id` — what the app forwards
-    /// from a poll, and what the seam reads to mark the row and name a switch.
+    /// A running header snapshot bound to `activity_id`, as the app forwards it.
     fn running_on(activity_id: i64, label: &str) -> Timer {
         Timer {
             running: true,
@@ -1078,11 +916,17 @@ mod tests {
     fn elapsed_index_counts_days_into_the_week() {
         let mon = jiff::civil::date(2026, 7, 13); // Monday
         assert_eq!(elapsed_index(mon, jiff::civil::date(2026, 7, 13)), 0);
-        assert_eq!(elapsed_index(mon, jiff::civil::date(2026, 7, 15)), 2); // Wed
-                                                                           // A future week (today before Monday) clamps to day 1.
-        assert_eq!(elapsed_index(mon, jiff::civil::date(2026, 7, 10)), 0);
-        // A closed week (today past Sunday) clamps to day 7.
-        assert_eq!(elapsed_index(mon, jiff::civil::date(2026, 8, 1)), 6);
+        assert_eq!(elapsed_index(mon, jiff::civil::date(2026, 7, 15)), 2);
+        assert_eq!(
+            elapsed_index(mon, jiff::civil::date(2026, 7, 10)),
+            0,
+            "a future week reads day 1"
+        );
+        assert_eq!(
+            elapsed_index(mon, jiff::civil::date(2026, 8, 1)),
+            6,
+            "a closed week reads day 7"
+        );
     }
 
     #[test]
@@ -1094,6 +938,13 @@ mod tests {
     }
 
     #[test]
+    fn a_week_without_a_monday_shows_the_bare_id() {
+        let mut data = sample();
+        data.week.monday = None;
+        assert_eq!(spans_text(&week_header(&data)), "2026-W29");
+    }
+
+    #[test]
     fn plan_row_renders_pill_and_logged_vs_planned() {
         let data = sample();
         let items: Vec<&PlanItem> = data.items().collect();
@@ -1101,7 +952,6 @@ mod tests {
         let done = spans_text(&plan_row(items[0], 24, false, false));
         assert!(done.contains("SICP"), "{done}");
         assert!(done.contains("done"), "{done}");
-        // 190 logged / 180 planned → 3h10 / 3h.
         assert!(done.contains("3h10 / 3h"), "{done}");
 
         let hold = spans_text(&plan_row(items[1], 24, false, false));
@@ -1125,8 +975,6 @@ mod tests {
     fn plan_row_marks_the_running_row_live() {
         let data = sample();
         let item = data.items().next().unwrap();
-        // A live row wins the marker with a green `●` and shows the ` live ` pill,
-        // overriding both the selection `▌` and the derived ` done ` pill.
         let text = spans_text(&plan_row(item, 24, true, true));
         assert!(
             text.starts_with('●'),
@@ -1141,10 +989,22 @@ mod tests {
 
     #[test]
     fn summary_line_reads_planned_done_logged() {
-        // 305 logged minutes → 5.1h.
         assert_eq!(
             spans_text(&summary_line(&sample())),
             "planned 3 · done 1 · 5.1h logged"
+        );
+    }
+
+    #[test]
+    fn unplanned_time_still_counts_in_the_logged_summary() {
+        // The plan rows log 305 minutes between them; the server's week total
+        // also carries 95 unplanned minutes that belong to no plan item.
+        let mut data = sample();
+        data.planned_vs_done.logged_minutes = 400;
+        assert_eq!(
+            spans_text(&summary_line(&data)),
+            "planned 3 · done 1 · 6.7h logged",
+            "the summary reads every segment of the week, planned or not"
         );
     }
 
@@ -1168,14 +1028,11 @@ mod tests {
 
         let blank = retro_text(&empty(), None);
         assert!(blank.contains("No reflection yet."), "{blank}");
-        // The empty state teaches the `i` gesture, per the design.
         assert!(blank.contains('i') && blank.contains("$EDITOR"), "{blank}");
     }
 
     #[test]
     fn retro_band_marks_a_queued_reflection() {
-        // A reflection written offline renders over the stored note, marked
-        // `◔ queued` until the write replays.
         let text = retro_text(&sample(), Some("Next week: read the paper first."));
         assert!(text.contains("◔ queued"), "{text}");
         assert!(text.contains("Next week: read the paper first."), "{text}");
@@ -1193,7 +1050,6 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("Nothing declared"), "{text}");
-        // The gesture exists now — `a` is taught first, the shell verb second.
         let a_at = text.find("`a`").expect("teaches the `a` gesture");
         let verb_at = text
             .find("engineer plan add")
@@ -1309,7 +1165,6 @@ mod tests {
         let mut w = loaded();
         w.handle(Action::WeekSelectMove(2), &api, &tx).await;
         assert_eq!(w.selected, 2);
-        // A week with one item pulls the cursor back to the only row.
         w.handle(Action::WeekLoaded(Box::new(one_item())), &api, &tx)
             .await;
         assert_eq!(w.selected, 0);
@@ -1328,7 +1183,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_week_renders_the_teaching_copy() {
+    async fn an_empty_week_is_an_invitation_not_a_blank() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
         let mut w = Week {
@@ -1345,6 +1200,7 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         assert!(text.contains("Nothing declared"), "{text}");
+        assert!(text.contains("`a` to add an intent"), "{text}");
         assert!(text.contains("engineer plan add"), "{text}");
     }
 
@@ -1367,18 +1223,16 @@ mod tests {
         assert!(text.contains("planned 3 · done 1"), "{text}");
     }
 
-    // --- plan writes (#115): the input workflow, adjust, drop, offline ---
+    // --- plan writes: the input workflow, adjust, drop, offline ---
 
     #[test]
     fn planned_on_is_today_for_the_current_week_else_the_shown_monday() {
-        // offset 0 → today, regardless of the loaded payload.
         let w = Week {
             offset: 0,
             data: Some(empty()),
             ..Default::default()
         };
         assert_eq!(w.planned_on(), Zoned::now().date());
-        // A stepped week anchors to that week's Monday (one_item's monday).
         let w = Week {
             offset: -1,
             data: Some(one_item()),
@@ -1406,18 +1260,15 @@ mod tests {
             text.contains("one systems paper"),
             "the buffer renders: {text}"
         );
-        // Backspace edits the buffer in place.
         w.handle(Action::WeekInputBackspace, &api, &tx).await;
         assert!(
             render_text(&mut w).contains("one systems pape"),
             "backspace trims the last char"
         );
 
-        // The hints speak the insert grammar while the input is open.
         let h = hints_text(&w);
         assert!(h.contains("declare") && h.contains("cancel"), "{h}");
 
-        // Esc closes it — the banner is gone, the board reads normally again.
         w.handle(Action::WeekInputCancel, &api, &tx).await;
         assert!(!render_text(&mut w).contains("INSERT"), "cancelled");
         assert!(hints_text(&w).contains("add"), "back to the board hints");
@@ -1456,8 +1307,7 @@ mod tests {
         }
         w.handle(Action::WeekInputSubmit, &api, &tx).await;
 
-        // A confirmed declare refetches the week — and the mock's expect(1)
-        // verifies the create body (title + planned_on for the shown week).
+        // The mock's expect(1) verifies the create body.
         assert!(
             wait_for(&mut rx, |a| matches!(a, Action::RefreshWeek)).await,
             "a confirmed declare refetches the week"
@@ -1466,8 +1316,6 @@ mod tests {
 
     #[tokio::test]
     async fn empty_buffer_declares_nothing() {
-        // `a` then straight `⏎` never declares a nameless intent — the input
-        // just closes, nothing spawns, the queue stays empty.
         use crate::queue::QueueStore;
         let (queue_path, cache_path) = scratch_paths();
         let api =
@@ -1511,7 +1359,6 @@ mod tests {
             queue_paths: Some(scratch_paths()),
             ..Default::default()
         };
-        // The selected row is 0 → id 1; `e` prefills its title, append then save.
         w.handle(Action::WeekAdjustBegin, &api, &tx).await;
         assert!(
             render_text(&mut w).contains("SICP — chapters 2 & 3"),
@@ -1550,7 +1397,6 @@ mod tests {
             queue_paths: Some(scratch_paths()),
             ..Default::default()
         };
-        // First press arms and asks to confirm; the board shows the prompt.
         let warn = w.handle(Action::WeekDrop, &api, &tx).await;
         assert!(
             matches!(warn, Some((Level::Warning, _))),
@@ -1560,7 +1406,6 @@ mod tests {
             render_text(&mut w).contains("press d again"),
             "the confirm prompt shows"
         );
-        // Second press confirms → archive spawned, then refetch.
         let second = w.handle(Action::WeekDrop, &api, &tx).await;
         assert!(second.is_none(), "the confirm doesn't re-warn");
         assert!(
@@ -1584,9 +1429,7 @@ mod tests {
 
     #[tokio::test]
     async fn offline_add_enqueues_and_renders_the_provisional_row() {
-        // The full wiring, offline: `a` → the declare helper → `QueuedClient` →
-        // the persisted queue, plus the `◔ … queued` provisional row the board
-        // renders until the create replays. A dead port forces the offline arm.
+        // A dead port forces the offline arm.
         use crate::queue::{IntentKind, QueueStore};
 
         let (queue_path, cache_path) = scratch_paths();
@@ -1605,7 +1448,6 @@ mod tests {
         }
         w.handle(Action::WeekInputSubmit, &api, &tx).await;
 
-        // The spawned write lands in the queue (the dead port refuses fast).
         let store = QueueStore::at(&queue_path);
         let mut pending = store.pending().unwrap();
         for _ in 0..100 {
@@ -1650,9 +1492,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_live_reload_clears_the_provisional_rows() {
-        // Server truth supersedes the pending render: a WeekLoaded (a synced
-        // refetch) drops the `◔ queued` stand-ins.
+    async fn a_live_reload_clears_the_provisional_rows_and_note() {
         let (api, tx) = ctx();
         let mut w = Week {
             data: Some(empty()),
@@ -1664,7 +1504,15 @@ mod tests {
             &tx,
         )
         .await;
-        assert!(render_text(&mut w).contains("one systems paper"));
+        w.handle(
+            Action::WeekReflectQueued("a queued reflection".into()),
+            &api,
+            &tx,
+        )
+        .await;
+        let text = render_text(&mut w);
+        assert!(text.contains("one systems paper"), "{text}");
+        assert!(text.contains("a queued reflection"), "{text}");
         w.handle(Action::WeekLoaded(Box::new(sample())), &api, &tx)
             .await;
         let text = render_text(&mut w);
@@ -1672,10 +1520,81 @@ mod tests {
             !text.contains("one systems paper"),
             "provisional rows cleared"
         );
+        assert!(
+            !text.contains("a queued reflection"),
+            "the provisional note cleared"
+        );
         assert!(text.contains("SICP"), "the server rows render");
     }
 
-    // --- the timer seam (#116): start-on-plan, switch-confirm, offline, refusal ---
+    #[tokio::test]
+    async fn stepping_the_week_drops_its_pending_rows_and_open_input() {
+        let (api, tx) = ctx();
+        let mut w = Week {
+            data: Some(empty()),
+            ..Default::default()
+        };
+        w.handle(
+            Action::WeekPlanQueued("one systems paper".into()),
+            &api,
+            &tx,
+        )
+        .await;
+        w.handle(Action::WeekAddBegin, &api, &tx).await;
+        w.handle(Action::WeekStep(-1), &api, &tx).await;
+        let text = render_text(&mut w);
+        assert!(
+            !text.contains("one systems paper"),
+            "a queued row never leaks into another week: {text}"
+        );
+        assert!(!text.contains("INSERT"), "the input closed: {text}");
+    }
+
+    #[test]
+    fn the_open_input_owns_every_key() {
+        let mut w = loaded();
+        assert!(
+            w.intercept_key(KeyEvent::from(KeyCode::Char('d')))
+                .is_none(),
+            "closed: board keys fall through to the keymap"
+        );
+        w.input = Some(Input::Add { buf: String::new() });
+        assert!(matches!(
+            w.intercept_key(KeyEvent::from(KeyCode::Char('d'))),
+            Some(Action::WeekInputChar('d'))
+        ));
+        assert!(matches!(
+            w.intercept_key(KeyEvent::from(KeyCode::Enter)),
+            Some(Action::WeekInputSubmit)
+        ));
+        assert!(matches!(
+            w.intercept_key(KeyEvent::from(KeyCode::Esc)),
+            Some(Action::WeekInputCancel)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_401_from_the_week_read_routes_to_reauth() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        let api = ApiClient::with_token(url::Url::parse(&server.uri()).unwrap(), "t".into());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut w = Week::default();
+        w.handle(Action::RefreshWeek, &api, &tx).await;
+        assert!(
+            wait_for(&mut rx, |a| matches!(a, Action::SessionExpired)).await,
+            "a 401 is a session problem, never a week panel"
+        );
+        assert!(w.failure.is_none());
+    }
+
+    // --- the timer seam: start-on-plan, switch-confirm, offline, refusal ---
 
     #[tokio::test]
     async fn s_starts_the_timer_bound_to_the_selected_row() {
@@ -1683,7 +1602,6 @@ mod tests {
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
-        // Nothing running → a plain bound start: the activity id, no switch flag.
         Mock::given(method("POST"))
             .and(path("/api/v1/timer"))
             .and(body_json(serde_json::json!({ "activity_id": 1 })))
@@ -1701,14 +1619,12 @@ mod tests {
             queue_paths: Some(scratch_paths()),
             ..Default::default()
         };
-        // Selected row 0 → activity id 1; nothing running → an immediate start.
         let out = w.handle(Action::WeekStartTimer, &api, &tx).await;
         assert!(
             out.is_none(),
             "a first start with nothing running doesn't warn"
         );
-        // The confirmed start forwards the fresh snapshot; the mock's expect(1)
-        // asserts the body carried activity_id 1 with no switch.
+        // The mock's expect(1) asserts the bound body with no switch flag.
         assert!(
             wait_for(&mut rx, |a| matches!(a, Action::TimerLoaded(_))).await,
             "a confirmed start forwards the header snapshot"
@@ -1721,7 +1637,6 @@ mod tests {
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
-        // The switch start carries switch:true — the server stops & saves first.
         Mock::given(method("POST"))
             .and(path("/api/v1/timer"))
             .and(body_json(
@@ -1739,12 +1654,10 @@ mod tests {
         let mut w = Week {
             data: Some(sample()),
             queue_paths: Some(scratch_paths()),
-            // A timer already runs on a *different* activity (99).
             running: Some(running_on(99, "Read DDIA ch.7")),
             ..Default::default()
         };
 
-        // First press warns, naming the running session — nothing spawns yet.
         let (level, text) = w
             .handle(Action::WeekStartTimer, &api, &tx)
             .await
@@ -1756,7 +1669,6 @@ mod tests {
         );
         assert!(text.contains("again"), "asks for a second press: {text}");
 
-        // Second press switches → the switch:true start spawns (mock asserts it).
         let second = w.handle(Action::WeekStartTimer, &api, &tx).await;
         assert!(second.is_none(), "the confirm doesn't re-warn");
         assert!(
@@ -1767,8 +1679,6 @@ mod tests {
 
     #[tokio::test]
     async fn s_on_the_running_row_says_already_timing() {
-        // Starting the row a timer already runs on would only stop & restart the
-        // same work — inform instead of churning a segment.
         let (api, tx) = ctx();
         let mut w = Week {
             data: Some(sample()),
@@ -1785,8 +1695,6 @@ mod tests {
 
     #[tokio::test]
     async fn offline_start_enqueues_the_timer_start_intent() {
-        // Offline: `s` → the seam helper → `QueuedClient` → the persisted queue.
-        // The shipped `TimerStart` intent carries the plan item's activity id.
         use crate::queue::{IntentKind, QueueStore};
 
         let (queue_path, cache_path) = scratch_paths();
@@ -1798,7 +1706,7 @@ mod tests {
             queue_paths: Some((queue_path.clone(), cache_path)),
             ..Default::default()
         };
-        // Row 0 → activity id 1; the dead port forces the offline arm.
+        // The dead port forces the offline arm.
         w.handle(Action::WeekStartTimer, &api, &tx).await;
 
         let store = QueueStore::at(&queue_path);
@@ -1827,7 +1735,6 @@ mod tests {
             }
             other => panic!("expected a TimerStart intent, got {other:?}"),
         }
-        // The provisional clock streams back to mark the row live.
         assert!(
             wait_for(&mut rx, |a| matches!(a, Action::TimerProvisional(_))).await,
             "the provisional snapshot is streamed back"
@@ -1836,14 +1743,11 @@ mod tests {
 
     #[tokio::test]
     async fn s_on_a_queued_row_refuses_still_queued() {
-        // A provisional (offline-declared) row has no server activity yet — the
-        // start refuses honestly rather than binding to a phantom id.
         let (api, tx) = ctx();
         let mut w = Week {
             data: Some(empty()),
             ..Default::default()
         };
-        // One offline-declared row, cursor on it (no real rows above it).
         w.handle(
             Action::WeekPlanQueued("one systems paper".into()),
             &api,
@@ -1860,9 +1764,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn s_on_a_negative_sentinel_row_refuses_still_queued() {
+        let (api, tx) = ctx();
+        let mut data = one_item();
+        data.days[0].items[0].id = -1;
+        let mut w = Week {
+            data: Some(data),
+            ..Default::default()
+        };
+        let (_, text) = w
+            .handle(Action::WeekStartTimer, &api, &tx)
+            .await
+            .expect("an unminted row refuses the start");
+        assert!(text.contains("still queued"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn s_binds_the_timer_to_the_plan_item_under_the_cursor() {
+        use crate::queue::{IntentKind, QueueStore};
+
+        let (queue_path, cache_path) = scratch_paths();
+        let api =
+            ApiClient::with_token(url::Url::parse("http://127.0.0.1:1/").unwrap(), "t".into());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut w = Week {
+            data: Some(sample()),
+            queue_paths: Some((queue_path.clone(), cache_path)),
+            ..Default::default()
+        };
+        w.handle(Action::WeekSelectMove(2), &api, &tx).await;
+        w.handle(Action::WeekStartTimer, &api, &tx).await;
+
+        let store = QueueStore::at(&queue_path);
+        let mut pending = store.pending().unwrap();
+        for _ in 0..100 {
+            if !pending.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            pending = store.pending().unwrap();
+        }
+        match &pending[..] {
+            [intent] => match &intent.kind {
+                IntentKind::TimerStart { activity_id, .. } => assert_eq!(
+                    *activity_id,
+                    Some(3),
+                    "the segment lands on the third row's planned activity"
+                ),
+                other => panic!("expected a TimerStart intent, got {other:?}"),
+            },
+            other => panic!("expected one queued start, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn moving_the_cursor_disarms_a_pending_switch() {
+        let (api, tx) = ctx();
+        let mut w = Week {
+            data: Some(sample()),
+            running: Some(running_on(99, "Read DDIA ch.7")),
+            ..Default::default()
+        };
+        w.handle(Action::WeekStartTimer, &api, &tx).await;
+        w.handle(Action::WeekSelectMove(1), &api, &tx).await;
+        w.handle(Action::WeekSelectMove(-1), &api, &tx).await;
+        let (level, text) = w
+            .handle(Action::WeekStartTimer, &api, &tx)
+            .await
+            .expect("the switch asks again after a cursor move");
+        assert!(matches!(level, Level::Warning));
+        assert!(text.contains("press s again"), "{text}");
+    }
+
+    #[tokio::test]
     async fn a_forwarded_timer_snapshot_marks_the_running_row_live() {
-        // The app forwards the header poll's snapshot to the current screen; the
-        // board caches it (while running) and marks the bound row ` live `.
         let (api, tx) = ctx();
         let mut w = loaded();
         w.handle(
@@ -1874,7 +1849,6 @@ mod tests {
         let text = render_text(&mut w);
         assert!(text.contains('●'), "the live marker renders: {text}");
         assert!(text.contains("live"), "{text}");
-        // A stopped snapshot clears the mark.
         w.handle(Action::TimerLoaded(Box::default()), &api, &tx)
             .await;
         assert!(
@@ -1883,7 +1857,7 @@ mod tests {
         );
     }
 
-    // --- reflection (#117): the $EDITOR retro write ---
+    // --- reflection: the $EDITOR retro write ---
 
     /// An api + a live receiver — the reflect hand-off tests observe what `i`
     /// dispatches, so they can't drop the rx the way `ctx` does.
@@ -1900,8 +1874,6 @@ mod tests {
 
     #[tokio::test]
     async fn reflect_opens_the_editor_seeded_with_the_current_note() {
-        // `i` reads the shown week's stored note and hands the seed off to the
-        // app (which owns the terminal suspend + $EDITOR spawn).
         let (api, tx, mut rx) = ctx_rx();
         let mut w = loaded();
         w.handle(Action::WeekReflect, &api, &tx).await;
@@ -1917,6 +1889,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn re_editing_a_queued_reflection_seeds_from_the_local_draft() {
+        let (api, tx, mut rx) = ctx_rx();
+        let mut w = loaded();
+        w.handle(
+            Action::WeekReflectQueued("written offline".into()),
+            &api,
+            &tx,
+        )
+        .await;
+        w.handle(Action::WeekReflect, &api, &tx).await;
+        assert!(
+            wait_for(&mut rx, |a| matches!(
+                a,
+                Action::WeekReflectEdit { seed, .. } if seed == "written offline"
+            ))
+            .await,
+            "the seed is what was just written, not the stale stored note"
+        );
+    }
+
+    #[tokio::test]
     async fn reflect_before_load_is_a_noop() {
         let (api, tx, mut rx) = ctx_rx();
         let mut w = Week::default(); // never loaded
@@ -1926,7 +1919,6 @@ mod tests {
 
     #[tokio::test]
     async fn reflect_abort_leaves_the_note_untouched() {
-        // Quit-without-write cancels — the board only says so (capture-is-sacred).
         let (api, tx) = ctx();
         let mut w = loaded();
         let (level, text) = w
@@ -1939,9 +1931,7 @@ mod tests {
 
     #[tokio::test]
     async fn reflect_save_offline_enqueues_and_renders_queued() {
-        // The full wiring, offline: a save → the reflect helper → `QueuedClient`
-        // → the persisted queue, plus the `◔ queued` retro band. A dead port
-        // forces the offline arm.
+        // A dead port forces the offline arm.
         use crate::queue::{IntentKind, QueueStore};
 
         let (queue_path, cache_path) = scratch_paths();
@@ -1964,7 +1954,6 @@ mod tests {
         )
         .await;
 
-        // The spawned write lands in the queue (the dead port refuses fast).
         let store = QueueStore::at(&queue_path);
         let mut pending = store.pending().unwrap();
         for _ in 0..100 {

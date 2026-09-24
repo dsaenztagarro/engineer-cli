@@ -1,28 +1,12 @@
-//! Weekly time Targets — declare / adjust / retire (`/api/v1/targets`).
-//!
-//! A target is one axis (domain | kind | intent) + a scope on that axis + hours
-//! per week; actuals and pace are never stored here — `GET /api/v1/progress`
-//! derives them on read (see [`super::progress`]).
-//!
-//! Rows are append-only VERSIONS of a lineage (engineer ADR 0026):
-//! - `update` adjusts the hours and returns the LIVE row, whose `id` may differ
-//!   from the one addressed (an edit past the same day mints a successor). A
-//!   stale/closed version id is a `422` — so callers address a lineage by its
-//!   axis + scope, re-reading after an adjust rather than trusting a cached id.
-//! - there is deliberately NO delete: `retire` closes the lineage while keeping
-//!   its history, so past weeks still read it.
-//!
-//! The response is the bare target object (a superset of [`TargetRef`], which the
-//! progress read already reuses); the extra timestamp fields are ignored on decode.
+//! Weekly time targets — declare / adjust / retire (`/api/v1/targets`).
 
 use serde::{Deserialize, Serialize};
 
 use super::{ApiClient, ApiError, Keyed, List, TargetRef};
 
-/// The slice of the log a new target measures — the axis and its scope value.
 // `Serialize`/`Deserialize`/`PartialEq` so a deferred declare persists verbatim
-// on an `IntentKind::TargetCreate` in `queue.json` (the queue never re-derives a
-// gesture — it re-sends exactly what the user made).
+// on an `IntentKind::TargetCreate` — the queue re-sends exactly what the user
+// made, never a re-derivation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TargetScope {
     /// A domain, addressed by its id.
@@ -43,7 +27,6 @@ impl TargetScope {
     }
 }
 
-/// A target to declare: its scope plus the weekly hours.
 // Same round-trip contract as [`TargetScope`]: an offline declare rides this
 // whole body into the queue and re-sends it verbatim on replay.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -52,7 +35,6 @@ pub struct TargetCreate {
     pub hours_per_week: f64,
 }
 
-/// Which lifecycle slice `list_targets` asks for (one row per lineage).
 #[derive(Debug, Clone, Copy)]
 pub enum TargetState {
     /// Live rows, adjustable now (the server default).
@@ -73,9 +55,6 @@ impl TargetState {
     }
 }
 
-// The server permits `target: { axis, hours_per_week, domain_id | kind | intent }`
-// and slices to the scope column matching the axis, so we send exactly the one
-// scope field for the chosen axis.
 #[derive(Serialize)]
 struct CreateBody<'a> {
     target: CreateTarget<'a>,
@@ -93,8 +72,6 @@ struct CreateTarget<'a> {
     intent: Option<&'a str>,
 }
 
-/// Build the create request body for a declare, sending exactly the one scope
-/// field the chosen axis needs. Shared by the live and idempotent-replay paths.
 fn create_body(create: &TargetCreate) -> CreateBody<'_> {
     let (domain_id, kind, intent) = match &create.scope {
         TargetScope::Domain(id) => (Some(*id), None, None),
@@ -123,7 +100,6 @@ struct HoursOnly {
 }
 
 impl ApiClient {
-    /// List targets in one lifecycle slice — one row per lineage.
     pub async fn list_targets(&self, state: TargetState) -> Result<List<TargetRef>, ApiError> {
         self.get(
             "/api/v1/targets",
@@ -132,20 +108,14 @@ impl ApiClient {
         .await
     }
 
-    /// Declare a weekly target. Returns the created row.
     pub async fn create_target(&self, create: &TargetCreate) -> Result<TargetRef, ApiError> {
         self.post("/api/v1/targets", &create_body(create)).await
     }
 
-    /// The `create_target` twin carrying an `Idempotency-Key` — the queue's
-    /// replay path re-sends a deferred declare through this so a lost ack can
-    /// never mint the target twice. Keyed (not plain) is the safe default: the
-    /// server dedupes on the key where targets-create is in engineer#809's ADR
-    /// 0036 opt-in set, and where it is not the header is simply ignored — keyed
-    /// can only ever prevent a double-write, never cause one (a replay re-sends
-    /// the identical body under the identical key, so a key-reuse conflict cannot
-    /// arise), so it strictly dominates a plain re-send. The activity/timer
-    /// creates replay under the same contract.
+    /// The queue's replay path, keyed so a lost ack can never mint the target
+    /// twice. A server outside the engineer ADR 0036 opt-in set ignores the
+    /// header, and a replay re-sends the identical body under the identical key,
+    /// so keyed strictly dominates a plain re-send.
     pub(crate) async fn create_target_idempotent(
         &self,
         create: &TargetCreate,
@@ -155,9 +125,8 @@ impl ApiClient {
             .await
     }
 
-    /// Adjust a target's weekly hours. Returns the LIVE row — its `id` may differ
-    /// from `id` when the edit minted a successor version, so callers should treat
-    /// the returned target as authoritative rather than re-using `id`.
+    /// Returns the live row, whose id may differ from `id` when the edit minted a
+    /// successor version — treat it as authoritative.
     pub async fn update_target(&self, id: i64, hours_per_week: f64) -> Result<TargetRef, ApiError> {
         let body = AdjustBody {
             target: HoursOnly { hours_per_week },
@@ -165,7 +134,8 @@ impl ApiClient {
         self.patch(&format!("/api/v1/targets/{id}"), &body).await
     }
 
-    /// Retire a target — closes the lineage (never deletes). Returns the closed row.
+    /// Closes the lineage and keeps its history; there is deliberately no delete
+    /// (engineer ADR 0026).
     pub async fn retire_target(&self, id: i64) -> Result<TargetRef, ApiError> {
         self.patch_empty(&format!("/api/v1/targets/{id}/retire"))
             .await
