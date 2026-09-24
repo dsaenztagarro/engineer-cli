@@ -1,17 +1,8 @@
-//! Tier-2 of the error/notification model (design-system.dc.html §ERROR &
-//! NOTIFICATION MODEL): the **inline panel state**. When a bordered region's
-//! data didn't load, its body — the space that would hold rows — shows the
-//! reason and a retry key, while the rest of the screen stays live. The model's
-//! one hard rule is drawn here: **empty** (no rows, calm/muted) is a different
-//! thing from **failed** (couldn't fetch, loud/red), and the two never collapse
-//! into each other.
+//! The Tier-2 inline panel state of the error model (ADR 0001).
 //!
-//! This is pure presentation. A screen keeps its own `Vec`/aggregate + loading
-//! flag + optional [`PanelFailure`], computes a [`PanelState`] at render time,
-//! and hands it here; a region that *does* have rows renders its own List/Table
-//! as before. There is deliberately no generic `LoadState<T>` wrapper — the
-//! screens are too heterogeneous (some map one read to many panels) for a single
-//! container to fit without fighting the `ListState` borrow.
+//! There is no generic `LoadState<T>` wrapper: the screens are too heterogeneous
+//! (some map one read to many panels) for one container to fit without fighting
+//! the `ListState` borrow.
 
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
@@ -21,38 +12,24 @@ use ratatui::Frame;
 
 use crate::ui::theme;
 
-/// What a bordered region shows when it has no rows to draw.
 pub enum PanelState {
-    /// The first read is in flight and nothing is cached yet.
     Loading,
-    /// The read succeeded with zero rows — a calm, muted invitation. `hint`
-    /// is the screen-specific nudge ("Log one with `a`"); `None` falls back to
-    /// a bare "nothing here yet".
     Empty { hint: Option<String> },
-    /// The read failed — loud and red, with the reason and a recovery key.
     Failed(PanelFailure),
 }
 
-/// The Tier-2 failure a region renders instead of its rows. Built from
-/// [`crate::messages`] so the wording matches the Tier-1 tile and the headless
-/// stderr for the same outcome (§C). `Clone` so a screen can hand a
-/// `PanelState::Failed` to the renderer without moving it out of `&self`.
+/// Build `headline` and `reason` from [`crate::messages`] (ADR 0001).
 #[derive(Clone)]
 pub struct PanelFailure {
-    /// The loud headline, no glyph — e.g. `messages::load_failed("books")`.
     pub headline: String,
-    /// The muted cause line — `messages::fail_reason(host, &err)`.
     pub reason: String,
-    /// The key that re-runs the read (almost always `"r"`).
     pub retry_key: &'static str,
-    /// Whether an `o open last-cached` affordance is offered. Held `false`
-    /// everywhere until a read actually keeps a cache — advertising a cache
-    /// that isn't there would violate the honesty rule (§0·4).
+    /// True only where a read really keeps a cache: offering one that isn't
+    /// there would be a lie.
     pub cached: bool,
 }
 
-/// Render `state` as the body of `block`, filling `area`. Call this only when
-/// the region has no rows; a live region renders its own widget instead.
+/// Only for a region with no rows; a live region renders its own widget.
 pub fn render_panel_state(
     frame: &mut Frame,
     area: Rect,
@@ -71,8 +48,6 @@ pub fn render_panel_state(
         PanelState::Failed(f) => failure_lines(f),
     };
 
-    // Vertically centre the 1–3 body lines in the region, matching the mock's
-    // padded-centre placement.
     let content_h = lines.len() as u16;
     let top = inner.height.saturating_sub(content_h) / 2;
     let body = Rect {
@@ -144,7 +119,6 @@ mod tests {
         assert!(text.contains("✖ couldn't load books"), "{text}");
         assert!(text.contains("identity.dev → HTTP 500"), "{text}");
         assert!(text.contains("retry"), "{text}");
-        // `o open last-cached` stays hidden while no cache backs it.
         assert!(!text.contains("open last-cached"), "{text}");
     }
 
@@ -165,12 +139,17 @@ mod tests {
             hint: Some("Log one with `a`".into()),
         });
         assert!(text.contains("Log one with `a`"), "{text}");
-        // Empty is never dressed up as a failure.
         assert!(!text.contains("✖"), "{text}");
     }
 
     #[test]
     fn loading_reads_as_loading() {
         assert!(draw(&PanelState::Loading).contains("loading…"));
+    }
+
+    #[test]
+    fn an_empty_region_without_a_hint_reads_nothing_here_yet() {
+        let text = draw(&PanelState::Empty { hint: None });
+        assert!(text.contains("nothing here yet"), "{text}");
     }
 }

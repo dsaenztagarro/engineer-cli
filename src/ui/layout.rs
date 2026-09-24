@@ -11,8 +11,6 @@ pub struct Chrome<'a> {
     pub user: Option<&'a str>,
     pub identity_host: &'a str,
     pub screen_title: &'a str,
-    /// The persistent timer cell (`widgets::timer_cell`), right-aligned in the
-    /// header row on every screen. `None` when no timer is running.
     pub timer: Option<Vec<Span<'a>>>,
     pub notification: Option<&'a Notification>,
     pub hints: Line<'a>,
@@ -37,9 +35,6 @@ pub fn render_chrome(frame: &mut Frame, area: Rect, chrome: Chrome<'_>) -> Rect 
         Span::styled(format!("{user} @ {}", chrome.identity_host), theme::muted()),
     ]);
 
-    // The timer cell claims a fixed narrow slice at the far right of the header
-    // (web pill contract: fixed width, never the activity title). When absent
-    // the header text spans the whole row.
     if let Some(cell) = chrome.timer {
         let width: u16 = cell
             .iter()
@@ -59,8 +54,6 @@ pub fn render_chrome(frame: &mut Frame, area: Rect, chrome: Chrome<'_>) -> Rect 
         frame.render_widget(Paragraph::new(header), chunks[0]);
     }
 
-    // Footer shows an active notification as a level-styled tile; otherwise the
-    // screen's keybinding hints.
     if let Some(n) = chrome.notification {
         render_notification(frame, chunks[2], n);
     } else {

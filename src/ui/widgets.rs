@@ -15,10 +15,6 @@ pub fn status_pill(status: BookStatus) -> Span<'static> {
     Span::styled(label, Style::default().fg(Color::Black).bg(fg))
 }
 
-/// An activity's lifecycle status as a black-ink semantic pill, matching the
-/// book status-pill idiom. Status is free-form on the wire, so the colour is
-/// keyed off the value and an unrecognised status still renders literally
-/// (neutral fill) rather than being dropped. An absent status reads ` logged `.
 pub fn activity_status_pill(status: Option<&str>) -> Span<'static> {
     let s = status.unwrap_or("").trim().to_ascii_lowercase();
     let (label, fg): (String, Color) = if s.is_empty() {
@@ -37,7 +33,6 @@ pub fn activity_status_pill(status: Option<&str>) -> Span<'static> {
     Span::styled(label, Style::default().fg(Color::Black).bg(fg))
 }
 
-/// Inline progress bar like `███▍·····  42%`.
 pub fn progress_bar(pct: f32, width: usize) -> Line<'static> {
     let pct = pct.clamp(0.0, 100.0);
     let filled = (pct / 100.0) * width as f32;
@@ -61,10 +56,6 @@ pub fn progress_bar(pct: f32, width: usize) -> Line<'static> {
     ])
 }
 
-/// Pace meter bar like `█████·╎····` (progress.html §F). `fraction` is
-/// actual/target (fill); `now_fraction` places the muted now-tick where the week
-/// currently sits (the "am I on pace" mark). `color` tints the fill by pace
-/// state. `show_tick` is false for met targets, whose bar is already full.
 pub fn pace_bar(
     fraction: f64,
     now_fraction: f64,
@@ -83,7 +74,6 @@ pub fn pace_bar(
     let empty_style = Style::default().fg(theme::BORDER);
     let tick_style = theme::muted();
 
-    // Coalesce equal-styled cells into runs so the bar renders as a few spans.
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut buf = String::new();
     let mut buf_style = empty_style;
@@ -107,10 +97,6 @@ pub fn pace_bar(
     spans
 }
 
-/// Elapsed time in the timer's compact idiom: `mm:ss` under an hour, widening
-/// to `h:mm:ss` (then `hh:mm:ss`) once it crosses one hour. Mirrors the web
-/// pill contract (navigation-bar.html §M) — the number grows a field, it never
-/// shape-shifts by title or kind.
 pub fn fmt_elapsed(total_secs: i64) -> String {
     let total = total_secs.max(0);
     let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
@@ -121,15 +107,6 @@ pub fn fmt_elapsed(total_secs: i64) -> String {
     }
 }
 
-/// The persistent header timer cell, speaking the full status-line grammar
-/// (timer.dc.html §Status line): one glyph carries the state, the bar keeps a
-/// fixed shape per state, and `narrow` drops the label down to glyph + clock.
-/// Absent returns `None` — a screen with no live timer has a clean header.
-///
-/// States: `●` running (green; muted title after the clock, italic *untitled*
-/// when unbound), `‖` paused (amber, frozen muted clock), `◐` idle + amber
-/// ` idle ` pill, `◆` focus work + pomodoro dots, `○ break` muted. The `over`
-/// form arrives with the overrun ticket.
 pub fn timer_cell(
     t: &crate::api::Timer,
     elapsed_secs: i64,
@@ -196,7 +173,6 @@ pub fn timer_cell(
             Style::default().add_modifier(Modifier::BOLD),
         ));
         if offer && !narrow {
-            // A finished work interval waits for a decision (§Focus offers).
             spans.push(Span::raw(" "));
             spans.push(Span::styled(
                 " break? ",
@@ -204,9 +180,8 @@ pub fn timer_cell(
             ));
         }
         if !narrow {
-            // Pomodoro dots: banked intervals green, the live one accent. The
-            // round length is a settings knob with no API yet, so no empty
-            // remainder dots are drawn.
+            // No empty remainder dots: the round length is a settings knob the
+            // API does not expose yet.
             let done = t.intervals_completed.unwrap_or(0) as usize;
             spans.push(Span::styled(
                 format!(" {}", "●".repeat(done)),
@@ -370,7 +345,6 @@ mod tests {
         )
         .unwrap();
         let text = cell_text(Some(cell));
-        // ◆ + two banked dots + the live one.
         assert!(text.starts_with("◆ "), "{text}");
         assert!(text.ends_with("●●●"), "{text}");
     }
@@ -463,5 +437,52 @@ mod tests {
             "Implement Raft leader e…"
         );
         assert_eq!(truncate_label("short", 24), "short");
+    }
+
+    #[test]
+    fn an_absent_activity_status_reads_logged() {
+        assert_eq!(activity_status_pill(None).content, " logged ");
+        assert_eq!(activity_status_pill(Some("  ")).content, " logged ");
+    }
+
+    #[test]
+    fn an_unrecognised_activity_status_renders_literally_rather_than_dropped() {
+        let pill = activity_status_pill(Some("Under_Review"));
+        assert_eq!(pill.content, " under review ");
+        assert_eq!(pill.style.bg, Some(theme::MUTED));
+    }
+
+    #[test]
+    fn known_activity_statuses_fold_onto_the_pill_vocabulary() {
+        assert_eq!(activity_status_pill(Some("completed")).content, " done ");
+        assert_eq!(
+            activity_status_pill(Some("in_progress")).content,
+            " active "
+        );
+        assert_eq!(activity_status_pill(Some("planned")).content, " planned ");
+        assert_eq!(activity_status_pill(Some("abandoned")).content, " stopped ");
+    }
+
+    fn bar_text(spans: &[Span<'static>]) -> String {
+        spans.iter().map(|s| s.content.to_string()).collect()
+    }
+
+    #[test]
+    fn the_pace_bar_fills_to_actual_and_ticks_where_the_week_sits() {
+        let bar = pace_bar(0.5, 0.8, 10, theme::SUCCESS, true);
+        assert_eq!(bar_text(&bar), "█████···╎·");
+    }
+
+    #[test]
+    fn the_pace_bar_without_a_tick_is_fill_and_track_only() {
+        let bar = pace_bar(1.0, 0.8, 10, theme::SUCCESS, false);
+        assert_eq!(bar_text(&bar), "██████████");
+    }
+
+    #[test]
+    fn the_progress_bar_draws_partial_cells_and_the_percent() {
+        let line = progress_bar(42.0, 10);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(text, "████▏·····   42%");
     }
 }
