@@ -1,11 +1,4 @@
-//! A last-known timer cache — the offline read fallback (ADR 0004, the read
-//! half). The headless timer read writes the live snapshot here on success; when a
-//! later read can't reach the network, it renders the cached value with a
-//! staleness marker rather than going blank in the status bar.
-//!
-//! This is the *read* half of offline-tolerance only — a bounded slice: nothing
-//! here reconciles writes. The write half is its sibling — the controlling local
-//! clock (`crate::timer_clock`) and the optimistic write queue (`crate::queue`).
+//! The last-known timer cache — the offline read fallback (ADR 0004, the read half).
 
 use std::path::{Path, PathBuf};
 
@@ -21,27 +14,23 @@ struct Cached {
     timer: Timer,
 }
 
-/// A cached timer and how many seconds old it is.
 pub struct StaleTimer {
     pub timer: Timer,
     pub age_secs: i64,
 }
 
-/// The cache file, alongside the rolling logs in the XDG state dir.
 fn path() -> Option<PathBuf> {
     Config::log_dir()
         .ok()
         .map(|dir| dir.join("timer-cache.json"))
 }
 
-/// Persist the last successful timer read (best-effort — cache errors are silent).
 pub fn store(timer: &Timer) {
     if let Some(path) = path() {
         store_at(&path, timer);
     }
 }
 
-/// The last-known timer and its age, if any is cached and readable.
 pub fn load() -> Option<StaleTimer> {
     load_at(&path()?)
 }
@@ -93,6 +82,15 @@ mod tests {
         assert_eq!(loaded.timer.label.as_deref(), Some("systems"));
         assert_eq!(loaded.timer.elapsed_seconds, Some(1453));
         assert!(loaded.age_secs >= 0);
+    }
+
+    #[test]
+    fn a_failed_cache_write_is_silent() {
+        let blocker =
+            std::env::temp_dir().join(format!("engineer-timer-cache-file-{}", std::process::id()));
+        std::fs::write(&blocker, "a file, not a directory").unwrap();
+        store_at(&blocker.join("timer-cache.json"), &running_timer());
+        let _ = std::fs::remove_file(&blocker);
     }
 
     #[test]

@@ -1,9 +1,4 @@
 //! Completed activity segments — the rows a stopped timer writes.
-//!
-//! The timer consumes the member calls: PATCH shortens a segment (the audit
-//! "trim" preset) and DELETE removes one (the post-save undo, the audit
-//! delete). The flagged-segment *list* is a server-side audit feature and gets
-//! its client call when that endpoint ships.
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
@@ -41,9 +36,7 @@ struct SegmentCreateBody {
 }
 
 impl ApiClient {
-    /// Append a manual segment to an existing activity — the `engineer log
-    /// --activity` write (after-the-fact time on work already recorded). The
-    /// server derives `ended_at` from `started_at + duration_minutes`.
+    /// The server derives `ended_at` from `started_at + duration_minutes`.
     pub async fn create_segment(
         &self,
         activity_id: i64,
@@ -60,11 +53,8 @@ impl ApiClient {
             .await
     }
 
-    /// The `create_segment` twin carrying an `Idempotency-Key` — the offline
-    /// queue's replay path re-sends a deferred segment through this so a lost ack
-    /// can never write the segment twice (segment-create is in the server's
-    /// opt-in set, ADR 0036, alongside the timer and activity creates). Returns
-    /// `Keyed` so the replay pass can see a stored replay.
+    /// The queue replay's `create_segment`: the stored `Idempotency-Key` means a
+    /// lost ack can never write the segment twice.
     pub(crate) async fn create_segment_idempotent(
         &self,
         activity_id: i64,
@@ -86,8 +76,6 @@ impl ApiClient {
         .await
     }
 
-    /// Edit a segment in place — shortening `minutes` is the trim preset.
-    /// Segments are nested under their activity on the wire.
     pub async fn update_segment(
         &self,
         activity_id: i64,
@@ -101,7 +89,6 @@ impl ApiClient {
         .await
     }
 
-    /// Delete a segment — the exact inverse of the save a stopped timer wrote.
     pub async fn delete_segment(&self, activity_id: i64, id: i64) -> Result<(), ApiError> {
         self.delete(&format!("/api/v1/activities/{activity_id}/segments/{id}"))
             .await
