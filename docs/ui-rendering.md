@@ -101,7 +101,7 @@ sequenceDiagram
 ```
 
 The same pattern drives the home screen (`HomeLoaded`), the current user (`FetchMe` → `SetUser`), and book detail (`BookDetailLoaded`).
-Failures are not swallowed, and — this is the rule the design system's error model makes explicit (`docs/designs/design-system.dc.html` §ERROR & NOTIFICATION MODEL) — a read that *failed* is never re-encoded as an *empty* result.
+Failures are not swallowed, and — this is the rule [ADR 0001](architecture/decisions/0001-terminal-error-notification-model.md) makes explicit — a read that *failed* is never re-encoded as an *empty* result.
 The spawned task dispatches a typed `*LoadFailed(reason)` action; the screen records a `PanelFailure` and, when the region has no rows, renders the **Tier-2 inline panel state** (`ui::panel::render_panel_state`) inside its bordered block: a loud red reason line plus a retry key, visibly distinct from the calm muted *empty* state.
 Books (`src/app/screens/books.rs`) is the reference adopter.
 
