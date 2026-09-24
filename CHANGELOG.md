@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The design boundary: the design project draws the surface, and this repository holds the truth ([ADR 0006](docs/architecture/decisions/0006-the-design-boundary.md), EPIC #199).
+
+### Changed
+
+- **The palette is generated from the design system's token set.** `src/ui/theme.rs` was hand-adapted from a token file that had since moved, and its header cited a path that no longer existed. `design/tokens.toml` is now a mirror of `engineer-cli-ds`'s resolved token set, `tests/tokens.rs` generates `src/ui/tokens.rs` from it and fails when the two disagree, and no other source file may spell a colour index or an ANSI colour. Three colours change, each measured against its contrast floor where the palette is authored: **the selected-row fill** moves from `61` to `103` (ink on it measured 3.34 against a 4.5 floor), **borders** move from `240` to `244` (2.63 on a dark ground, under the 3.0 a mark needs), and **ink on every fill** — pills, key caps, warning and error tiles, the selection — is `233` instead of ANSI black, which a terminal theme is free to redefine (#190).
+- **Design content lives in `engineer-cli-ds`.** `docs/designs/` — the canvases, the design kit and the last brief — is gone; the same pages, byte for byte, are in the design repository. `/epic` reads a page from a sibling checkout, `${ENGINEER_CLI_DS:-../engineer-cli-ds}/pages/`, and ADR 0001, ADR 0002 and the rendering guide link there (#190). `daily-loop.brief.md` retires with the folder (#187).
+- **Code states behaviour in tests, not comments.** Every canvas citation in `src/` is gone, deleted rather than re-pointed, and so is the narration beside it: comment lines in `src/` fall from 5,113 to about 1,050, and every module header is one line saying what the module is. A behaviour a removed sentence stated is now a named test — the suite grows from 742 to 935 tests, each new one checked by breaking the code it covers and watching it fail. The twelve rules the behaviour audit found shipped but unproven are among them: a finished focus phase offers and never fires, a mode switch closes no segment, keystrokes are presence and ticks are not, quitting the editor keeps the capture draft, Progress keeps the server's behind-first order, `t` dims archived notes rather than hiding them, unplanned time counts in the week and on Home, `s` binds the timer to a plan item, and inbox drafts badge by expiry (#189).
+- **A server decision record is cited as `engineer ADR NNNN`.** A bare number is this repository's record, and a server record cited bare sent the reader to a file that does not exist here.
+
+### Added
+
+- **[ADR 0006 — The design boundary](docs/architecture/decisions/0006-the-design-boundary.md)** and the matching rules in `AGENTS.md`: the design project draws the surface, behaviour is a test and its reason an ADR, code never cites a design, and exactly one data file crosses from the design repository.
+- **Source guards for all of it:** `tests/design_references.rs` fails on a design reference in `src/`, and on a bare ADR number with no record here; `tests/tokens.rs` fails on a hand-edited palette or a colour spelled as a literal.
+
+### Fixed
+
+- **Design references that pointed at nothing.** Eight source comments named mockups from the web client's repository — `progress.html`, `navigation-bar.html`, `review.html`, `Activities.html`, `tokens.css` — that never existed here.
+
 ## [0.11.1] - 2026-09-06
 
 The input lifecycle — a design brief ends at ship (#180).
