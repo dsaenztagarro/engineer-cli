@@ -1,24 +1,5 @@
 //! Headless `engineer queue` — the offline write queue, observable
-//! (ADR 0004; the §Queue inspector board in `docs/designs/offline-write.dc.html`).
-//! The bare read prints one row per unsynced intent; `sync` runs a
-//! replay pass now; `resolve` picks a side on a waiting divergence — the
-//! headless twin of the Timer screen's reconcile panel; `drop <id>` is the
-//! standalone spelling of the reconcile board's `x` (the same engine as
-//! `resolve <id> --drop`). A look and a nudge — not a sync manager.
-//!
-//! Exit codes answer "does the queue need me?": 0 drained, empty, or only
-//! parked-for-review · 3 writes queued, offline (deliberately not a failure —
-//! a cron job must not page on a tunnel) · 4 a divergence is waiting on a
-//! choice · 5 the replay itself failed (non-transport, non-problem — e.g.
-//! queue io). `resolve` exits 0 on success and 1 when the resolution can't
-//! apply (unknown id, not a divergence, a composition the stored payload
-//! can't support, an editor buffer that doesn't parse, or offline where the
-//! wire is needed). The rejected-write gestures (#109, §Diverged · rejected
-//! segment) ride the same verb: `--edit` opens the payload in `$EDITOR` and
-//! retries (exit 4 when the server still refuses), `--drop --force` is the
-//! explicit discard, `--skip` parks it for later. Output is plain when
-//! piped: ANSI colour is applied only on a TTY and never when NO_COLOR is
-//! set.
+//! (ADR 0004, ADR 0003).
 
 use std::io::IsTerminal;
 
@@ -89,8 +70,6 @@ pub async fn run(cfg: &Config, args: QueueArgs) -> Result<i32> {
     let api = ApiClient::with_token(cfg.api_url.clone(), token);
     let store = QueueStore::open_default().map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
     let colored = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
-    // The last-known server snapshot — the local session's identity when a
-    // diverged verb doesn't carry one (resolve's keep-local/keep-both).
     let cached = crate::timer_cache::load().map(|s| s.timer);
 
     let editor = crate::editor::resolve_editor();
@@ -104,14 +83,9 @@ pub async fn run(cfg: &Config, args: QueueArgs) -> Result<i32> {
     Ok(outcome.code)
 }
 
-/// A resolve that can't apply — unknown id, not a divergence, an unsupported
-/// composition, or offline. The refusal contract `engineer timer` also uses.
 const EXIT_REFUSED: i32 = 1;
-/// Queued-offline: writes are waiting, which is a state, not a failure.
 const EXIT_QUEUED: i32 = 3;
-/// A divergence waits on a human choice.
 const EXIT_DIVERGED: i32 = 4;
-/// The replay itself failed — non-transport, non-problem (queue io, auth, …).
 const EXIT_FAILED: i32 = 5;
 
 struct Outcome {
@@ -177,18 +151,11 @@ async fn dispatch(
                 "pick exactly one resolution: --keep=local|server|both, --edit, --drop, or --skip",
             ),
         },
-        // The standalone `drop <id>` — the headless twin of the board's `x`.
-        // Routes the same `drop_cmd` as `resolve <id> --drop`, so the two
-        // spellings share one engine and one confirmation contract.
         Some(QueueCmd::Drop { id, force }) => drop_cmd(api, store, id, force, json, colored).await,
     })
 }
 
-// ---------------------------------------------------------------- read
-
 fn read(store: &QueueStore, json: bool, colored: bool) -> Outcome {
-    // A queue that can't be read is the loud case (unlike the read cache):
-    // silently rendering "empty" over stuck intents would hide lost writes.
     let intents = match store.intents() {
         Ok(intents) => intents,
         Err(e) => return Outcome::fail(e.to_string()),
@@ -207,8 +174,6 @@ fn read(store: &QueueStore, json: bool, colored: bool) -> Outcome {
         return Outcome::ok("queue empty");
     }
 
-    // The `#  INTENT  TARGET  AGE  STATE` columns come from the one shared
-    // shaper (`queue::view`) the TUI board renders too — one source of truth.
     let [h_id, h_intent, h_target, h_age, h_state] = view::HEADERS;
     let mut out = vec![paint(
         &format!("{h_id:<5} {h_intent:<8} {h_target:<12} {h_age:<6} {h_state}"),
@@ -227,8 +192,6 @@ fn read(store: &QueueStore, json: bool, colored: bool) -> Outcome {
             r.id, r.intent, r.target, r.age,
         ));
     }
-    // The divergence is the loud state: below the table, each waiting choice
-    // names the server's objection verbatim and spells the way out.
     for i in intents.iter().filter(|i| i.is_diverged()) {
         if let IntentState::Diverged {
             status,
@@ -268,9 +231,6 @@ fn read(store: &QueueStore, json: bool, colored: bool) -> Outcome {
     }
 }
 
-/// The bare read's verdict mirrors `sync`'s: a waiting divergence outranks
-/// plain depth; an empty or parked-only queue is calm (parked intents are
-/// kept for review, not waiting to sync).
 fn exit_for(intents: &[Intent]) -> i32 {
     if intents.iter().any(Intent::is_diverged) {
         EXIT_DIVERGED
@@ -296,10 +256,6 @@ fn json_read(intents: &[Intent], now: i64) -> serde_json::Value {
                 "state": view::state_word(i),
                 "attempts": i.attempts,
             });
-            // The stored objection rides along so a script can read the
-            // divergence without the TUI — the coded conflict included, so a
-            // consumer can switch on `code` and read the extensions instead of
-            // parsing prose.
             match &i.state {
                 IntentState::Diverged { status, title, detail, code, conflict, .. } => {
                     let mut problem = serde_json::json!({
@@ -323,8 +279,6 @@ fn json_read(intents: &[Intent], now: i64) -> serde_json::Value {
         }).collect::<Vec<_>>(),
     })
 }
-
-// ---------------------------------------------------------------- sync
 
 async fn sync(api: &ApiClient, store: &QueueStore, json: bool, colored: bool) -> Outcome {
     let report = match queue::drain(api, store).await {
@@ -373,8 +327,6 @@ async fn sync(api: &ApiClient, store: &QueueStore, json: bool, colored: bool) ->
             report.replayed
         )
     } else {
-        // Parked intents are out of play but still stored — an "empty" line
-        // over them would hide the kept-for-review work.
         match store.summary().map(|s| s.parked).unwrap_or(0) {
             0 => "queue empty".into(),
             n => format!("nothing to replay · {n} parked for review"),
@@ -387,12 +339,6 @@ async fn sync(api: &ApiClient, store: &QueueStore, json: bool, colored: bool) ->
     }
 }
 
-// ---------------------------------------------------------------- resolve
-
-/// `resolve <id> --keep=local|server|both` — the headless twin of the Timer
-/// screen's reconcile panel, through the same `queue::resolve` engine. A
-/// keep-local/keep-both continues the drain behind the choice, exactly as the
-/// TUI does.
 async fn resolve_cmd(
     api: &ApiClient,
     store: &QueueStore,
@@ -425,8 +371,6 @@ async fn resolve_cmd(
             Err(e @ queue::ResolveError::Queue(_)) => return Outcome::fail(e.to_string()),
         };
 
-    // Keep-local/keep-both unblocked the queue — continue the drain behind the
-    // choice. Take-server parked the whole session; there is nothing behind it.
     let replayed = match resolved {
         Resolved::SwitchedToLocal | Resolved::SegmentWritten { .. } => {
             queue::drain(api, store).await.ok().map(|r| r.replayed)
@@ -484,13 +428,6 @@ async fn resolve_cmd(
     Outcome::ok(line)
 }
 
-// ------------------------------- the rejected write's gestures (#109) ------
-
-/// `resolve <id> --edit` — the §Diverged · rejected segment `e`: open the
-/// stored payload's times in `$EDITOR`, re-pend the corrected write, retry
-/// the replay. An abort (`:cq`) changes nothing; a buffer that doesn't parse
-/// refuses and the intent stays diverged. Exits 4 when the retry diverges
-/// again — the caller must know the server still refuses.
 async fn edit_cmd(
     api: &ApiClient,
     store: &QueueStore,
@@ -525,7 +462,6 @@ async fn edit_cmd(
         Err(e) => return Outcome::refuse(e.to_string()),
     };
 
-    // The corrected write is pending again — retry now and report honestly.
     let report = queue::drain(api, store).await.ok();
     let (still_diverged, replayed) = report
         .map(|r| (r.diverged, r.replayed))
@@ -566,9 +502,6 @@ async fn edit_cmd(
     }
 }
 
-/// `resolve <id> --drop --force` — the §Diverged · rejected segment `x`: the
-/// queue's one user-chosen delete. `--force` is the confirmation (the TUI's
-/// second `x`); without it the verb refuses and nothing changes.
 async fn drop_cmd(
     api: &ApiClient,
     store: &QueueStore,
@@ -587,7 +520,6 @@ async fn drop_cmd(
         Err(e @ queue::ResolveError::Queue(_)) => return Outcome::fail(e.to_string()),
         Err(e) => return Outcome::refuse(e.to_string()),
     };
-    // The stream is unblocked — drain what was queued behind the choice.
     let replayed = queue::drain(api, store).await.ok().map(|r| r.replayed);
 
     if json {
@@ -610,9 +542,6 @@ async fn drop_cmd(
     Outcome::ok(line)
 }
 
-/// `resolve <id> --skip` — the §Diverged · rejected segment `s`: park it
-/// (reason `skipped`), kept in the queue for a later decision, out of the
-/// replay line; the stream behind it keeps syncing.
 async fn skip_cmd(
     api: &ApiClient,
     store: &QueueStore,
@@ -647,7 +576,6 @@ async fn skip_cmd(
     Outcome::ok(line)
 }
 
-// Terminal-palette 256 colours (docs/designs/README.md palette mapping).
 const COLOR_SYNCED: u8 = 108; // success green
 const COLOR_QUEUED: u8 = 105; // accent indigo
 const COLOR_DIVERGED: u8 = 167; // danger red
@@ -717,7 +645,6 @@ mod tests {
             .unwrap();
     }
 
-    /// The pick-a-side shape of the resolve verb, gestures off.
     fn resolve_keep(id: u64, keep: &str) -> QueueCmd {
         QueueCmd::Resolve {
             id,
@@ -729,7 +656,6 @@ mod tests {
         }
     }
 
-    /// One rejected-write gesture, everything else off.
     fn resolve_gesture(id: u64, edit: bool, drop: bool, force: bool, skip: bool) -> QueueCmd {
         QueueCmd::Resolve {
             id,
@@ -957,8 +883,6 @@ mod tests {
         assert_eq!(v["diverged"], false);
     }
 
-    // -------------------------------------------------- resolve (#106)
-
     fn cached_running() -> Timer {
         serde_json::from_value(serde_json::json!({
             "running": true, "bound": true, "activity_id": 9, "label": "systems",
@@ -967,7 +891,6 @@ mod tests {
         .unwrap()
     }
 
-    /// A diverged start at the queue head with a pending pause behind it.
     fn seeded_diverged_start(dir: &std::path::Path) -> (QueueStore, u64) {
         let store = QueueStore::at(dir.join("queue.json"));
         let start = store
@@ -1029,7 +952,6 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        // The continued drain replays the pending pause behind the choice.
         Mock::given(method("POST"))
             .and(path("/api/v1/timer/pause"))
             .respond_with(
@@ -1066,7 +988,6 @@ mod tests {
     async fn resolve_take_server_parks_and_exits_calm_after() {
         let dir = scratch();
         let (store, id) = seeded_diverged_start(&dir);
-        // Take-server needs no wire at all — parking is a local keep.
         let outcome = dispatch(
             &dead_api(),
             &store,
@@ -1094,7 +1015,6 @@ mod tests {
         assert_eq!(intents.len(), 2, "kept, not deleted");
         assert!(intents.iter().all(Intent::is_parked));
 
-        // The bare read now shows parked rows and reads calm (exit 0).
         let read = dispatch(&dead_api(), &store, None, None, false, false, "false")
             .await
             .unwrap();
@@ -1195,7 +1115,6 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_refusals_exit_one_and_change_nothing() {
-        // Unknown id.
         let dir = scratch();
         let store = seeded(&dir, 1);
         let outcome = dispatch(
@@ -1212,7 +1131,6 @@ mod tests {
         assert_eq!(outcome.code, 1);
         assert!(outcome.err[0].contains("not waiting on a divergence"));
 
-        // Offline keep-local: resolving needs the wire; the intent stays.
         let dir = scratch();
         let (store, id) = seeded_diverged_start(&dir);
         let outcome = dispatch(
@@ -1270,8 +1188,6 @@ mod tests {
         assert_eq!(v["parked"], 1);
         assert_eq!(v["intents"][0]["problem"]["status"], 409);
         assert_eq!(v["intents"][0]["problem"]["title"], "Timer already running");
-        // The coded conflict is machine-readable: switch on `code`, read the
-        // extensions — no prose parsing.
         assert_eq!(v["intents"][0]["problem"]["code"], "timer-already-running");
         assert_eq!(
             v["intents"][0]["problem"]["conflict"]["current"]["label"],
@@ -1332,9 +1248,6 @@ mod tests {
         assert_eq!(outcome.out, vec!["nothing to replay · 1 parked for review"]);
     }
 
-    // ------------------------- the rejected write's gestures (#109) --------
-
-    /// A diverged `SegmentCreate` — the §Diverged · rejected segment case.
     fn seeded_rejected_segment(dir: &std::path::Path) -> (QueueStore, u64) {
         let store = QueueStore::at(dir.join("queue.json"));
         let seg = store
@@ -1348,9 +1261,6 @@ mod tests {
         (store, seg.id)
     }
 
-    /// The headless edit-retry round-trip, fake `$EDITOR` and all: the script
-    /// rewrites the buffer's times, the corrected segment replays on the wire,
-    /// and the queue drains.
     #[cfg(unix)]
     #[tokio::test]
     async fn resolve_edit_roundtrips_through_the_editor_and_retries() {
@@ -1358,7 +1268,6 @@ mod tests {
         let dir = scratch();
         let (store, id) = seeded_rejected_segment(&dir);
 
-        // A fake editor that replaces the seeded buffer with corrected times.
         let editor = dir.join("fake-editor.sh");
         std::fs::write(
             &editor,
@@ -1400,8 +1309,6 @@ mod tests {
         );
     }
 
-    /// An aborted edit (`:cq` — the editor exits non-zero) changes nothing:
-    /// the intent stays diverged and the verb refuses.
     #[tokio::test]
     async fn resolve_edit_abort_keeps_the_intent_diverged() {
         let dir = scratch();
@@ -1432,7 +1339,6 @@ mod tests {
         let dir = scratch();
         let (store, id) = seeded_rejected_segment(&dir);
 
-        // Without --force: refused — drop is explicit AND confirmed.
         let outcome = dispatch(
             &dead_api(),
             &store,
@@ -1448,7 +1354,6 @@ mod tests {
         assert!(outcome.err[0].contains("--force"), "{}", outcome.err[0]);
         assert_eq!(store.intents().unwrap().len(), 1, "nothing left the queue");
 
-        // With --force: gone, explicitly — and the line says nothing was written.
         let outcome = dispatch(
             &dead_api(),
             &store,
@@ -1470,15 +1375,11 @@ mod tests {
         );
     }
 
-    /// The standalone `engineer queue drop <id>` — the headless twin of the
-    /// board's `x`. Same engine and confirmation contract as `resolve <id>
-    /// --drop`: refused without `--force`, then the intent leaves the queue.
     #[tokio::test]
     async fn standalone_drop_requires_force_then_removes_the_intent() {
         let dir = scratch();
         let (store, id) = seeded_rejected_segment(&dir);
 
-        // Without --force: refused, nothing changes.
         let outcome = dispatch(
             &dead_api(),
             &store,
@@ -1494,7 +1395,6 @@ mod tests {
         assert!(outcome.err[0].contains("--force"), "{}", outcome.err[0]);
         assert_eq!(store.intents().unwrap().len(), 1, "nothing left the queue");
 
-        // With --force: gone, explicitly — the same JSON shape resolve --drop emits.
         let outcome = dispatch(
             &dead_api(),
             &store,
@@ -1513,8 +1413,6 @@ mod tests {
         assert!(store.intents().unwrap().is_empty(), "the standalone drop");
     }
 
-    /// `drop <id>` on a non-diverged intent refuses through the shared engine
-    /// (drop is a divergence gesture) — the same refusal `resolve --drop` gives.
     #[tokio::test]
     async fn standalone_drop_refuses_a_pending_intent() {
         let dir = scratch();
@@ -1567,7 +1465,6 @@ mod tests {
         assert_eq!(intents.len(), 1, "kept in the queue");
         assert!(intents[0].is_parked());
 
-        // The bare read now shows the parked row and exits calm.
         let read = dispatch(&dead_api(), &store, None, None, false, false, "false")
             .await
             .unwrap();
