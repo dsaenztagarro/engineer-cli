@@ -1,27 +1,4 @@
-//! Inbox — the draft-triage screen over the assisted-capture automations
-//! (`/api/v1/automations/tasks`, assisted-capture.dc.html). Phase 2 of
-//! assisted-capture: the headless verbs shipped in #90 (`engineer inbox`), this
-//! is their face. One screen, two stages:
-//!
-//!   list  — §Inbox · pending: the pending drafts in urgency order (expiring
-//!           first), the Review screen's triage grammar wholesale — a `N pending`
-//!           count header, full-row `▌` selection, `j`/`k`, and a per-row due
-//!           badge that reads `expires_at` instead of a review's due date.
-//!   draft — §Inbox · draft: one draft opened — the prompt (the question), the
-//!           proposed context, the entity, and the expiry — before it's written.
-//!
-//! The three verbs each map to one server call: **accept** (`⏎` on the draft →
-//! `complete`, which mints the activity), **reject** (`x` → the optional-reason
-//! capture, §Inbox · reject), **acknowledge** (`a` → keep for later). Each is a
-//! fire-then-re-read verb: the write leaves the client's hands, and the screen
-//! re-reads the pending scope after it lands (a draft leaves the scope, so the
-//! client never trusts a cached row). A stale-draft `422` surfaces as "already
-//! moved on" via the notify tile, not a crash.
-//!
-//! The verbs are **live-only** — not routed through `QueuedClient` (unlike the
-//! timer/week writes). An offline accept can't mint the activity or confirm the
-//! `422`, so a synthesized outcome would be a lie; the honest move is a clear
-//! offline refusal. See the epic #118 decision log.
+//! Inbox — the draft-triage screen over the assisted-capture automations.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use jiff::Timestamp;
@@ -40,11 +17,7 @@ use crate::ui::notify::Level;
 use crate::ui::panel::{render_panel_state, PanelFailure, PanelState};
 use crate::ui::{layout::bordered, theme, widgets};
 
-/// A draft that expires within this window earns the escalated amber badge — the
-/// design's "escalates once" rule (the ambient count's `▾`, the row's warn pill).
 const EXPIRING_SOON_SECS: i64 = 48 * 3600;
-/// Under this window a draft is *urgent* — the danger badge (the design's red
-/// "3h left" treatment).
 const EXPIRING_URGENT_SECS: i64 = 12 * 3600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,17 +26,14 @@ pub enum Stage {
     Draft,
 }
 
-/// The optional-reason capture opened by `x` (§Inbox · reject). The reject fires
-/// once, on commit — a single terminal `PATCH :reject` — so `Esc` can cancel it
-/// outright (there is no un-reject verb to undo a fired one).
+/// The optional-reason capture opened by `x`. Nothing fires until `⏎`: there
+/// is no un-reject verb to undo a fired reject.
 struct Rejecting {
     id: i64,
-    /// The draft's prompt, kept for the reject panel's summary line.
     prompt: String,
     reason: String,
 }
 
-/// One triage verb, carrying what its server call needs.
 enum Verb {
     Accept,
     Acknowledge,
@@ -71,7 +41,6 @@ enum Verb {
 }
 
 impl Verb {
-    /// The shared past-tense outcome word (one vocabulary with `engineer inbox`).
     fn word(&self) -> &'static str {
         match self {
             Verb::Accept => ACCEPTED,
@@ -82,18 +51,12 @@ impl Verb {
 }
 
 pub struct Inbox {
-    /// Pending drafts, sorted expiring-first (the queue the design sorts on).
     tasks: Vec<Task>,
     selected: usize,
     loading: bool,
-    /// Tier-2 state: set when the read failed, so an empty inbox (no drafts) and
-    /// a failed fetch render differently. Cleared on the next successful load.
     failure: Option<PanelFailure>,
     stage: Stage,
-    /// `Some` while the reject-reason capture is open (modal over the current
-    /// stage) — owns keys via `intercept_key`.
     rejecting: Option<Rejecting>,
-    /// A triage verb is in flight — guards a second fire before the re-read.
     in_flight: bool,
 }
 
@@ -128,8 +91,6 @@ impl Inbox {
                 Ok(tasks) => {
                     let _ = tx.send(Action::InboxLoaded(tasks));
                 }
-                // A 401 routes to re-auth; every other failure surfaces as
-                // itself in the Tier-2 panel — never a calm "Inbox clear".
                 Err(ApiError::Unauthorized) => {
                     let _ = tx.send(Action::SessionExpired);
                 }
@@ -143,9 +104,8 @@ impl Inbox {
         });
     }
 
-    /// Fire a triage verb against the *live* server (never the queue) and, on a
-    /// resolved outcome, re-read the pending scope. A `422` is the stale-draft
-    /// soft re-read; a transport failure is the honest offline refusal.
+    /// Live-only, never the queue: offline, an accept can't mint the activity or
+    /// learn of a stale-draft `422`, so any synthesized outcome would be a lie.
     fn spawn_verb(&self, verb: Verb, id: i64, api: &ApiClient, tx: &UnboundedSender<Action>) {
         let (api, tx) = (api.clone(), tx.clone());
         let word = verb.word();
@@ -161,7 +121,6 @@ impl Inbox {
                         level: Level::Success,
                         text: format!("{word} · draft #{id}"),
                     });
-                    // Fire-then-re-read: the draft left the scope — re-read it.
                     let _ = tx.send(Action::RefreshInbox);
                 }
                 Err(ApiError::Problem { status: 422, .. }) => {
@@ -189,7 +148,6 @@ impl Inbox {
         });
     }
 
-    /// The reject-reason capture owns keys before the global keymap while open.
     pub fn intercept_key(&mut self, key: KeyEvent) -> Option<Action> {
         if self.rejecting.is_some() {
             return match key.code {
@@ -211,8 +169,6 @@ impl Inbox {
     ) -> Option<(Level, String)> {
         match action {
             Action::InboxLoaded(mut tasks) => {
-                // Expiring-first: soonest expiry leads; drafts with no expiry sink
-                // to the bottom (the pipeline's problem to re-raise, not ours).
                 tasks.sort_by_key(|t| t.expires_at.map(|e| e.as_second()).unwrap_or(i64::MAX));
                 self.tasks = tasks;
                 self.loading = false;
@@ -233,8 +189,6 @@ impl Inbox {
                 });
             }
             Action::RefreshInbox => {
-                // Re-read resets to the list — the draft that was acted on is
-                // gone from the scope, so the detail it filled is stale.
                 self.loading = true;
                 self.stage = Stage::List;
                 self.rejecting = None;
@@ -295,8 +249,6 @@ impl Inbox {
         None
     }
 
-    /// Fire an accept/ack verb on the selected draft, guarded against a double
-    /// fire while one is still in flight.
     fn fire(&mut self, verb: Verb, api: &ApiClient, tx: &UnboundedSender<Action>) {
         if self.in_flight {
             return;
@@ -345,10 +297,6 @@ impl Inbox {
         let block = bordered(format!("Inbox · {pending} pending"));
 
         if self.tasks.is_empty() {
-            // Failed and loading route through the shared Tier-2 atom so a read
-            // that failed is loud (never dressed up as a calm "Inbox clear");
-            // a genuinely-empty inbox keeps its bespoke §Inbox · zero success
-            // state (inbox zero is a success, not a void).
             if let Some(f) = &self.failure {
                 render_panel_state(frame, area, block, &PanelState::Failed(f.clone()));
             } else if self.loading {
@@ -359,7 +307,6 @@ impl Inbox {
             return;
         }
 
-        // The chunks: the count header, then the queue table.
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(1)])
@@ -402,7 +349,6 @@ impl Inbox {
         let block = bordered("Inbox · draft");
         let mut lines: Vec<Line> = Vec::new();
 
-        // Position + expiry breadcrumb (design: "1 of 3 pending · 2d left").
         let mut crumb = vec![Span::styled(
             format!("{} of {} pending", self.selected + 1, self.tasks.len()),
             theme::muted(),
@@ -415,7 +361,6 @@ impl Inbox {
         lines.push(Line::from(crumb));
         lines.push(Line::from(""));
 
-        // The prompt — the question the automation asks before it writes.
         lines.push(Line::from(Span::styled(
             (t.automation.as_deref().unwrap_or("automation")).to_string() + " proposes",
             theme::header(),
@@ -426,7 +371,6 @@ impl Inbox {
         )));
         lines.push(Line::from(""));
 
-        // The proposed activity — the entity it targets, and the context fields.
         if let Some(name) = t.entity.as_ref().and_then(|e| e.name.as_deref()) {
             let kind = t
                 .entity
@@ -481,8 +425,6 @@ impl Inbox {
     }
 }
 
-/// The `N pending` count header — the Review dashboard's count grammar, reading
-/// `expires_at` instead of a due date, so drafts are read expiring-first.
 fn count_header(pending: usize) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{pending} pending"), theme::header()),
@@ -490,7 +432,6 @@ fn count_header(pending: usize) -> Line<'static> {
     ])
 }
 
-/// §Inbox · zero — the calm empty state. Inbox zero is a success, not a void.
 fn render_zero(frame: &mut Frame, area: Rect, block: ratatui::widgets::Block<'static>) {
     let lines = vec![
         Line::from(""),
@@ -518,11 +459,8 @@ fn render_zero(frame: &mut Frame, area: Rect, block: ratatui::widgets::Block<'st
     );
 }
 
-/// The reject panel (§Inbox · reject) — the selected draft, then the optional
-/// reason field. Reject fires on `⏎`; `Esc` cancels (no un-reject verb exists).
 fn render_reject(frame: &mut Frame, area: Rect, r: &Rejecting) {
     let mut lines: Vec<Line> = Vec::new();
-    // The draft being rejected, in the selection idiom.
     lines.push(Line::from(Span::styled(
         format!("▌ {}", r.prompt),
         theme::selection(),
@@ -557,8 +495,6 @@ fn render_reject(frame: &mut Frame, area: Rect, r: &Rejecting) {
     );
 }
 
-/// One pending-list row: the due badge, the proposed draft, the source, and what
-/// it clustered from (the entity).
 fn draft_row(t: &Task) -> Row<'static> {
     Row::new(vec![
         Cell::from(Line::from(due_badge(t))),
@@ -574,15 +510,10 @@ fn draft_row(t: &Task) -> Row<'static> {
     ])
 }
 
-/// The proposed-draft text — the prompt (the human question), or a calm
-/// placeholder when the payload carries none.
 fn draft_prompt(t: &Task) -> &str {
     t.prompt.as_deref().unwrap_or("(draft)")
 }
 
-/// The `expires_at`-driven due badge (`status_pill` idiom): a black-on-colour
-/// pill escalating with urgency — red under 12h, amber under 48h — else a muted
-/// "Nd left". Empty when the draft carries no expiry.
 fn due_badge(t: &Task) -> Span<'static> {
     let Some(expires) = t.expires_at else {
         return Span::raw(String::new());
@@ -610,7 +541,6 @@ fn due_badge(t: &Task) -> Span<'static> {
     }
 }
 
-/// A compact "time left" read: days at/over 48h, else hours, else minutes.
 fn left_text(secs: i64) -> String {
     if secs >= 48 * 3600 {
         format!("{}d", secs / 86_400)
@@ -621,9 +551,6 @@ fn left_text(secs: i64) -> String {
     }
 }
 
-/// The proposed context as `(label, value)` pairs for the draft detail. A JSON
-/// object renders one field per key (the proposed segment); anything else prints
-/// compact under a single `context` label. Nothing shows for a null context.
 fn context_fields(t: &Task) -> Vec<(String, String)> {
     match &t.context {
         serde_json::Value::Null => Vec::new(),
@@ -632,7 +559,6 @@ fn context_fields(t: &Task) -> Vec<(String, String)> {
     }
 }
 
-/// A JSON scalar as a bare string (no quotes on strings); containers compact.
 fn scalar(v: &serde_json::Value) -> String {
     match v {
         serde_json::Value::String(s) => s.clone(),
@@ -641,8 +567,6 @@ fn scalar(v: &serde_json::Value) -> String {
     }
 }
 
-/// Whether a pending draft expires within the "soon" window — drives the ambient
-/// count's escalation (Home's `▾` chip) and the row's warn/danger badge.
 pub fn is_expiring_soon(t: &Task) -> bool {
     match t.expires_at {
         Some(e) => e.as_second() - Timestamp::now().as_second() < EXPIRING_SOON_SECS,
@@ -733,7 +657,6 @@ mod tests {
             ]),
         )
         .await;
-        // Soonest expiry leads.
         assert_eq!(s.tasks.iter().map(|t| t.id).collect::<Vec<_>>(), [2, 3, 1]);
         assert!(!s.loading);
     }
@@ -890,7 +813,6 @@ mod tests {
         .await;
         s.handle(Action::InboxAccept, &api, &tx).await;
         assert!(s.in_flight);
-        // The verb fires and asks for a re-read.
         assert!(recv_matching(&mut rx, |a| matches!(a, Action::RefreshInbox)).await);
     }
 
@@ -968,13 +890,16 @@ mod tests {
         )
         .await;
         s.handle(Action::InboxAccept, &api, &tx).await;
-        // A soft re-read: a warning tile, then the pending scope refreshes.
         assert!(
             recv_matching(&mut rx, |a| matches!(
                 a,
                 Action::Notify { level: Level::Warning, text } if text.contains("already moved on")
             ))
             .await
+        );
+        assert!(
+            recv_matching(&mut rx, |a| matches!(a, Action::RefreshInbox)).await,
+            "a stale draft re-reads the pending scope"
         );
     }
 
@@ -1084,6 +1009,10 @@ mod tests {
         assert!(text.contains("Distributed Systems"), "entity: {text}");
         assert!(text.contains("build"), "context field: {text}");
         assert!(text.contains("git proposes"), "automation header: {text}");
+        assert!(
+            text.contains("1 of 1 pending"),
+            "position breadcrumb: {text}"
+        );
     }
 
     #[tokio::test]
@@ -1100,5 +1029,112 @@ mod tests {
         let text = render(&mut s);
         assert!(text.contains("Reject this draft"), "reject copy: {text}");
         assert!(text.contains("reason"), "reason field: {text}");
+    }
+
+    // ---- the due badge reads expires_at ----
+
+    #[test]
+    fn the_due_badge_escalates_as_expires_at_nears() {
+        let bg = |hours: Option<i64>| due_badge(&task(1, "p", hours)).style.bg;
+        assert_eq!(bg(Some(3)), Some(theme::DANGER), "under 12h is urgent");
+        assert_eq!(bg(Some(24)), Some(theme::WARN), "under 48h is soon");
+        assert_eq!(bg(Some(100)), None, "further out is a muted read");
+        assert_eq!(due_badge(&task(1, "p", Some(100))).content, "4d left");
+        assert_eq!(due_badge(&task(1, "p", Some(-1))).content, " expired ");
+        assert!(
+            due_badge(&task(1, "p", None)).content.is_empty(),
+            "no expiry, no badge"
+        );
+    }
+
+    #[test]
+    fn a_draft_expiring_within_48h_counts_as_expiring_soon() {
+        assert!(is_expiring_soon(&task(1, "p", Some(47))));
+        assert!(!is_expiring_soon(&task(1, "p", Some(49))));
+        assert!(!is_expiring_soon(&task(1, "p", None)));
+    }
+
+    #[tokio::test]
+    async fn acknowledge_keeps_the_draft_without_completing_or_rejecting_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/automations/tasks/7/acknowledge"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 7, "status": "pending"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        for decision in ["complete", "reject"] {
+            Mock::given(method("PATCH"))
+                .and(path(format!("/api/v1/automations/tasks/7/{decision}")))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&server)
+                .await;
+        }
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Inbox::default();
+        s.handle(
+            Action::InboxLoaded(vec![task(7, "build", Some(3))]),
+            &api,
+            &tx,
+        )
+        .await;
+        s.handle(Action::InboxAck, &api, &tx).await;
+        assert!(
+            recv_matching(&mut rx, |a| matches!(
+                a,
+                Action::Notify { level: Level::Success, text } if text.starts_with(ACKNOWLEDGED)
+            ))
+            .await
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn a_second_verb_while_one_is_in_flight_does_not_fire() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/automations/tasks/7/complete"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "id": 7, "status": "completed" }))
+                    .set_delay(Duration::from_millis(200)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Inbox::default();
+        s.handle(
+            Action::InboxLoaded(vec![task(7, "build", Some(3))]),
+            &api,
+            &tx,
+        )
+        .await;
+        s.handle(Action::InboxAccept, &api, &tx).await;
+        s.handle(Action::InboxAccept, &api, &tx).await;
+        assert!(recv_matching(&mut rx, |a| matches!(a, Action::RefreshInbox)).await);
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn a_reread_returns_to_the_list_and_drops_an_open_reject() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::InboxLoaded(vec![task(7, "build", Some(3))]),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::InboxOpen).await;
+        feed(&mut s, &api, &tx, Action::InboxRejectBegin).await;
+        feed(&mut s, &api, &tx, Action::RefreshInbox).await;
+        assert_eq!(s.stage, Stage::List);
+        assert!(s.rejecting.is_none());
     }
 }

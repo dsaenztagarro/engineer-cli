@@ -1,36 +1,16 @@
-//! `GET /api/v1/today` — the composed daily-loop aggregate (home.dc.html §ONE READ).
-//!
-//! One read-only, unpaginated payload the TUI Home renders in a single pass
-//! instead of N per-resource calls. Every block *composes* the derivation that
-//! already owns it (the week story, the timer serializer, the review dashboard
-//! counts, the next-unread chapter, the pace fold, today's segment sum), so it
-//! can never disagree with the per-resource endpoints. Nothing is stored — a
-//! single object (not a paginated `List`) comes back.
-//!
-//! The contract is additive-only (engineer ADR 0027): unknown keys are ignored
-//! and absent keys `serde`-default, so the client survives the payload growing
-//! under it. The `timer` block is byte-identical to `GET /api/v1/timer`, so the
-//! shared [`Timer`] struct decodes it verbatim. Read `date.day`, not the
-//! deprecated `study_day` alias (ADR 0032).
+//! `GET /api/v1/today` — Home's composed daily-loop aggregate, additive-only (engineer ADR 0027).
 #![allow(dead_code)]
 
 use serde::Deserialize;
 
 use super::{ApiClient, ApiError, Timer};
 
-/// Top-level payload of `GET /api/v1/today`.
-///
-/// `date` and `timer` are core and always present; the remaining blocks
-/// `serde`-default so a minimal payload (idle timer, nothing planned, on pace)
-/// still decodes. `pace` is `None` when nothing trails — silence is the on-pace
-/// state, baked into the API rather than computed here.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Today {
     pub date: DateBlock,
-    /// The live timer, decoded by the shared [`Timer`] struct — `running: false`
-    /// when idle. Never a second timer shape.
+    /// Byte-identical to `GET /api/v1/timer`, so the shared [`Timer`] decodes it —
+    /// never a second timer shape.
     pub timer: Timer,
-    /// The worst-behind target, pre-folded; `None` when nothing trails.
     #[serde(default)]
     pub pace: Option<Pace>,
     #[serde(default)]
@@ -39,65 +19,47 @@ pub struct Today {
     pub totals: Totals,
     #[serde(default)]
     pub review: Review,
-    /// Mid-chapter books, most-recently-touched first.
+    /// Most-recently-touched first, as served.
     #[serde(default)]
     pub reading: Vec<ReadingItem>,
 }
 
-/// The one clock: `day` is the ISO date under engineer's 4 AM study-day
-/// boundary, `week` a Monday-first `YYYY-Www` id — both computed server-side, so
-/// Home agrees with the header cell and Progress to the minute.
+/// Computed server-side (the 4 AM study-day boundary, Monday-first weeks), so
+/// Home agrees with the header cell and Progress — never derive them locally.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DateBlock {
+    /// Not the deprecated `study_day` alias (engineer ADR 0032).
     pub day: jiff::civil::Date,
     pub weekday: String,
     pub week: String,
 }
 
-/// The pace fold: the single most-behind target named by scope, plus how many
-/// trail. Only ever present when the week is behind — `met`/`on_pace` collapse
-/// to a `null` `pace` block. There is no red pace state.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Pace {
-    /// How many targets trail — the "N targets trailing" tail.
     pub behind_count: u32,
     pub worst: Worst,
 }
 
-/// The single worst-behind target. `delta_minutes` is how far behind (positive
-/// minutes short); `scope_name` is the human label (a domain, path, or bloom
-/// level) to render.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Worst {
     pub target_id: i64,
     pub axis: String,
-    /// The raw scope value (domain id or enum string); `scope_name` is the human
-    /// label Home renders.
+    /// A domain id or an enum string, by `axis`.
     #[serde(default)]
     pub scope_value: serde_json::Value,
     pub scope_name: String,
-    /// Minutes behind. Modeled `i64` for parity with the pace derivation, though
-    /// a behind target is always positive here. This is the only quantity the
-    /// fold carries — the full now-tick meter (fill / expected / target) lives on
-    /// `GET /api/v1/progress` (the design defers "the full meters" to `g p`).
+    /// `i64` for parity with the pace derivation, though always positive here.
     pub delta_minutes: i64,
 }
 
-/// Today's plan slice — the same `WeekStory` items the week canvas reads.
-/// Empty `items` means nothing is planned for today (a calm invitation, not a
-/// blank panel).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Plan {
     #[serde(default)]
     pub items: Vec<PlanItem>,
-    /// How many items are still outstanding — the "N left" / "left to plan" tail.
     #[serde(default)]
     pub left_count: u32,
 }
 
-/// One planned item. `state` is the lifecycle word the row glyph keys off
-/// (`planned` `○` / `live` `●` / `done` `✓` / `left` `·`); `moved_from` is set
-/// when the item was carried over from an earlier day.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlanItem {
     pub id: i64,
@@ -106,29 +68,23 @@ pub struct PlanItem {
     pub status: String,
     #[serde(default)]
     pub state: String,
-    /// The activity kind (`read`/`write`/`review`/…) the plan row labels the
-    /// item by. Additive (ADR 0027): absent on payloads that don't carry it, so
-    /// the row simply drops the label.
     #[serde(default)]
     pub kind: Option<String>,
     #[serde(default)]
     pub size_minutes: u32,
     #[serde(default)]
     pub logged_minutes: u32,
-    /// A prior day this item was carried over from (`"Sun"`), else `None`.
     #[serde(default)]
     pub moved_from: Option<String>,
 }
 
-/// Today's completed-segment minutes, plan-agnostic (unplanned work counts).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Totals {
     #[serde(default)]
     pub logged_minutes: u32,
 }
 
-/// Review triage counts only — the queue itself stays on
-/// `GET /api/v1/review/dashboard`. `due_count` includes the stale ones.
+/// `due_count` includes the stale ones.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Review {
     #[serde(default)]
@@ -139,15 +95,10 @@ pub struct Review {
     pub est_minutes: i64,
 }
 
-/// A mid-chapter book with where-you-are: a superset of the reading list, adding
-/// the next unread chapter. `progress_percent`/`chapters_total` default when the
-/// server can't derive them; `next_chapter` is `None` once the book is finished.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReadingItem {
     pub id: i64,
     pub title: String,
-    /// The author, when the payload carries it — additive (ADR 0027), so the
-    /// row drops the `· author` tail when it's absent.
     #[serde(default)]
     pub author: Option<String>,
     #[serde(default)]
@@ -158,7 +109,6 @@ pub struct ReadingItem {
     pub next_chapter: Option<NextChapter>,
 }
 
-/// The next unread chapter — where the reader left off.
 #[derive(Debug, Clone, Deserialize)]
 pub struct NextChapter {
     pub number: u32,
@@ -166,7 +116,6 @@ pub struct NextChapter {
 }
 
 impl ApiClient {
-    /// Fetch the composed daily-loop aggregate that powers Home in one pass.
     pub async fn today(&self) -> Result<Today, ApiError> {
         self.get("/api/v1/today", &[]).await
     }
@@ -183,9 +132,7 @@ mod tests {
         ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into())
     }
 
-    /// A full payload. The `timer` block uses the real `GET /api/v1/timer` field
-    /// names (`elapsed_seconds`/`label`) it is byte-identical to — not the
-    /// design mock's `elapsed_s`/`kind` shorthand.
+    /// The `timer` block uses the real `GET /api/v1/timer` field names.
     fn sample_body() -> serde_json::Value {
         serde_json::json!({
             "date": { "day": "2026-07-06", "weekday": "mon", "week": "2026-W28" },
@@ -249,7 +196,6 @@ mod tests {
 
         assert_eq!(today.date.day, jiff::civil::date(2026, 7, 6));
         assert_eq!(today.date.week, "2026-W28");
-        // The timer block is the shared `Timer` struct, decoded verbatim.
         assert!(today.timer.running);
         assert_eq!(today.timer.elapsed_seconds, Some(1453));
 
@@ -275,8 +221,6 @@ mod tests {
         assert_eq!(book.next_chapter.as_ref().unwrap().number, 7);
     }
 
-    /// Additive-only contract (ADR 0027): a minimal payload — idle timer, `pace`
-    /// null, every optional block absent — must still decode via serde-defaults.
     #[tokio::test]
     async fn minimal_payload_decodes_via_defaults() {
         let server = MockServer::start().await;
@@ -318,5 +262,24 @@ mod tests {
 
         let err = client(&server).today().await.unwrap_err();
         assert!(matches!(err, ApiError::Unauthorized));
+    }
+
+    #[tokio::test]
+    async fn the_day_is_date_day_not_the_study_day_alias_and_unknown_keys_are_ignored() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/today"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "date": { "day": "2026-07-06", "study_day": "2026-07-05",
+                          "weekday": "mon", "week": "2026-W28" },
+                "timer": { "running": false },
+                "a_block_added_later": { "anything": [1, 2, 3] }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let today = client(&server).today().await.unwrap();
+        assert_eq!(today.date.day, jiff::civil::date(2026, 7, 6));
     }
 }

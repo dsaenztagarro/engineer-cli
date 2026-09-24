@@ -2,12 +2,9 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// The stable conflict-code vocabulary (engineer#806, ADR 0036). Codes are
-/// contract: the server renames none of these, so matching on them is safe
-/// where matching on `title`/`detail` prose would be brittle. Recorded in
-/// full even though only the timer codes have consumers today — the target
-/// and idempotency codes are parsed and awaiting their adoption (the
-/// progress epic), hence the dead-code allowance.
+/// The stable conflict-code vocabulary (engineer ADR 0036). Codes are contract,
+/// so match on them, never on `title`/`detail` prose. Recorded in full although
+/// not every code has a consumer, hence the dead-code allowance.
 #[allow(dead_code)]
 pub mod codes {
     /// 409 on a replayed start: a timer is already running server-side. Comes
@@ -26,12 +23,8 @@ pub mod codes {
     pub const IDEMPOTENCY_KEY_REUSE: &str = "idempotency-key-reuse";
 }
 
-/// RFC 7807 problem+json with the Engineer-specific `errors[]` extension for
-/// 422s, plus the coded-conflict members (ADR 0036): the stable `code` and the
-/// typed extensions, which flatten into [`ConflictInfo`] since they all live at
-/// the problem's top level on the wire. `code` is its own field — orthogonal to
-/// the extensions, so a code with no extensions still parses to an empty
-/// [`ConflictInfo`].
+/// The coded-conflict extensions live at the problem's top level on the wire,
+/// hence the flatten into [`ConflictInfo`].
 #[derive(Debug, Deserialize, Clone)]
 struct Problem {
     #[serde(rename = "type")]
@@ -41,7 +34,6 @@ struct Problem {
     detail: Option<String>,
     #[serde(default)]
     errors: Vec<FieldError>,
-    /// The stable conflict code (see [`codes`]), when the server sent one.
     #[serde(default)]
     code: Option<String>,
     #[serde(flatten)]
@@ -56,14 +48,8 @@ pub struct FieldError {
     pub detail: String,
 }
 
-/// A coded conflict's RFC 7807 §3.2 extension members (ADR 0036) — the server
-/// state a client resolves with, no second read. The `code` itself is not
-/// here: it rides alongside as its own field (on `ApiError::Problem` /
-/// `IntentState::Diverged`), so a code carrying no extensions still captures as
-/// empty (see [`is_empty`](ConflictInfo::is_empty)). Every field is
-/// optional/defaulted so code-less problems and unknown codes parse to an empty
-/// capture, never an error. `Serialize` for the same reason as [`FieldError`]:
-/// a diverged intent persists its conflict verbatim.
+/// A coded conflict's RFC 7807 extension members (engineer ADR 0036). The `code`
+/// rides beside it, not in it. `Serialize` for the same reason as [`FieldError`].
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
 pub struct ConflictInfo {
     /// `timer-already-running`: the running server session.
@@ -82,18 +68,13 @@ pub struct ConflictInfo {
 }
 
 impl ConflictInfo {
-    /// True when no extension member is present — the empty capture a code-less
-    /// problem, or a code that carries no extensions, parses to.
     pub fn is_empty(&self) -> bool {
         self == &Self::default()
     }
 }
 
-/// The `current` snapshot inside `timer-already-running` — a lean shape, not
-/// `api::Timer`: the conflict carries exactly five members (ADR 0036) and no
-/// `running` flag, so reusing the full read struct would misparse. All
-/// optional: the panel renders what arrived, never refuses the whole problem
-/// over one missing member.
+/// Not `api::Timer`: the conflict carries exactly these five members and no
+/// `running` flag, so reusing the full read struct would misparse.
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
 pub struct ConflictTimer {
     #[serde(default)]
@@ -119,11 +100,8 @@ pub enum ApiError {
         detail: String,
         type_uri: Option<String>,
         errors: Vec<FieldError>,
-        /// The stable conflict code (see [`codes`]), when the server sent one.
-        /// `None` on legacy problems and non-conflict errors — every consumer
-        /// must keep working without it.
+        /// `None` on legacy problems — every consumer must keep working without it.
         code: Option<String>,
-        /// The coded conflict's extension members; empty when there are none.
         /// Boxed so a coded problem's ~200-byte payload doesn't bloat every
         /// `Result<_, ApiError>` on the hot read/write paths (clippy's
         /// `result_large_err`); the box is on the cold error path only.
@@ -171,11 +149,8 @@ impl ApiError {
         }
     }
 
-    /// The stable conflict code, when this is a coded problem. The queue path
-    /// reads the code from the persisted `IntentState::Diverged` instead; this
-    /// accessor is for callers that hold the live `ApiError` — the Progress
-    /// target writes route a `target-version-closed` (Self::live_target_id) here,
-    /// and the replay re-addresses a diverged adjust by it.
+    /// For callers holding the live error; the queue reads the code from the
+    /// persisted `IntentState::Diverged` instead.
     pub fn code(&self) -> Option<&str> {
         match self {
             Self::Problem { code, .. } => code.as_deref(),
@@ -183,11 +158,8 @@ impl ApiError {
         }
     }
 
-    /// The live lineage row a `target-version-closed` conflict points at (ADR
-    /// 0026) — the id a replayed adjust re-addresses to, so the gesture (this
-    /// many hours on this lineage) still lands rather than diverging. `None` on
-    /// every other error, and on a closed version whose lineage is fully retired
-    /// (no live row left — a genuine divergence).
+    /// The id a replayed adjust re-addresses to (engineer ADR 0026). `None` also
+    /// when the lineage is fully retired — a genuine divergence.
     pub fn live_target_id(&self) -> Option<i64> {
         match self {
             Self::Problem { conflict, .. } => conflict.live_target_id,
@@ -238,7 +210,7 @@ mod tests {
         }
     }
 
-    // --- the coded-conflict vocabulary (engineer#806, ADR 0036) -------------
+    // --- the coded-conflict vocabulary (engineer ADR 0036) ------------------
     // Fixtures mirror the shipped openapi.yaml examples byte for byte where it
     // shows one.
 
