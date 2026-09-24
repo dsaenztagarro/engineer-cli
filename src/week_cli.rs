@@ -1,10 +1,5 @@
-//! Headless `engineer week` (the planned-vs-done readout), `engineer week
-//! reflect` (the `$EDITOR` retro reflection write), and `engineer plan` (declare
-//! a plan item): a readout, a one-liner, and one stored line — not a planning
-//! canvas (ADR 0002), each bound by the headless contract (ADR 0003). The
-//! reflection persists through the v1 week-note route (dsaenztagarro/engineer#805,
-//! engineer PR #807), routed through `QueuedClient` so an offline write queues
-//! like every other mutation (ADR 0004).
+//! Headless `engineer week`, `engineer week reflect` and `engineer plan` — a
+//! readout, a one-liner and one stored line, not a planning canvas (ADR 0002).
 
 use std::io::{IsTerminal, Read};
 
@@ -74,7 +69,6 @@ pub async fn run_week(cfg: &Config, args: WeekArgs) -> Result<i32> {
     }
 }
 
-/// The planned-vs-done readout (`engineer week [--week] [--json]`).
 async fn run_readout(cfg: &Config, week: Option<String>, json: bool) -> Result<i32> {
     let api = client(cfg).await?;
     let colored = colored();
@@ -96,10 +90,6 @@ async fn run_readout(cfg: &Config, week: Option<String>, json: bool) -> Result<i
     Ok(0)
 }
 
-/// The `$EDITOR` retro reflection write (`engineer week reflect`). The git-commit
-/// shape: `-m` inline, else piped stdin, else `$EDITOR` seeded from the current
-/// note (a TTY). An empty body clears the note. Routes through `QueuedClient`, so
-/// an offline write queues; `--json` echoes the persisted note.
 async fn run_reflect(
     cfg: &Config,
     week: Option<String>,
@@ -114,14 +104,10 @@ async fn run_reflect(
     let body = if let Some(message) = args.message {
         message
     } else if !std::io::stdin().is_terminal() {
-        // Piped stdin (`echo "…" | engineer week reflect`): the whole stream is
-        // the body, one trailing newline trimmed.
         let mut buf = String::new();
         std::io::stdin().read_to_string(&mut buf)?;
         buf.trim_end_matches('\n').to_string()
     } else {
-        // A TTY: open $EDITOR seeded with the current note (the git-commit
-        // pattern). A quit-without-write leaves the note untouched.
         let seed = match api.get_week(&iso).await {
             Ok(w) => w.note.body,
             Err(e) => {
@@ -172,10 +158,6 @@ impl Outcome {
     }
 }
 
-/// Persist the reflection through the queue seam and render the persisted note
-/// (`--json`) or a confirmation line. An empty body reads as a clear. Testable in
-/// isolation with a scratch `QueuedClient` (a dead address exercises the offline
-/// enqueue).
 async fn reflect_dispatch(
     queued: &QueuedClient,
     iso: &str,
@@ -236,11 +218,6 @@ pub async fn run_plan(cfg: &Config, args: PlanArgs) -> Result<i32> {
     Ok(outcome.code)
 }
 
-/// Declare a plan item through the queue seam and render the confirmation. An
-/// offline declare enqueues (a provisional negative-id row) and still exits 0
-/// with the `queued (offline)` tail; `--json` carries `queued` so a script can
-/// tell a synced declare from a deferred one. Testable in isolation with a
-/// scratch `QueuedClient` (a dead address exercises the offline enqueue).
 async fn plan_dispatch(
     queued: &QueuedClient,
     create: &ActivityCreate,
@@ -277,8 +254,6 @@ async fn plan_dispatch(
     }
 }
 
-/// The readout: a week header, one line per plan item with its state, and the
-/// planned-vs-done summary.
 fn human_week(week: &Week, colored: bool) -> Vec<String> {
     let mut out = Vec::new();
     let phase = if week.week.closed {
@@ -427,7 +402,7 @@ mod tests {
         assert_eq!(v["planned_vs_done"]["done"], 1);
     }
 
-    // --- reflect (#117): the retro write through the queue seam ---
+    // --- reflect: the retro write through the queue seam ---
 
     mod reflect {
         use super::super::reflect_dispatch;
@@ -543,8 +518,6 @@ mod tests {
 
         #[tokio::test]
         async fn a_dead_address_enqueues_the_write() {
-            // Offline: the write can't bounce — it queues, and the CLI still
-            // exits 0 with the `queued (offline)` tail.
             let dir = scratch();
             let queued = queued_at(&dead_api(), &dir);
             let out =
@@ -559,7 +532,7 @@ mod tests {
         }
     }
 
-    // --- plan add (#110): the declare through the queue seam ---
+    // --- plan add: the declare through the queue seam ---
 
     mod plan {
         use super::super::plan_dispatch;
@@ -639,8 +612,6 @@ mod tests {
 
         #[tokio::test]
         async fn a_dead_address_enqueues_the_declare() {
-            // Offline: the declare can't bounce — it queues, and the CLI still
-            // exits 0 with the `queued (offline)` tail.
             let dir = scratch();
             let queued = queued_at(&dead_api(), &dir);
             let on = "2026-07-13".parse().unwrap();

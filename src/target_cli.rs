@@ -1,14 +1,5 @@
 //! Headless `engineer target` — the one-shot twin of the Progress screen's
-//! target verbs (the TUI ↔ headless contract, ADR 0003).
-//!
-//! `list` / `declare` / `adjust` / `retire`, with `--json` (machine) and a plain
-//! per-line form (pipe). Output is plain when piped: ANSI colour is applied only
-//! on a TTY and never when NO_COLOR is set. Exit 0 on success, 1 on refusal
-//! (bad args, not found, or a closed target version), with the reason on stderr.
-//!
-//! Targets are append-only versions (engineer ADR 0026): `adjust` returns the
-//! LIVE row — its id may differ from the one addressed — and `retire` closes a
-//! lineage without ever deleting its history.
+//! target verbs (ADR 0003).
 
 use std::io::IsTerminal;
 
@@ -158,7 +149,6 @@ async fn list(
         return Ok(Outcome::ok(serde_json::Value::Array(arr).to_string()));
     }
     if targets.is_empty() {
-        // A teaching empty state, mirroring the Progress screen's.
         return Ok(Outcome::ok(
             "no targets — declare one: engineer target declare --domain <id> --hours <n>",
         ));
@@ -216,8 +206,6 @@ async fn declare(
     }
 }
 
-/// `· queued (offline)` — the provisional tail on a write that landed in the
-/// queue instead of on the server (the `engineer timer` idiom).
 fn queued_suffix(colored: bool) -> String {
     paint("  · queued (offline)", COLOR_MUTED, colored)
 }
@@ -242,7 +230,6 @@ async fn adjust(
                 }
                 return Ok(Outcome::ok(v.to_string()));
             }
-            // The adjust may have minted a successor version with a new id.
             let moved = if t.id != id {
                 format!(" · lineage now at target {}", t.id)
             } else {
@@ -297,8 +284,6 @@ async fn retire(
 
 // ---------------------------------------------------------------- shapes
 
-/// Turn the three scope flags into exactly one [`TargetScope`], or a refusal
-/// reason when zero or more than one is given.
 fn resolve_scope(
     domain: Option<i64>,
     kind: Option<String>,
@@ -328,7 +313,6 @@ fn state_word(t: &TargetRef) -> &'static str {
     }
 }
 
-/// `42  domain  distributed systems  6h/wk  active` — field order is stable.
 fn plain_target(t: &TargetRef, colored: bool) -> String {
     let word = state_word(t);
     let color = match word {
@@ -360,8 +344,6 @@ fn json_target(t: &TargetRef) -> serde_json::Value {
     })
 }
 
-/// Map an API error to a one-line refusal (exit 1) — the 404/422 cases carry a
-/// human `detail` the server already phrased (e.g. the closed-version hint).
 fn refuse_problem(e: ApiError) -> Outcome {
     match e {
         ApiError::Problem { status: 404, .. } => Outcome::refuse("no such target"),
@@ -379,7 +361,6 @@ fn problem_text(title: &str, detail: &str) -> String {
     }
 }
 
-/// Format weekly hours without a trailing `.0`: `6h`, but `2.5h` when fractional.
 fn fmt_hours(hours: f64) -> String {
     if hours.fract().abs() < 1e-9 {
         format!("{hours:.0}")
@@ -388,7 +369,7 @@ fn fmt_hours(hours: f64) -> String {
     }
 }
 
-// Terminal-palette 256 colours (docs/designs/README.md palette mapping).
+// Terminal-palette 256 colours.
 const COLOR_OK: u8 = 108; // success green
 const COLOR_ACCENT: u8 = 105; // accent indigo
 const COLOR_MUTED: u8 = 244;
@@ -413,7 +394,7 @@ mod tests {
     }
 
     /// A per-test scratch dir so the queue and read cache never touch the
-    /// shared XDG state (the `timer_cli` test idiom).
+    /// shared XDG state.
     fn scratch() -> std::path::PathBuf {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
@@ -608,7 +589,7 @@ mod tests {
         assert!(out.err[0].contains("Fetch the live target"));
     }
 
-    // ------------------------------------------------- offline writes (#111)
+    // ------------------------------------------------------ offline writes
 
     #[tokio::test]
     async fn offline_declare_queues_and_says_so() {

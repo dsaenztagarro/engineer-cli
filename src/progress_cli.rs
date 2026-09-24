@@ -1,12 +1,5 @@
 //! Headless `engineer progress` (alias `pace`) — the one-shot twin of the pace
-//! meters (the TUI ↔ headless contract, ADR 0003).
-//!
-//! Reuses the shipped `GET /api/v1/progress` read. Three shapes, like the timer:
-//! the bare form prints one greppable line per target plus a summary; `--json`
-//! emits the structured payload; `--short` is the single status-bar reduction.
-//! Output is plain when piped (ANSI only on a TTY, `NO_COLOR` honoured). Quiet by
-//! default — on-pace is calm, `behind` is as loud as it gets — mirrored in the
-//! exit code: `0` on pace (or nothing declared) · `2` at least one target behind.
+//! meters (ADR 0003).
 
 use std::io::IsTerminal;
 
@@ -37,7 +30,6 @@ pub async fn run(cfg: &Config, args: ProgressArgs) -> Result<i32> {
     let api = ApiClient::with_token(cfg.api_url.clone(), token);
     let colored = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
 
-    // A read error (network / auth) propagates as an eyre error → exit 1.
     let progress = api.get_progress(args.week.as_deref()).await?;
 
     if args.json {
@@ -63,8 +55,7 @@ fn behind(progress: &Progress) -> Vec<&ProgressReading> {
         .collect()
 }
 
-/// `0` on pace (or no targets) · `2` at least one target behind. (`1` is left to
-/// the eyre error path — a failed read.)
+/// `1` is left to the eyre error path — a failed read.
 fn exit_code(progress: &Progress) -> i32 {
     if behind(progress).is_empty() {
         0
@@ -73,7 +64,6 @@ fn exit_code(progress: &Progress) -> i32 {
     }
 }
 
-/// The bare form: a week header, one line per target, and a summary footer.
 fn human_lines(progress: &Progress, colored: bool) -> Vec<String> {
     let mut out = Vec::new();
     let pct = (progress.week.now_fraction * 100.0).round() as i64;
@@ -99,7 +89,6 @@ fn human_lines(progress: &Progress, colored: bool) -> Vec<String> {
     out
 }
 
-/// `distributed systems  2.2/6h  -2.1h behind` — the greppable per-target line.
 fn target_line(r: &ProgressReading, colored: bool) -> String {
     let name = r.target.scope.name().to_lowercase();
     let nums = format!("{:.1}/{}h", r.actual_hours(), fmt_hours(r.hours_per_week));
@@ -119,7 +108,6 @@ fn target_line(r: &ProgressReading, colored: bool) -> String {
     format!("{name}  {nums}  {state}")
 }
 
-/// `behind 3.3h total · largest gap "systems"`, or a quiet on-pace confirmation.
 fn summary_line(progress: &Progress, colored: bool) -> String {
     let behind = behind(progress);
     if behind.is_empty() {
@@ -135,8 +123,6 @@ fn summary_line(progress: &Progress, colored: bool) -> String {
     )
 }
 
-/// The single status-bar line. Empty when nothing is declared (like the timer's
-/// `--short` when nothing runs).
 fn short_line(progress: &Progress, colored: bool) -> String {
     if progress.targets.is_empty() {
         return String::new();
@@ -176,13 +162,6 @@ fn json_progress(progress: &Progress) -> serde_json::Value {
         "worst": behind.first().map(|r| r.target.scope.name()),
     });
 
-    // The "where did the time go" rollup, for scripted slicing — the machine
-    // twin of the on-screen fold (§Where it went; the time-went glance stays a
-    // glance). Only `by_kind` is in the pace read today: the payload carries a
-    // kind time-mix but no by-domain / by-intent split, so those two surface as
-    // null rather than a client-derived second ledger (the backend-gap rule;
-    // #122). The top-level `kind_mix` stays put — the `rollup` object is purely
-    // additive, so existing scripted consumers are byte-stable.
     let kind_mix: Vec<serde_json::Value> = progress
         .kind_mix
         .iter()
@@ -213,7 +192,6 @@ fn json_progress(progress: &Progress) -> serde_json::Value {
     })
 }
 
-/// Machine value for the pace state (`on pace` → `on_pace`).
 fn state_machine(state: PaceState) -> &'static str {
     match state {
         PaceState::Met => "met",
@@ -222,7 +200,6 @@ fn state_machine(state: PaceState) -> &'static str {
     }
 }
 
-/// Format target hours without a trailing `.0`: `6h`, but `2.5h` when fractional.
 fn fmt_hours(hours: f64) -> String {
     if hours.fract().abs() < 1e-9 {
         format!("{hours:.0}")
@@ -231,7 +208,7 @@ fn fmt_hours(hours: f64) -> String {
     }
 }
 
-// Terminal-palette 256 colours (docs/designs/README.md palette mapping).
+// Terminal-palette 256 colours.
 const COLOR_ON_PACE: u8 = 108; // success green
 const COLOR_BEHIND: u8 = 179; // warn amber
 const COLOR_MUTED: u8 = 244;
@@ -361,22 +338,19 @@ mod tests {
         let server = serve(body(&[("Coding", "met", 4.0, 240, 60)])).await;
         let p = fetch(&server).await;
         let v = json_progress(&p);
-        // The new rollup object: `by_kind` is what the pace read supports.
         assert_eq!(v["rollup"]["by_kind"][0]["kind"], "coding");
         assert_eq!(v["rollup"]["by_kind"][0]["minutes"], 180);
-        // The payload carries no by-domain / by-intent rollup — absent, not
-        // derived client-side (the backend-gap rule).
+        // The payload carries no by-domain / by-intent split.
         assert!(v["rollup"]["by_domain"].is_null());
         assert!(v["rollup"]["by_intent"].is_null());
-        // Additive: the shipped top-level `kind_mix` stays byte-stable.
+        // The top-level `kind_mix` stays byte-stable beside the rollup.
         assert_eq!(v["kind_mix"][0]["kind"], "coding");
         assert_eq!(v["kind_mix"][0]["minutes"], 180);
     }
 
     #[tokio::test]
     async fn piped_plain_form_is_byte_stable() {
-        // The fold + rollup are the `--json` / on-screen glance; the bare
-        // greppable twin must not gain a line. Pin it exactly.
+        // The rollup belongs to `--json`; the greppable form must not gain a line.
         let server = serve(body(&[("Coding", "met", 4.0, 240, 60)])).await;
         let p = fetch(&server).await;
         let lines = human_lines(&p, false);

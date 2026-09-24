@@ -1,12 +1,5 @@
-//! `GET /api/v1/weeks/:iso_week` — the week aggregate —
-//! and `PATCH /api/v1/weeks/:iso_week/note`, the one stored write.
-//!
-//! Plan, actuals, and the planned-vs-done comparison for one ISO week, derived
-//! from the same `WeekStory` the web retro band reads. The plan half is
-//! read-only here: planning *writes* go through the activities API (a `planned`
-//! activity + `planned_on` = a plan item — see [`super::activities::ActivityCreate`]).
-//! The retro reflection is the module's one stored prose, persisted through the
-//! v1 week-note route (dsaenztagarro/engineer#805, engineer PR #807).
+//! The week aggregate (`GET /api/v1/weeks/:iso_week`) and its one stored write,
+//! the week note.
 
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
@@ -19,8 +12,6 @@ pub struct Week {
     #[serde(default)]
     pub days: Vec<WeekDay>,
     pub planned_vs_done: PlannedVsDone,
-    /// The one stored line — the retro reflection. Read-and-display only until
-    /// the server exposes a v1 week-note write; an unwritten week reads empty.
     #[serde(default)]
     pub note: WeekNote,
 }
@@ -28,34 +19,26 @@ pub struct Week {
 #[derive(Debug, Clone, Deserialize)]
 pub struct WeekFrame {
     pub id: String,
-    /// The week's Monday (`YYYY-MM-DD`) — the anchor the board derives its
-    /// `weekday · day N of 7` header from. Absent on older payloads.
+    /// Absent on older payloads.
     #[serde(default)]
     pub monday: Option<Date>,
-    /// True for any week fully in the past — the retro's render rule.
+    /// True for any week fully in the past.
     #[serde(default)]
     pub closed: bool,
 }
 
-/// The stored retro reflection for the week. `body` is empty until written.
-/// Embedded in the aggregate as `{ body }`; the note-write route returns the
-/// bare persisted note `{ iso_week, body, updated_at }` — `iso_week` and
-/// `updated_at` default so the embedded shape still deserializes, and `Serialize`
-/// lets `engineer week reflect --json` echo the persisted note verbatim.
+/// One type for two wire shapes: the aggregate embeds `{ body }`, the note-write
+/// route returns `{ iso_week, body, updated_at }`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct WeekNote {
-    /// Present on the write route's response; empty on the embedded aggregate note.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub iso_week: String,
     #[serde(default)]
     pub body: String,
-    /// When the note was last persisted — present on the write route's response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<jiff::Timestamp>,
 }
 
-/// The PATCH body — `{ "note": { "body": … } }`, mirroring the activities API's
-/// wrapped-resource shape.
 #[derive(Serialize)]
 struct WeekNoteBody<'a> {
     note: WeekNoteFields<'a>,
@@ -72,9 +55,8 @@ pub struct WeekDay {
     pub items: Vec<PlanItem>,
 }
 
-/// One plan item — a `planned` activity on this week's canvas. `state` is the
-/// canvas appearance (`planned` | `live` | `done` | `left`); `done` is the
-/// retro's planned→done judgment.
+/// `state` is the server's `planned` | `live` | `done` | `left`; `done` is its
+/// planned→done judgment.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlanItem {
@@ -91,28 +73,15 @@ pub struct PlanItem {
     pub logged_minutes: Option<u32>,
 }
 
-/// The retro judgment for one plan item — a fold of the item's canvas status and
-/// its logged-vs-planned actuals, recomputed on every read (week-planning.dc.html
-/// §2 "the readout"). The board keeps no second ledger; this is derived, never
-/// stored. Richer than the headless `engineer week` words: it splits the
-/// zero-segment `Untouched` from the started-but-short `Hold`, which the
-/// coarser state-word readout collapses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanState {
-    /// Logged meets the plan (the server's planned→done judgment).
     Done,
-    /// Live now — a segment is running against it.
     Live,
-    /// Some logged, short of the plan — the honest middle.
     Hold,
-    /// Zero segments — "never happened".
     Untouched,
 }
 
 impl PlanItem {
-    /// Fold the canvas status + logged-vs-planned into the retro judgment shown
-    /// as the row's pill. `done` (server-computed) wins; otherwise a live segment
-    /// reads `Live`, any logged time reads `Hold`, and zero segments `Untouched`.
     pub fn retro_state(&self) -> PlanState {
         if self.done {
             PlanState::Done
@@ -139,24 +108,17 @@ pub struct PlannedVsDone {
 }
 
 impl Week {
-    /// The plan items across the week, in day order — the readout's rows.
     pub fn items(&self) -> impl Iterator<Item = &PlanItem> {
         self.days.iter().flat_map(|d| d.items.iter())
     }
 }
 
 impl ApiClient {
-    /// Fetch one ISO week's aggregate (`iso_week` like `2026-W29`).
     pub async fn get_week(&self, iso_week: &str) -> Result<Week, ApiError> {
         self.get(&format!("/api/v1/weeks/{iso_week}"), &[]).await
     }
 
-    /// Persist the week's retro reflection — `PATCH /api/v1/weeks/:iso_week/note`
-    /// with `{ "note": { "body": … } }` (dsaenztagarro/engineer#805, engineer PR
-    /// #807). Upserts the single note row, so it is naturally idempotent — a
-    /// re-sent write overwrites with the same body. An empty `body` clears the
-    /// note (the `week_notes` contract treats empty as clear). Returns the bare
-    /// persisted note `{ iso_week, body, updated_at }`.
+    /// Upserts the week's single note row, so a re-sent write is idempotent.
     pub async fn update_week_note(&self, iso_week: &str, body: &str) -> Result<WeekNote, ApiError> {
         self.patch(
             &format!("/api/v1/weeks/{iso_week}/note"),
@@ -217,7 +179,6 @@ mod tests {
     #[test]
     fn retro_state_folds_status_and_actuals() {
         let item = |json: serde_json::Value| -> PlanItem { serde_json::from_value(json).unwrap() };
-        // done wins outright.
         assert_eq!(
             item(
                 serde_json::json!({ "id": 1, "title": "a", "state": "done", "done": true,
@@ -226,7 +187,6 @@ mod tests {
             .retro_state(),
             PlanState::Done
         );
-        // A live segment reads Live.
         assert_eq!(
             item(
                 serde_json::json!({ "id": 2, "title": "b", "state": "live", "done": false,
@@ -235,7 +195,6 @@ mod tests {
             .retro_state(),
             PlanState::Live
         );
-        // Some logged, short of plan, not live → the honest middle.
         assert_eq!(
             item(
                 serde_json::json!({ "id": 3, "title": "c", "state": "planned", "done": false,
@@ -244,7 +203,6 @@ mod tests {
             .retro_state(),
             PlanState::Hold
         );
-        // Zero segments → never happened.
         assert_eq!(
             item(
                 serde_json::json!({ "id": 4, "title": "d", "state": "left", "done": false,
@@ -269,9 +227,6 @@ mod tests {
     #[tokio::test]
     async fn update_week_note_patches_the_wrapped_body_and_reads_back_the_note() {
         let server = MockServer::start().await;
-        // The exact write the `i` reflect gesture and `engineer week reflect`
-        // send: the reflection wrapped under `note` — and the bare persisted note
-        // read back.
         Mock::given(method("PATCH"))
             .and(path("/api/v1/weeks/2026-W29/note"))
             .and(body_json(serde_json::json!({
@@ -299,8 +254,6 @@ mod tests {
     #[tokio::test]
     async fn update_week_note_sends_an_empty_body_to_clear() {
         let server = MockServer::start().await;
-        // An empty body is a deliberate clear — the server treats empty as clear
-        // (the `week_notes` contract); the write still sends `{ note: { body: "" } }`.
         Mock::given(method("PATCH"))
             .and(path("/api/v1/weeks/2026-W29/note"))
             .and(body_json(serde_json::json!({ "note": { "body": "" } })))
