@@ -512,20 +512,15 @@ mod tests {
         assert!(home.today.is_some());
         let text = render_home(&mut home);
 
-        // The lead band shows the running timer, verbatim from the shared atom.
         assert!(text.contains("Raft leader election"), "lead band: {text}");
-        // Today's plan panel with its counts and a carried-over row.
         assert!(text.contains("Today's plan"), "{text}");
         assert!(text.contains("1 done"), "counts: {text}");
         assert!(text.contains("1 live"), "counts: {text}");
         assert!(text.contains("moved from Sun"), "carry-over: {text}");
-        // The logged/review/left strip.
         assert!(text.contains("logged today"), "stats: {text}");
         assert!(text.contains("4 due"), "review: {text}");
-        // The mid-chapter reading panel with where-you-are.
         assert!(text.contains("Mid-chapter"), "{text}");
         assert!(text.contains("Transactions"), "next chapter: {text}");
-        // `pace: null` folds to the calm on-pace line — no meter, no red.
         assert!(text.contains("on pace"), "on-pace fold: {text}");
         assert!(
             !text.contains("targets trailing"),
@@ -552,8 +547,6 @@ mod tests {
         .await;
 
         let text = render_home(&mut home);
-        // The worst target named by scope, the warn chip (108m => 1.8h), and how
-        // many trail. No on-pace line when behind.
         assert!(text.contains("systems"), "scope: {text}");
         assert!(text.contains("behind 1.8h"), "warn chip: {text}");
         assert!(
@@ -607,13 +600,11 @@ mod tests {
         home.handle(Action::TodayLoaded(Box::new(today(full()))), &api, &tx)
             .await;
 
-        // Zero pending: the chip stays hidden — quiet by default.
         assert!(
             !render_home(&mut home).contains("inbox 3"),
             "chip hidden at zero"
         );
 
-        // A pending count surfaces the chip in the stats strip.
         home.handle(
             Action::HomeInboxLoaded {
                 pending: 3,
@@ -644,12 +635,187 @@ mod tests {
         .await;
 
         let text = render_home(&mut home);
-        // Idle timer: the band is a calm `no timer`, never blank.
         assert!(text.contains("no timer"), "idle band: {text}");
-        // Empty plan: a calm invitation, not a blank panel.
         assert!(
             text.contains("Nothing planned for today"),
             "empty plan: {text}"
         );
+    }
+
+    #[tokio::test]
+    async fn an_unplanned_session_still_counts_as_logged_today_under_an_empty_plan() {
+        let (api, tx) = deps();
+        let mut home = Home::default();
+        home.handle(
+            Action::TodayLoaded(Box::new(today(serde_json::json!({
+                "date": { "day": "2026-07-06", "weekday": "mon", "week": "2026-W28" },
+                "timer": { "running": false },
+                "pace": null,
+                "plan": { "items": [], "left_count": 0 },
+                "totals": { "logged_minutes": 50 }
+            })))),
+            &api,
+            &tx,
+        )
+        .await;
+
+        let text = render_home(&mut home);
+        assert!(
+            text.contains("Nothing planned for today"),
+            "the calm invitation: {text}"
+        );
+        assert!(
+            text.contains("logged today  50m"),
+            "totals.logged_minutes is plan-agnostic: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_draft_near_expiry_escalates_the_inbox_chip() {
+        let (api, tx) = deps();
+        let mut home = Home::default();
+        home.handle(Action::TodayLoaded(Box::new(today(full()))), &api, &tx)
+            .await;
+
+        home.handle(
+            Action::HomeInboxLoaded {
+                pending: 2,
+                expiring: false,
+            },
+            &api,
+            &tx,
+        )
+        .await;
+        let calm = render_home(&mut home);
+        assert!(calm.contains("◧ inbox 2"), "muted chip: {calm}");
+
+        home.handle(
+            Action::HomeInboxLoaded {
+                pending: 2,
+                expiring: true,
+            },
+            &api,
+            &tx,
+        )
+        .await;
+        let escalated = render_home(&mut home);
+        assert!(
+            escalated.contains("▾ inbox 2"),
+            "escalated chip: {escalated}"
+        );
+        assert!(!escalated.contains("◧"), "one glyph at a time: {escalated}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_inbox_count_read_stays_silent() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/automations/tasks/pending"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let api = ApiClient::with_token(url::Url::parse(&server.uri()).unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        spawn_inbox_count(api, tx);
+        let next = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the spawned read finishes");
+        assert!(
+            next.is_none(),
+            "no action — neither a count nor a notify tile: {:?}",
+            next.map(|a| format!("{a:?}"))
+        );
+    }
+
+    #[tokio::test]
+    async fn the_reading_panel_counts_chapters_read_from_the_next_unread() {
+        let (api, tx) = deps();
+        let mut home = Home::default();
+        home.handle(
+            Action::TodayLoaded(Box::new(today(serde_json::json!({
+                "date": { "day": "2026-07-06", "weekday": "mon", "week": "2026-W28" },
+                "timer": { "running": false },
+                "reading": [
+                    { "id":10, "title":"Mid book", "chapters_total":12,
+                      "next_chapter": { "number":7, "title":"Transactions" } },
+                    { "id":11, "title":"Finished book", "chapters_total":9 }
+                ]
+            })))),
+            &api,
+            &tx,
+        )
+        .await;
+
+        let text = render_home(&mut home);
+        assert!(text.contains("6 / 12 ch"), "next unread is ch.7: {text}");
+        assert!(
+            text.contains("9 / 9 ch"),
+            "no next chapter reads all: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_lead_band_is_the_header_timer_cell_not_a_second_face() {
+        let (api, tx) = deps();
+        let mut home = Home::default();
+        home.handle(Action::TodayLoaded(Box::new(today(full()))), &api, &tx)
+            .await;
+        let t = home.today.as_ref().unwrap();
+        let cell: String = widgets::timer_cell(
+            &t.timer,
+            live_elapsed(&t.timer, home.loaded_at),
+            false,
+            false,
+        )
+        .expect("a running timer has a cell")
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
+        let text = render_home(&mut home);
+        assert!(text.contains(&cell), "cell {cell:?} verbatim in: {text}");
+    }
+
+    #[tokio::test]
+    async fn each_plan_state_wears_its_glyph() {
+        let (api, tx) = deps();
+        let mut home = Home::default();
+        home.handle(
+            Action::TodayLoaded(Box::new(today(serde_json::json!({
+                "date": { "day": "2026-07-06", "weekday": "mon", "week": "2026-W28" },
+                "timer": { "running": false },
+                "plan": { "items": [
+                    { "id":1, "title":"alpha", "state":"done" },
+                    { "id":2, "title":"bravo", "state":"live" },
+                    { "id":3, "title":"charlie", "state":"left" },
+                    { "id":4, "title":"delta", "state":"planned" }
+                ], "left_count": 1 }
+            })))),
+            &api,
+            &tx,
+        )
+        .await;
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        terminal.draw(|f| home.render(f, f.area())).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let rows: Vec<String> = (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        for (glyph, title) in [
+            ("✓", "alpha"),
+            ("●", "bravo"),
+            ("·", "charlie"),
+            ("○", "delta"),
+        ] {
+            let row = rows
+                .iter()
+                .find(|r| r.contains(title))
+                .unwrap_or_else(|| panic!("no row for {title}"));
+            assert!(row.contains(glyph), "{title} wears {glyph}: {row}");
+        }
     }
 }

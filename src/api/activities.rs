@@ -297,9 +297,7 @@ mod tests {
     #[tokio::test]
     async fn create_posts_a_wrapped_planned_activity() {
         let server = MockServer::start().await;
-        // A plan item: a planned activity carrying `planned_on` and its rough
-        // size, wrapped under `activity` — the exact body `engineer plan` and the
-        // board's `a` gesture send.
+        // The exact body `engineer plan` sends for a plan item.
         Mock::given(method("POST"))
             .and(path("/api/v1/activities"))
             .and(body_json(serde_json::json!({
@@ -364,5 +362,14 @@ mod tests {
         let a = client(&server).duplicate_activity(3).await.unwrap();
         assert_eq!(a.id, 88);
         assert_eq!(a.status.as_deref(), Some("planned"));
+    }
+
+    #[test]
+    fn an_unrecognised_status_decodes_as_itself() {
+        let a: Activity = serde_json::from_value(
+            serde_json::json!({ "id": 1, "title": "t", "status": "paused" }),
+        )
+        .unwrap();
+        assert_eq!(a.status.as_deref(), Some("paused"));
     }
 }

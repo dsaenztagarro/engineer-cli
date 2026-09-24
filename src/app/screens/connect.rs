@@ -683,7 +683,6 @@ mod tests {
         let text = render(&mut s);
         assert!(text.contains("Git activity"), "git row: {text}");
         assert!(text.contains("Study calendar"), "calendar row: {text}");
-        // The un-connectable git source wears the requirement, not connect.
         assert!(text.contains("needs GitHub"), "git state pill: {text}");
     }
 
@@ -755,7 +754,6 @@ mod tests {
         feed(&mut s, &api, &tx, Action::ConnectBegin).await;
         assert!(matches!(s.prompt, Some(Prompt::Connect { feed: None, .. })));
         let text = render(&mut s);
-        // The trust strings are rendered verbatim, before any connect fires.
         assert!(
             text.contains("Commit times and counts"),
             "reads verbatim: {text}"
@@ -810,12 +808,10 @@ mod tests {
         assert!(matches!(s.prompt, Some(Prompt::Disconnect { .. })));
         let text = render(&mut s);
         assert!(text.contains("Disconnect Git activity?"), "{text}");
-        // The confirm states the honesty: disconnect ≠ delete.
         assert!(
             text.contains("kept") || text.contains("doesn't delete"),
             "{text}"
         );
-        // Esc cancels without a call.
         feed(&mut s, &api, &tx, Action::ConnectPromptCancel).await;
         assert!(s.prompt.is_none());
     }
@@ -980,7 +976,7 @@ mod tests {
 
     #[tokio::test]
     async fn offline_connect_refuses_and_clears_the_guard() {
-        // No server — the request is a transport failure (offline).
+        // No server: the request is a transport failure.
         let api = ApiClient::with_token(Url::parse("http://127.0.0.1:1").unwrap(), "tok".into());
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut s = Connect::default();
@@ -1030,5 +1026,48 @@ mod tests {
             s.intercept_key(press(KeyCode::Char('h'))),
             Some(Action::ConnectFeedInput('h'))
         ));
+    }
+
+    #[tokio::test]
+    async fn the_requirement_pointer_offers_no_connect() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::ConnectLoaded(vec![git(false, false)]),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::ConnectBegin).await;
+        feed(&mut s, &api, &tx, Action::ConnectPromptSubmit).await;
+        assert!(
+            matches!(s.prompt, Some(Prompt::Requirement { .. })),
+            "submit leaves the pointer up"
+        );
+        assert!(!s.in_flight, "nothing fired");
+    }
+
+    #[tokio::test]
+    async fn a_second_verb_while_one_is_in_flight_does_not_fire() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/capture/sources/calendar/sync"))
+            .respond_with(
+                ResponseTemplate::new(202)
+                    .set_body_json(serde_json::json!({ "queued": true, "key": "calendar" }))
+                    .set_delay(Duration::from_millis(200)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Connect::default();
+        s.handle(Action::ConnectLoaded(vec![calendar(true)]), &api, &tx)
+            .await;
+        s.handle(Action::ConnectSync, &api, &tx).await;
+        s.handle(Action::ConnectSync, &api, &tx).await;
+        assert!(recv_matching(&mut rx, |a| matches!(a, Action::RefreshConnect)).await);
+        server.verify().await;
     }
 }

@@ -643,7 +643,6 @@ mod tests {
         })
     }
 
-    /// Mount the sources index returning the given sources.
     async fn mount_sources(server: &MockServer, sources: serde_json::Value) {
         Mock::given(method("GET"))
             .and(path("/api/v1/capture/sources"))
@@ -741,8 +740,6 @@ mod tests {
         let out = dispatch(&client(&server), Some(InboxCmd::Sources), false, false).await;
         assert_eq!(out.code, 0);
         let text = out.out.join("\n");
-        // The un-connectable git source shows the requirement pointer, not a bare
-        // "reads" line; the connected calendar shows its state + trust.
         assert!(text.contains("needs GitHub"), "git state: {text}");
         assert!(text.contains("Connect GitHub first"), "requirement: {text}");
         assert!(
@@ -777,7 +774,6 @@ mod tests {
         )
         .await;
         assert_eq!(out.code, 1);
-        // The trust statement is printed before the gate refuses.
         let trust = out.out.join("\n");
         assert!(trust.contains("Commit times and counts"), "reads: {trust}");
         assert!(

@@ -238,7 +238,7 @@ mod tests {
         }
     }
 
-    // --- the coded-conflict vocabulary (engineer#806, ADR 0036) -------------
+    // --- the coded-conflict vocabulary (engineer ADR 0036) ------------------
     // Fixtures mirror the shipped openapi.yaml examples byte for byte where it
     // shows one.
 

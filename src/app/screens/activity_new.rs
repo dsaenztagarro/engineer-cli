@@ -256,3 +256,25 @@ fn opt_str(s: &str) -> Option<String> {
         Some(s.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyEvent, KeyModifiers};
+    use tokio::sync::mpsc;
+    use url::Url;
+
+    #[tokio::test]
+    async fn the_duration_field_accepts_only_digits() {
+        let api = ApiClient::with_token(Url::parse("http://localhost").unwrap(), "tok".into());
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut s = ActivityNew::default();
+        s.handle(Action::ActivityFieldNext, &api, &tx).await;
+        s.handle(Action::ActivityFieldNext, &api, &tx).await;
+        for c in ['4', 'x', '5', ' '] {
+            let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+            s.handle(Action::ActivityKey(key), &api, &tx).await;
+        }
+        assert_eq!(s.duration.value(), "3045");
+    }
+}

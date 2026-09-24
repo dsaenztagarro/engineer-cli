@@ -375,7 +375,7 @@ mod tests {
         assert_eq!(empty.code, 1);
     }
 
-    // --- offline (#108): the create shape queues, the append shape refuses ---
+    // --- offline: the create shape queues, the append shape refuses ---
 
     #[tokio::test]
     async fn offline_log_title_enqueues_a_provisional_activity() {

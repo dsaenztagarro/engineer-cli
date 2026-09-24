@@ -516,4 +516,32 @@ mod tests {
         b.handle(Action::BooksMatchStep(-1), &api(), &tx).await;
         assert_eq!(b.state.selected(), Some(2), "N steps backward with wrap");
     }
+
+    #[test]
+    fn the_open_picker_owns_every_key() {
+        let mut b = Books {
+            items: vec![book(1, "Rust")],
+            ..Books::default()
+        };
+        b.picker = Some(Picker::new(
+            "open book",
+            vec![PickerItem::new(String::from("Rust"), 1_i64)],
+        ));
+        for code in [KeyCode::Char('/'), KeyCode::Char('f'), KeyCode::Char('q')] {
+            assert!(
+                matches!(
+                    b.intercept_key(KeyEvent::new(code, KeyModifiers::NONE)),
+                    Some(Action::BooksPickerKey(_))
+                ),
+                "{code:?} filters the picker"
+            );
+        }
+    }
+
+    #[test]
+    fn the_picker_label_carries_the_author_so_either_matches() {
+        let mut b = book(1, "Crafting Interpreters");
+        b.author = Some("Nystrom".into());
+        assert_eq!(book_label(&b), "Crafting Interpreters · Nystrom");
+    }
 }

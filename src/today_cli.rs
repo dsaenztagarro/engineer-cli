@@ -262,6 +262,15 @@ mod tests {
         assert!(text.contains("behind 1.8h — systems"), "pace: {text}");
         assert!(text.contains("4 due"), "review: {text}");
         assert!(text.contains("next ch.7 Transactions"), "reading: {text}");
+        let heads: Vec<&str> = outcome.out[1..]
+            .iter()
+            .map(|l| l.split_whitespace().next().unwrap())
+            .collect();
+        assert_eq!(
+            heads,
+            ["timer", "pace", "plan", "review", "reading"],
+            "one line per block, in Home's reading order"
+        );
     }
 
     #[tokio::test]

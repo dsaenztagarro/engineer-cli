@@ -183,9 +183,7 @@ mod tests {
         ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into())
     }
 
-    /// A full payload. The `timer` block uses the real `GET /api/v1/timer` field
-    /// names (`elapsed_seconds`/`label`) it is byte-identical to — not the
-    /// design mock's `elapsed_s`/`kind` shorthand.
+    /// The `timer` block uses the real `GET /api/v1/timer` field names.
     fn sample_body() -> serde_json::Value {
         serde_json::json!({
             "date": { "day": "2026-07-06", "weekday": "mon", "week": "2026-W28" },
@@ -249,7 +247,6 @@ mod tests {
 
         assert_eq!(today.date.day, jiff::civil::date(2026, 7, 6));
         assert_eq!(today.date.week, "2026-W28");
-        // The timer block is the shared `Timer` struct, decoded verbatim.
         assert!(today.timer.running);
         assert_eq!(today.timer.elapsed_seconds, Some(1453));
 
@@ -275,8 +272,6 @@ mod tests {
         assert_eq!(book.next_chapter.as_ref().unwrap().number, 7);
     }
 
-    /// Additive-only contract (ADR 0027): a minimal payload — idle timer, `pace`
-    /// null, every optional block absent — must still decode via serde-defaults.
     #[tokio::test]
     async fn minimal_payload_decodes_via_defaults() {
         let server = MockServer::start().await;
@@ -318,5 +313,24 @@ mod tests {
 
         let err = client(&server).today().await.unwrap_err();
         assert!(matches!(err, ApiError::Unauthorized));
+    }
+
+    #[tokio::test]
+    async fn the_day_is_date_day_not_the_study_day_alias_and_unknown_keys_are_ignored() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/today"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "date": { "day": "2026-07-06", "study_day": "2026-07-05",
+                          "weekday": "mon", "week": "2026-W28" },
+                "timer": { "running": false },
+                "a_block_added_later": { "anything": [1, 2, 3] }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let today = client(&server).today().await.unwrap();
+        assert_eq!(today.date.day, jiff::civil::date(2026, 7, 6));
     }
 }

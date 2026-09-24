@@ -733,7 +733,6 @@ mod tests {
             ]),
         )
         .await;
-        // Soonest expiry leads.
         assert_eq!(s.tasks.iter().map(|t| t.id).collect::<Vec<_>>(), [2, 3, 1]);
         assert!(!s.loading);
     }
@@ -890,7 +889,6 @@ mod tests {
         .await;
         s.handle(Action::InboxAccept, &api, &tx).await;
         assert!(s.in_flight);
-        // The verb fires and asks for a re-read.
         assert!(recv_matching(&mut rx, |a| matches!(a, Action::RefreshInbox)).await);
     }
 
@@ -968,13 +966,16 @@ mod tests {
         )
         .await;
         s.handle(Action::InboxAccept, &api, &tx).await;
-        // A soft re-read: a warning tile, then the pending scope refreshes.
         assert!(
             recv_matching(&mut rx, |a| matches!(
                 a,
                 Action::Notify { level: Level::Warning, text } if text.contains("already moved on")
             ))
             .await
+        );
+        assert!(
+            recv_matching(&mut rx, |a| matches!(a, Action::RefreshInbox)).await,
+            "a stale draft re-reads the pending scope"
         );
     }
 
@@ -1084,6 +1085,10 @@ mod tests {
         assert!(text.contains("Distributed Systems"), "entity: {text}");
         assert!(text.contains("build"), "context field: {text}");
         assert!(text.contains("git proposes"), "automation header: {text}");
+        assert!(
+            text.contains("1 of 1 pending"),
+            "position breadcrumb: {text}"
+        );
     }
 
     #[tokio::test]
@@ -1100,5 +1105,112 @@ mod tests {
         let text = render(&mut s);
         assert!(text.contains("Reject this draft"), "reject copy: {text}");
         assert!(text.contains("reason"), "reason field: {text}");
+    }
+
+    // ---- the due badge reads expires_at ----
+
+    #[test]
+    fn the_due_badge_escalates_as_expires_at_nears() {
+        let bg = |hours: Option<i64>| due_badge(&task(1, "p", hours)).style.bg;
+        assert_eq!(bg(Some(3)), Some(theme::DANGER), "under 12h is urgent");
+        assert_eq!(bg(Some(24)), Some(theme::WARN), "under 48h is soon");
+        assert_eq!(bg(Some(100)), None, "further out is a muted read");
+        assert_eq!(due_badge(&task(1, "p", Some(100))).content, "4d left");
+        assert_eq!(due_badge(&task(1, "p", Some(-1))).content, " expired ");
+        assert!(
+            due_badge(&task(1, "p", None)).content.is_empty(),
+            "no expiry, no badge"
+        );
+    }
+
+    #[test]
+    fn a_draft_expiring_within_48h_counts_as_expiring_soon() {
+        assert!(is_expiring_soon(&task(1, "p", Some(47))));
+        assert!(!is_expiring_soon(&task(1, "p", Some(49))));
+        assert!(!is_expiring_soon(&task(1, "p", None)));
+    }
+
+    #[tokio::test]
+    async fn acknowledge_keeps_the_draft_without_completing_or_rejecting_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/automations/tasks/7/acknowledge"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 7, "status": "pending"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        for decision in ["complete", "reject"] {
+            Mock::given(method("PATCH"))
+                .and(path(format!("/api/v1/automations/tasks/7/{decision}")))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&server)
+                .await;
+        }
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Inbox::default();
+        s.handle(
+            Action::InboxLoaded(vec![task(7, "build", Some(3))]),
+            &api,
+            &tx,
+        )
+        .await;
+        s.handle(Action::InboxAck, &api, &tx).await;
+        assert!(
+            recv_matching(&mut rx, |a| matches!(
+                a,
+                Action::Notify { level: Level::Success, text } if text.starts_with(ACKNOWLEDGED)
+            ))
+            .await
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn a_second_verb_while_one_is_in_flight_does_not_fire() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/automations/tasks/7/complete"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "id": 7, "status": "completed" }))
+                    .set_delay(Duration::from_millis(200)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let api = ApiClient::with_token(Url::parse(&server.uri()).unwrap(), "tok".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut s = Inbox::default();
+        s.handle(
+            Action::InboxLoaded(vec![task(7, "build", Some(3))]),
+            &api,
+            &tx,
+        )
+        .await;
+        s.handle(Action::InboxAccept, &api, &tx).await;
+        s.handle(Action::InboxAccept, &api, &tx).await;
+        assert!(recv_matching(&mut rx, |a| matches!(a, Action::RefreshInbox)).await);
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn a_reread_returns_to_the_list_and_drops_an_open_reject() {
+        let (mut s, api, tx) = setup();
+        feed(
+            &mut s,
+            &api,
+            &tx,
+            Action::InboxLoaded(vec![task(7, "build", Some(3))]),
+        )
+        .await;
+        feed(&mut s, &api, &tx, Action::InboxOpen).await;
+        feed(&mut s, &api, &tx, Action::InboxRejectBegin).await;
+        feed(&mut s, &api, &tx, Action::RefreshInbox).await;
+        assert_eq!(s.stage, Stage::List);
+        assert!(s.rejecting.is_none());
     }
 }

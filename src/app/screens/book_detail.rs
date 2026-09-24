@@ -682,7 +682,6 @@ mod tests {
         s.handle(Action::BookStatusConfirm, &api, &tx).await;
         assert!(s.status_picker.is_none(), "confirm closes the picker");
 
-        // The spawned PATCH sends the updated book, then a success notify.
         let first = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("PATCH result within 5s")
@@ -691,7 +690,6 @@ mod tests {
             Action::BookUpdated(b) => b,
             other => panic!("expected BookUpdated, got {other:?}"),
         };
-        // Feeding the result back reflects the new status in the header.
         s.handle(Action::BookUpdated(updated), &api, &tx).await;
         assert_eq!(s.book.as_ref().unwrap().status, BookStatus::OnHold);
 
@@ -768,9 +766,60 @@ mod tests {
         let mut s = loaded(&api, &tx, "reading").await;
         s.handle(Action::BookStatusPicker, &api, &tx).await;
         let text = render_to_string(&mut s);
-        // One label from each kit pill (reading/done/unread/hold/stop) renders.
         for pill in ["reading", "done", "unread", "hold", "stop"] {
             assert!(text.contains(pill), "pill '{pill}' missing from: {text}");
         }
+    }
+
+    #[test]
+    fn the_open_status_picker_claims_h_and_esc() {
+        use crossterm::event::KeyModifiers;
+        let mut s = BookDetail {
+            status_picker: Some(ListState::default()),
+            ..BookDetail::default()
+        };
+        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        assert!(
+            matches!(
+                s.intercept_key(press(KeyCode::Char('h'))),
+                Some(Action::BookStatusSelect(BookStatus::OnHold))
+            ),
+            "h picks on_hold, not back"
+        );
+        assert!(
+            matches!(
+                s.intercept_key(press(KeyCode::Esc)),
+                Some(Action::BookStatusCancel)
+            ),
+            "Esc closes the modal, not the screen"
+        );
+    }
+
+    #[tokio::test]
+    async fn marking_a_chapter_done_moves_to_the_next() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let api = dead_api();
+        let chapter = |id: i64, number: u32| BookChapter {
+            id,
+            number,
+            title: format!("ch {number}"),
+            done: false,
+            skipped: false,
+        };
+        let mut s = BookDetail::default();
+        let dir = scratch("chapter-done");
+        s.queue_paths = Some((dir.join("queue.json"), dir.join("timer-cache.json")));
+        s.handle(
+            Action::BookDetailLoaded {
+                book: Box::new(make_book(7, "reading")),
+                chapters: vec![chapter(1, 1), chapter(2, 2)],
+            },
+            &api,
+            &tx,
+        )
+        .await;
+        s.state.select(Some(0));
+        s.handle(Action::ToggleChapterDone, &api, &tx).await;
+        assert_eq!(s.state.selected(), Some(1));
     }
 }
