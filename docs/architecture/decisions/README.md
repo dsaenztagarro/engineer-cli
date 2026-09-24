@@ -13,3 +13,4 @@ Each record is `NNNN-<slug>.md`, numbered in the order decided, and is **immutab
 | [0003](0003-tui-headless-contract.md) | The TUI ↔ headless contract: every read is also a one-shot, and what a verb owes a script |
 | [0004](0004-derived-never-stored-and-the-write-queue.md) | Derived, never stored — and the offline write queue as its one scoped exception |
 | [0005](0005-editor-for-prose.md) | `$EDITOR` for prose; the in-app `i`/`Esc` grammar for a line |
+| [0006](0006-the-design-boundary.md) | The design boundary: the design project draws the surface, this repository holds the truth |
