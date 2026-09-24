@@ -585,6 +585,7 @@ async fn bind(
 }
 
 use crate::app::screens::timer::DISCARD_CONFIRM_SECS;
+use crate::ui::tokens;
 
 async fn discard(
     api: &ApiClient,
@@ -742,11 +743,11 @@ fn json_read(t: &Timer) -> serde_json::Value {
 }
 
 // Terminal-palette 256 colours.
-const COLOR_RUNNING: u8 = 108; // success green
-const COLOR_FOCUS: u8 = 105; // accent indigo
-const COLOR_ATTENTION: u8 = 179; // warn amber
-const COLOR_DIVERGED: u8 = 167; // danger red — the one loud state
-const COLOR_MUTED: u8 = 244;
+const COLOR_RUNNING: u8 = tokens::NOTICE_SUCCESS;
+const COLOR_FOCUS: u8 = tokens::ACCENT;
+const COLOR_ATTENTION: u8 = tokens::NOTICE_WARNING;
+const COLOR_DIVERGED: u8 = tokens::ERROR;
+const COLOR_MUTED: u8 = tokens::TEXT_SECONDARY;
 
 fn glyph_for(word: &str) -> (&'static str, u8) {
     match word {

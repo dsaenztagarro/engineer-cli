@@ -3,7 +3,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::Frame;
@@ -879,7 +879,7 @@ fn rating_hints_line(t: &Topic) -> Line<'static> {
         }
         spans.push(Span::styled(
             format!(" {} ", r.key()),
-            Style::default().fg(Color::Black).bg(theme::ACCENT),
+            Style::default().fg(theme::INK_ON_FILL).bg(theme::ACCENT),
         ));
         spans.push(Span::raw(format!(" {}", r.as_str())));
         if let Some(days) = t.forecasts.get(r.as_str()) {

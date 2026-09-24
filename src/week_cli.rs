@@ -12,6 +12,7 @@ use crate::auth::TokenProvider;
 use crate::config::Config;
 use crate::messages;
 use crate::queue::QueuedClient;
+use crate::ui::tokens;
 
 #[derive(Args)]
 pub struct WeekArgs {
@@ -344,10 +345,10 @@ fn problem_text(e: ApiError) -> String {
     }
 }
 
-const COLOR_OK: u8 = 108;
-const COLOR_WARN: u8 = 179;
-const COLOR_ACCENT: u8 = 105;
-const COLOR_MUTED: u8 = 244;
+const COLOR_OK: u8 = tokens::NOTICE_SUCCESS;
+const COLOR_WARN: u8 = tokens::NOTICE_WARNING;
+const COLOR_ACCENT: u8 = tokens::ACCENT;
+const COLOR_MUTED: u8 = tokens::TEXT_SECONDARY;
 
 fn paint(s: &str, color: u8, colored: bool) -> String {
     if colored {

@@ -3,7 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use jiff::Timestamp;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::Frame;
@@ -522,19 +522,19 @@ fn due_badge(t: &Task) -> Span<'static> {
     if secs <= 0 {
         return Span::styled(
             " expired ",
-            Style::default().fg(Color::Black).bg(theme::DANGER),
+            Style::default().fg(theme::INK_ON_FILL).bg(theme::DANGER),
         );
     }
     let label = format!("{} left", left_text(secs));
     if secs < EXPIRING_URGENT_SECS {
         Span::styled(
             format!(" {label} "),
-            Style::default().fg(Color::Black).bg(theme::DANGER),
+            Style::default().fg(theme::INK_ON_FILL).bg(theme::DANGER),
         )
     } else if secs < EXPIRING_SOON_SECS {
         Span::styled(
             format!(" {label} "),
-            Style::default().fg(Color::Black).bg(theme::WARN),
+            Style::default().fg(theme::INK_ON_FILL).bg(theme::WARN),
         )
     } else {
         Span::styled(label, theme::muted())

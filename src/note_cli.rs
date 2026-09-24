@@ -9,6 +9,7 @@ use crate::api::{derive_title_content, Anchor, ApiClient, ApiError, Note, NoteFi
 use crate::auth::TokenProvider;
 use crate::config::Config;
 use crate::queue::QueuedClient;
+use crate::ui::tokens;
 
 #[derive(Args)]
 pub struct NoteArgs {
@@ -471,8 +472,8 @@ fn write_refuse(e: ApiError) -> Result<Outcome, ApiError> {
     }
 }
 
-const COLOR_OK: u8 = 108;
-const COLOR_MUTED: u8 = 244;
+const COLOR_OK: u8 = tokens::NOTICE_SUCCESS;
+const COLOR_MUTED: u8 = tokens::TEXT_SECONDARY;
 
 fn paint(s: &str, color: u8, colored: bool) -> String {
     if colored {

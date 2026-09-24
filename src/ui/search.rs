@@ -1,6 +1,6 @@
 //! The `/` search state the list screens share; it never touches the network.
 
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::ui::theme;
@@ -51,7 +51,7 @@ pub fn highlight(label: &str, query: &str, base: Style) -> Vec<Span<'static>> {
     if query.is_empty() {
         return vec![Span::styled(label.to_string(), base)];
     }
-    let match_style = Style::default().bg(theme::ACCENT).fg(Color::Black);
+    let match_style = Style::default().bg(theme::ACCENT).fg(theme::INK_ON_FILL);
     let hay = label.to_lowercase();
     let needle = query.to_lowercase();
     let mut spans: Vec<Span<'static>> = Vec::new();

@@ -10,6 +10,7 @@ use crate::api::{ApiClient, ApiError, CaptureSource, Task};
 use crate::auth::TokenProvider;
 use crate::config::Config;
 use crate::messages;
+use crate::ui::tokens;
 
 /// Shared with the TUI inbox screen, so both surfaces confirm a verb in one word.
 pub const ACCEPTED: &str = "accepted";
@@ -535,10 +536,10 @@ fn problem_reason(e: ApiError) -> String {
     }
 }
 
-const COLOR_OK: u8 = 108;
-const COLOR_WARN: u8 = 179;
-const COLOR_ACCENT: u8 = 105;
-const COLOR_MUTED: u8 = 244;
+const COLOR_OK: u8 = tokens::NOTICE_SUCCESS;
+const COLOR_WARN: u8 = tokens::NOTICE_WARNING;
+const COLOR_ACCENT: u8 = tokens::ACCENT;
+const COLOR_MUTED: u8 = tokens::TEXT_SECONDARY;
 
 fn paint(s: &str, color: u8, colored: bool) -> String {
     if colored {

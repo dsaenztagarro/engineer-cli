@@ -1,7 +1,7 @@
 //! The Tier-3 blocking screen of the error model (ADR 0001).
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -55,7 +55,7 @@ pub fn render_blocking(frame: &mut Frame, area: Rect, b: &Blocking) {
         .split(rows[1]);
 
     let danger_bar = Style::default()
-        .fg(Color::Black)
+        .fg(theme::INK_ON_FILL)
         .bg(theme::DANGER)
         .add_modifier(Modifier::BOLD);
 

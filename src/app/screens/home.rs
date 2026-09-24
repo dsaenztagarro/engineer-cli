@@ -178,7 +178,7 @@ fn pace_line(today: &Today) -> Line<'static> {
                 Span::styled(format!("{:<10}", pace.worst.scope_name), theme::muted()),
                 Span::styled(
                     format!(" behind {hours:.1}h "),
-                    Style::default().fg(Color::Black).bg(theme::WARN),
+                    Style::default().fg(theme::INK_ON_FILL).bg(theme::WARN),
                 ),
                 Span::styled(
                     format!("   worst of {} targets trailing", pace.behind_count),

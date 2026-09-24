@@ -9,6 +9,7 @@ use color_eyre::eyre::Result;
 use crate::api::{ApiClient, PaceState, Progress, ProgressReading};
 use crate::auth::TokenProvider;
 use crate::config::Config;
+use crate::ui::tokens;
 
 #[derive(Args)]
 pub struct ProgressArgs {
@@ -209,9 +210,9 @@ fn fmt_hours(hours: f64) -> String {
 }
 
 // Terminal-palette 256 colours.
-const COLOR_ON_PACE: u8 = 108; // success green
-const COLOR_BEHIND: u8 = 179; // warn amber
-const COLOR_MUTED: u8 = 244;
+const COLOR_ON_PACE: u8 = tokens::NOTICE_SUCCESS;
+const COLOR_BEHIND: u8 = tokens::NOTICE_WARNING;
+const COLOR_MUTED: u8 = tokens::TEXT_SECONDARY;
 
 fn paint(s: &str, color: u8, colored: bool) -> String {
     if colored {

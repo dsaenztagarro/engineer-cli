@@ -12,7 +12,7 @@ pub fn status_pill(status: BookStatus) -> Span<'static> {
         BookStatus::OnHold => (" hold ", theme::WARN),
         BookStatus::Abandoned => (" stop ", theme::DANGER),
     };
-    Span::styled(label, Style::default().fg(Color::Black).bg(fg))
+    Span::styled(label, Style::default().fg(theme::INK_ON_FILL).bg(fg))
 }
 
 pub fn activity_status_pill(status: Option<&str>) -> Span<'static> {
@@ -30,7 +30,7 @@ pub fn activity_status_pill(status: Option<&str>) -> Span<'static> {
     } else {
         (format!(" {} ", s.replace('_', " ")), theme::MUTED)
     };
-    Span::styled(label, Style::default().fg(Color::Black).bg(fg))
+    Span::styled(label, Style::default().fg(theme::INK_ON_FILL).bg(fg))
 }
 
 pub fn progress_bar(pct: f32, width: usize) -> Line<'static> {
@@ -129,7 +129,7 @@ pub fn timer_cell(
             spans.push(Span::raw(" "));
             spans.push(Span::styled(
                 " idle ",
-                Style::default().fg(Color::Black).bg(theme::WARN),
+                Style::default().fg(theme::INK_ON_FILL).bg(theme::WARN),
             ));
         }
     } else if t.paused {
@@ -145,7 +145,7 @@ pub fn timer_cell(
             spans.push(Span::raw(" "));
             spans.push(Span::styled(
                 " work? ",
-                Style::default().fg(Color::Black).bg(theme::ACCENT),
+                Style::default().fg(theme::INK_ON_FILL).bg(theme::ACCENT),
             ));
         } else if !narrow {
             spans.push(Span::styled(" not counting", theme::muted()));
@@ -157,7 +157,7 @@ pub fn timer_cell(
             spans.push(Span::raw(" "));
             spans.push(Span::styled(
                 " over ",
-                Style::default().fg(Color::Black).bg(theme::WARN),
+                Style::default().fg(theme::INK_ON_FILL).bg(theme::WARN),
             ));
             if let Some(label) = t.label.as_deref() {
                 spans.push(Span::styled(
@@ -176,7 +176,7 @@ pub fn timer_cell(
             spans.push(Span::raw(" "));
             spans.push(Span::styled(
                 " break? ",
-                Style::default().fg(Color::Black).bg(theme::ACCENT),
+                Style::default().fg(theme::INK_ON_FILL).bg(theme::ACCENT),
             ));
         }
         if !narrow {
@@ -233,7 +233,7 @@ pub fn footer_hints(hints: &[(&str, &str)]) -> Line<'static> {
         }
         spans.push(Span::styled(
             format!(" {key} "),
-            Style::default().fg(Color::Black).bg(theme::ACCENT),
+            Style::default().fg(theme::INK_ON_FILL).bg(theme::ACCENT),
         ));
         spans.push(Span::raw(format!(" {label}")));
     }

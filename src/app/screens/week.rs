@@ -606,7 +606,7 @@ fn input_line(input: &Input, data: &WeekData) -> Line<'static> {
     Line::from(vec![
         Span::styled(
             " INSERT ",
-            Style::default().fg(Color::Black).bg(theme::ACCENT),
+            Style::default().fg(theme::INK_ON_FILL).bg(theme::ACCENT),
         ),
         Span::styled(format!(" {label}  "), theme::muted()),
         Span::raw(input.buf().to_string()),
@@ -702,7 +702,7 @@ fn plan_row(item: &PlanItem, title_w: usize, selected: bool, live: bool) -> Line
 fn live_pill() -> Span<'static> {
     Span::styled(
         " live ",
-        Style::default().fg(Color::Black).bg(theme::SUCCESS),
+        Style::default().fg(theme::INK_ON_FILL).bg(theme::SUCCESS),
     )
 }
 
@@ -713,7 +713,7 @@ fn plan_pill(state: PlanState) -> Span<'static> {
         PlanState::Hold => (" hold ", theme::WARN),
         PlanState::Untouched => (" untouched ", theme::MUTED),
     };
-    Span::styled(label, Style::default().fg(Color::Black).bg(bg))
+    Span::styled(label, Style::default().fg(theme::INK_ON_FILL).bg(bg))
 }
 
 fn state_color(state: PlanState) -> Color {

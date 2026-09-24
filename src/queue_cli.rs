@@ -10,6 +10,7 @@ use crate::api::{ApiClient, ApiError, Timer};
 use crate::auth::TokenProvider;
 use crate::config::Config;
 use crate::queue::{self, view, Intent, IntentState, QueueStore, Resolution, Resolved};
+use crate::ui::tokens;
 
 #[derive(Args)]
 pub struct QueueArgs {
@@ -576,10 +577,10 @@ async fn skip_cmd(
     Outcome::ok(line)
 }
 
-const COLOR_SYNCED: u8 = 108; // success green
-const COLOR_QUEUED: u8 = 105; // accent indigo
-const COLOR_DIVERGED: u8 = 167; // danger red
-const COLOR_MUTED: u8 = 244;
+const COLOR_SYNCED: u8 = tokens::NOTICE_SUCCESS;
+const COLOR_QUEUED: u8 = tokens::ACCENT;
+const COLOR_DIVERGED: u8 = tokens::ERROR;
+const COLOR_MUTED: u8 = tokens::TEXT_SECONDARY;
 
 fn paint(s: &str, color: u8, colored: bool) -> String {
     if colored {

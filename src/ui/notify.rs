@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -35,8 +35,8 @@ impl Level {
             Level::Success => Style::default()
                 .fg(theme::SUCCESS)
                 .add_modifier(Modifier::BOLD),
-            Level::Warning => Style::default().fg(Color::Black).bg(theme::WARN),
-            Level::Error => Style::default().fg(Color::Black).bg(theme::DANGER),
+            Level::Warning => Style::default().fg(theme::INK_ON_FILL).bg(theme::WARN),
+            Level::Error => Style::default().fg(theme::INK_ON_FILL).bg(theme::DANGER),
         }
     }
 

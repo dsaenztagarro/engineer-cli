@@ -711,7 +711,7 @@ impl App {
             spans.push(ratatui::text::Span::styled(
                 " diverged ",
                 ratatui::style::Style::default()
-                    .fg(ratatui::style::Color::Black)
+                    .fg(crate::ui::theme::INK_ON_FILL)
                     .bg(crate::ui::theme::DANGER)
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ));

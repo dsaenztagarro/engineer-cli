@@ -11,6 +11,7 @@ use crate::auth::TokenProvider;
 use crate::config::Config;
 use crate::messages;
 use crate::queue::QueuedClient;
+use crate::ui::tokens;
 
 #[derive(Args)]
 pub struct LogArgs {
@@ -214,8 +215,8 @@ fn problem_text(e: ApiError) -> String {
     }
 }
 
-const COLOR_OK: u8 = 108; // success green
-const COLOR_MUTED: u8 = 244; // the queued/offline tail
+const COLOR_OK: u8 = tokens::NOTICE_SUCCESS;
+const COLOR_MUTED: u8 = tokens::TEXT_SECONDARY; // the queued/offline tail
 
 fn paint(s: &str, color: u8, colored: bool) -> String {
     if colored {

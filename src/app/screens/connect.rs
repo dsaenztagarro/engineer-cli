@@ -2,7 +2,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::Frame;
@@ -379,12 +379,12 @@ fn source_row(s: &CaptureSource) -> Row<'static> {
     let state = if s.connected {
         Span::styled(
             " connected ",
-            Style::default().fg(Color::Black).bg(theme::SUCCESS),
+            Style::default().fg(theme::INK_ON_FILL).bg(theme::SUCCESS),
         )
     } else if !s.connectable {
         Span::styled(
             " needs GitHub ",
-            Style::default().fg(Color::Black).bg(theme::WARN),
+            Style::default().fg(theme::INK_ON_FILL).bg(theme::WARN),
         )
     } else {
         Span::styled("not connected", theme::muted())
