@@ -96,4 +96,42 @@ mod tests {
         assert_eq!(r.age, "1m");
         assert_eq!(r.state, "pending");
     }
+
+    #[test]
+    fn a_clock_skew_never_reads_as_a_negative_age() {
+        let store = tmp_store("skew");
+        let pause = store
+            .enqueue(IntentKind::TimerPause {
+                at: "2026-07-15T09:40:00Z".parse().unwrap(),
+            })
+            .unwrap();
+        let before_it_was_queued = pause.queued_at.as_second() - 300;
+        assert_eq!(age_s(&pause, before_it_was_queued), 0);
+        assert_eq!(row(&pause, before_it_was_queued).age, "0s");
+    }
+
+    #[test]
+    fn every_stored_state_reads_as_its_one_word() {
+        let store = tmp_store("states");
+        let mut intent = store
+            .enqueue(IntentKind::TimerPause {
+                at: "2026-07-15T09:40:00Z".parse().unwrap(),
+            })
+            .unwrap();
+        assert_eq!(state_word(&intent), "pending");
+        intent.state = IntentState::Diverged {
+            status: 409,
+            title: "Conflict".into(),
+            detail: String::new(),
+            type_uri: None,
+            errors: vec![],
+            code: None,
+            conflict: Default::default(),
+        };
+        assert_eq!(state_word(&intent), "diverged");
+        intent.state = IntentState::Parked {
+            reason: "skipped · Conflict".into(),
+        };
+        assert_eq!(state_word(&intent), "parked");
+    }
 }

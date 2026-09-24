@@ -567,6 +567,14 @@ mod tests {
     }
 
     #[test]
+    fn segment_minutes_for_a_row_off_this_page_stay_out_of_the_view() {
+        let rows = vec![fetched(12, "DDIA", 30)];
+        let folded = fold_activities(rows, &[segment_intent(4, 9, 20)]);
+        assert_eq!(folded.len(), 1, "no row is invented for activity 9");
+        assert_eq!(folded[0].queued_minutes, 0);
+    }
+
+    #[test]
     fn an_empty_queue_leaves_the_fetched_rows_untouched() {
         // The after-drain read: intents left the queue, the fold is identity.
         let folded = fold_activities(vec![fetched(9, "Raft", 52)], &[]);

@@ -1792,4 +1792,92 @@ mod tests {
         assert!(intents[1].is_pending(), "same stream: held, untouched");
         assert_eq!(intents[1].attempts, 0);
     }
+
+    #[tokio::test]
+    async fn a_transport_failure_halts_every_stream_not_just_its_own() {
+        let store = tmp_store("transport-global");
+        store.enqueue(IntentKind::TimerPause { at: at() }).unwrap();
+        store.enqueue(IntentKind::TargetRetire { id: 42 }).unwrap();
+
+        let report = drain(&dead_api(), &store).await.unwrap();
+        assert_eq!(report.replayed, 0);
+        assert_eq!(report.remaining, 2);
+
+        let intents = store.intents().unwrap();
+        assert_eq!(intents[0].attempts, 1);
+        assert_eq!(
+            intents[1].attempts, 0,
+            "another stream is never tried once the wire is down"
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_reporting_never_fires_for_an_intent_that_did_not_land() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/timer/pause"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "title": "Segment overlaps", "status": 422, "detail": "overlap"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("reporting-diverged");
+        store.enqueue(IntentKind::TimerPause { at: at() }).unwrap();
+
+        let mut fired = false;
+        let report = drain_reporting(&client(&server), &store, |_| fired = true)
+            .await
+            .unwrap();
+        assert!(report.diverged);
+        assert!(!fired, "a divergence is not an acknowledgement");
+
+        let store = tmp_store("reporting-offline");
+        store.enqueue(IntentKind::TimerPause { at: at() }).unwrap();
+        let report = drain_reporting(&dead_api(), &store, |_| fired = true)
+            .await
+            .unwrap();
+        assert_eq!(report.remaining, 1);
+        assert!(!fired, "a transport failure is not an acknowledgement");
+    }
+
+    #[tokio::test]
+    async fn an_existing_divergence_never_gates_another_stream() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/targets/42/retire"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 42, "axis": "domain", "scope": { "axis": "domain", "value": 7 },
+                "hours_per_week": 8.0, "active": false, "retired": true
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = tmp_store("gated-other-stream");
+        store.enqueue(IntentKind::TimerPause { at: at() }).unwrap();
+        store.enqueue(IntentKind::TargetRetire { id: 42 }).unwrap();
+        store
+            .mutate(|doc| {
+                doc.intents_mut()[0].state = IntentState::Diverged {
+                    status: 409,
+                    title: "Conflict".into(),
+                    detail: String::new(),
+                    type_uri: None,
+                    errors: vec![],
+                    code: None,
+                    conflict: Default::default(),
+                };
+            })
+            .unwrap();
+
+        let report = drain(&client(&server), &store).await.unwrap();
+        assert_eq!(report.replayed, 1, "the target stream replayed");
+        assert!(
+            report.diverged,
+            "the timer stream still waits on its choice"
+        );
+        assert_eq!(report.remaining, 1);
+    }
 }

@@ -1999,4 +1999,129 @@ mod tests {
             other => panic!("expected a BookUpdate intent, got {other:?}"),
         }
     }
+
+    #[tokio::test]
+    async fn a_failed_enqueue_is_a_loud_error_never_a_silent_drop() {
+        let dir = tmp_dir("enqueue-fails");
+        let blocker = dir.join("not-a-dir");
+        std::fs::write(&blocker, "").unwrap();
+        let queued = QueuedClient::with_paths(
+            &dead_api(),
+            QueueStore::at(blocker.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let err = queued.archive_activity(42).await.unwrap_err();
+        assert!(
+            matches!(&err, ApiError::Transport(msg) if msg.contains("queueing the write failed")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_offline_stop_queues_the_local_elapsed_the_reconcile_compares() {
+        let dir = tmp_dir("offline-stop-elapsed");
+        let queued = QueuedClient::with_paths(
+            &dead_api(),
+            QueueStore::at(dir.join("queue.json")),
+            seeded_cache(&dir),
+        );
+
+        queued.stop_timer().await.unwrap();
+
+        let intents = QueueStore::at(dir.join("queue.json")).pending().unwrap();
+        match &intents[0].kind {
+            IntentKind::TimerStop {
+                local_elapsed_s, ..
+            } => assert!(
+                *local_elapsed_s >= 1800,
+                "the cached 30m session, frozen at the stop: {local_elapsed_s}"
+            ),
+            other => panic!("expected a TimerStop intent, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_offline_completed_log_echoes_its_duration() {
+        let dir = tmp_dir("offline-create-duration");
+        let queued = QueuedClient::with_paths(
+            &dead_api(),
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        let body = ActivityCreate {
+            title: "Raft leader election".into(),
+            duration_minutes: Some(20),
+            ..Default::default()
+        };
+        let out = queued.create_activity(&body).await.unwrap();
+        assert!(out.is_provisional());
+        assert_eq!(out.value().duration_minutes, Some(20));
+    }
+
+    #[tokio::test]
+    async fn the_effective_timer_is_composed_at_read_time_and_never_written_back() {
+        let dir = tmp_dir("effective-timer");
+        let cache = seeded_cache(&dir);
+        let store = QueueStore::at(dir.join("queue.json"));
+        store
+            .enqueue(IntentKind::TimerPause {
+                at: jiff::Timestamp::now(),
+            })
+            .unwrap();
+        let queued = QueuedClient::with_paths(&dead_api(), store, cache.clone());
+
+        let (folded, prov) = queued.effective_timer(jiff::Timestamp::now()).unwrap();
+        assert!(folded.paused, "the queued pause folds over the snapshot");
+        assert_eq!(prov.queue_depth, 1);
+        assert!(
+            !timer_cache::load_at(&cache).unwrap().timer.paused,
+            "the cache keeps the server's truth"
+        );
+
+        QueueStore::at(dir.join("queue.json"))
+            .mutate(|doc| doc.intents_mut().clear())
+            .unwrap();
+        let (settled, prov) = queued.effective_timer(jiff::Timestamp::now()).unwrap();
+        assert!(!settled.paused, "a drained intent leaves the picture");
+        assert_eq!(prov.queue_depth, 0);
+    }
+
+    #[tokio::test]
+    async fn the_reconnect_drain_reports_nothing_when_only_parked_intents_remain() {
+        let dir = tmp_dir("drain-parked-only");
+        let store = QueueStore::at(dir.join("queue.json"));
+        store
+            .enqueue(IntentKind::TimerPause {
+                at: jiff::Timestamp::now(),
+            })
+            .unwrap();
+        store
+            .mutate(|doc| {
+                doc.intents_mut()[0].state = crate::queue::IntentState::Parked {
+                    reason: "took server · Conflict".into(),
+                };
+            })
+            .unwrap();
+        let queued = QueuedClient::with_paths(&dead_api(), store, dir.join("timer-cache.json"));
+
+        let mut fired = false;
+        assert!(queued.drain_reporting(|_| fired = true).await.is_none());
+        assert!(!fired);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_queue_reads_as_empty_on_the_status_surfaces() {
+        let dir = tmp_dir("unreadable-summary");
+        std::fs::write(dir.join("queue.json"), "{not json").unwrap();
+        let queued = QueuedClient::with_paths(
+            &dead_api(),
+            QueueStore::at(dir.join("queue.json")),
+            dir.join("timer-cache.json"),
+        );
+
+        assert_eq!(queued.queue_summary().depth, 0);
+        assert!(queued.first_diverged().is_none());
+    }
 }
