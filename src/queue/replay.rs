@@ -1,34 +1,5 @@
 //! The replay pass — pending intents re-send in order when the wire returns
-//! (ADR 0004 — "a replay-on-reconnect pass").
-//!
-//! **The ordering contract (per-stream FIFO, #109 — relaxing #101's global
-//! halt).** Intents replay one at a time in global queue order (`id`), but a
-//! server divergence gates only **its own stream** (`Intent::stream`), never
-//! the whole pass:
-//!
-//! - **In-stream order is never violated.** Nothing replays past the first
-//!   diverged intent *in its stream* — not in this pass, and not in a later
-//!   one while the divergence stands (a pre-existing diverged intent blocks
-//!   its stream from the start of every pass).
-//! - **Streams are independent.** A diverged `activity:<id>` write holds that
-//!   activity's stream and nothing else: the `timer` stream, other
-//!   activities, targets, notes, and week notes keep replaying.
-//! - **The id-map dependency edge counts as a stream dependency.** An intent
-//!   still referencing a provisional (negative) activity id — a
-//!   `SegmentCreate` on `-N`, an edit/archive of a queued declare — is
-//!   blocked until the `ActivityCreate` that mints the real id lands. The
-//!   parent create lives on the shared `"activity"` stream while the
-//!   dependent keys `"activity:-N"`, so the stream field alone cannot order
-//!   them; the negative reference *is* the edge, checked explicitly: a
-//!   reference the id-map cannot resolve to a real id means the parent is
-//!   diverged, parked, or blocked, and the dependent (and its stream) holds.
-//! - **A transport failure halts the whole pass.** Offline is global, not
-//!   per-stream — the wire dropped for everyone, so everything stays pending.
-//!
-//! Single-flight across processes via the `replay.lock` sidecar. The server
-//! stays authoritative: a replayed intent leaves the queue the moment the
-//! server acknowledges it, and a divergence waits loudly for a human choice —
-//! `ReplayReport::diverged` stays `true` while *any* stream is blocked on one.
+//! (ADR 0004 rule 3).
 
 use std::collections::{HashMap, HashSet};
 
@@ -37,29 +8,14 @@ use crate::api::{ActivityUpdate, ApiClient, ApiError};
 use super::intent::{provisional_id, Intent, IntentKind, IntentState};
 use super::store::{QueueDocView, QueueError, QueueStore};
 
-/// What one drain accomplished — the callers render this, so both the
-/// `engineer queue sync` line and the TUI tile speak from the same numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReplayReport {
-    /// Intents the server acknowledged; they have left the queue.
     pub replayed: usize,
-    /// Of the replayed, how many were answered from the server's idempotency
-    /// store (`Idempotency-Replayed: true`) — the first attempt landed and
-    /// only the ack was lost. Counted in `replayed` too: a deduped intent is
-    /// consumed as confirmed, silently, exactly like a first execution.
     pub deduped: usize,
-    /// Intents still in play after the pass (pending + diverged). Parked
-    /// intents are kept for review, not waiting to sync, so they never count.
     pub remaining: usize,
-    /// A divergence is waiting on a human choice — some stream is blocked.
-    /// Other streams may have replayed in the same pass (`replayed` counts
-    /// across all of them), so `diverged` and a non-zero `replayed` coexist.
     pub diverged: bool,
 }
 
-/// A drain that could not even run its per-intent protocol. `Transport` and
-/// `Problem` are *handled* inside the pass (halt / diverge); only the
-/// unclassifiable rest surfaces here — queue io, auth, decode.
 #[derive(Debug, thiserror::Error)]
 pub enum ReplayError {
     #[error(transparent)]
@@ -68,24 +24,10 @@ pub enum ReplayError {
     Api(#[from] ApiError),
 }
 
-/// Drain the queue: replay pending intents oldest-first until they are gone,
-/// the wire drops, or their stream diverges.
-///
-/// Single-flight: if another process holds the replay lock this returns
-/// immediately with a report of the queue as it stands — callers skip
-/// silently, they never wait. An already-diverged intent gates **its stream**
-/// the same way a fresh divergence does: everything queued behind the choice
-/// on that stream stays queued, while other streams keep replaying (the
-/// per-stream contract in the module docs).
 pub async fn drain(api: &ApiClient, store: &QueueStore) -> Result<ReplayReport, ReplayError> {
     drain_reporting(api, store, |_| {}).await
 }
 
-/// [`drain`], but reporting each acknowledged intent to `on_replay` as it lands
-/// — the TUI streams these into its reconnect transcript (`back online ·
-/// replaying the queue…`). The callback fires only for intents the server
-/// *acknowledges*, so a pass that replays nothing (still offline, a held replay
-/// lock, an already-parked divergence) never calls it: the transcript can't lie.
 pub async fn drain_reporting(
     api: &ApiClient,
     store: &QueueStore,
@@ -96,10 +38,6 @@ pub async fn drain_reporting(
     };
 
     let intents = store.intents()?;
-    // Streams already gated by an open divergence: nothing replays past an
-    // unresolved choice *within its stream*. Other streams flow (#109 —
-    // relaxing #101's whole-queue halt). Fresh divergences join this set as
-    // the pass runs.
     let mut blocked: HashSet<String> = intents
         .iter()
         .filter(|i| i.is_diverged())
@@ -109,34 +47,18 @@ pub async fn drain_reporting(
     pending.sort_by_key(|i| i.id);
     let mut replayed = 0usize;
     let mut deduped = 0usize;
-    // Provisional (negative `-(intent.id)`) → real server id, learned as the
-    // `ActivityCreate`s land this pass. A queued segment (or activity edit) that
-    // referenced a still-queued create resolves through this the moment it
-    // sends; the same mapping is stitched onto the queued intents under the
-    // writer lock (below), so a drain interrupted mid-way stays consistent
-    // across processes and restarts — a fresh drain reads the real id (#108).
     let mut id_map: HashMap<i64, i64> = HashMap::new();
 
     for intent in pending {
         if blocked.contains(&intent.stream) {
-            continue; // in-stream order: nothing replays past its stream's open choice
+            continue;
         }
-        // The id-map dependency edge: a reference that still resolves to a
-        // provisional (negative) id means the parent `ActivityCreate` has not
-        // landed — it is diverged, parked, or blocked behind a divergence on
-        // the shared "activity" stream. The dependent (and everything behind
-        // it on its stream) holds until the parent's choice is made.
         if references_unlanded_create(&intent.kind, &id_map) {
             blocked.insert(intent.stream.clone());
             continue;
         }
         match send_intent(api, &intent, &id_map).await {
             Ok(ack) => {
-                // Acknowledged — the server is authoritative now; the intent
-                // leaves the queue (under the writer lock, like all mutation).
-                // A stored replay (the first attempt landed, the ack was lost)
-                // is consumed the same way, silently: the server already
-                // deduped it, so there is nothing to ask the user (engineer#806).
                 if ack.replayed {
                     deduped += 1;
                     tracing::info!(
@@ -146,18 +68,15 @@ pub async fn drain_reporting(
                         "stored response replayed — the first attempt had landed; consumed as confirmed"
                     );
                 }
-                // A create that just minted a real id: remember the mapping for
-                // the rest of this drain, and — in the SAME writer-locked mutation
-                // that removes the acked create — rewrite every still-queued
-                // intent that referenced the provisional id. Doing both under one
-                // lock is the durability guarantee: if the process dies right
-                // here, the queue is already consistent for the next drain.
                 let remap = ack
                     .minted_activity_id
                     .map(|real| (provisional_id(intent.id), real));
                 if let Some((prov, real)) = remap {
                     id_map.insert(prov, real);
                 }
+                // One locked write removes the ack and stitches its id onto the
+                // dependents: split in two, a crash between them would strand
+                // the provisional reference.
                 store.mutate(|doc| {
                     doc.intents_mut().retain(|i| i.id != intent.id);
                     if let Some((prov, real)) = remap {
@@ -168,8 +87,6 @@ pub async fn drain_reporting(
                 on_replay(&intent);
             }
             Err(ApiError::Transport(msg)) => {
-                // The wire dropped again. Everything stays pending; only the
-                // intent that hit the wall records the attempt.
                 store.mutate(|doc| {
                     if let Some(i) = doc.intents_mut().iter_mut().find(|i| i.id == intent.id) {
                         i.attempts += 1;
@@ -187,11 +104,6 @@ pub async fn drain_reporting(
                 code,
                 conflict,
             }) => {
-                // The server moved on — persist its objection verbatim (the
-                // coded conflict's `code` + extensions included, so the
-                // reconcile surfaces can render the server's side) and gate
-                // the stream: nothing later replays past an unresolved
-                // divergence *on this stream*; the other streams keep going.
                 store.mutate(|doc| {
                     if let Some(i) = doc.intents_mut().iter_mut().find(|i| i.id == intent.id) {
                         i.attempts += 1;
@@ -208,8 +120,6 @@ pub async fn drain_reporting(
                 })?;
                 blocked.insert(intent.stream.clone());
             }
-            // Auth / decode — neither "offline" nor "the server said no";
-            // the caller decides (exit 5 in `engineer queue`).
             Err(e) => return Err(e.into()),
         }
     }
@@ -217,21 +127,12 @@ pub async fn drain_reporting(
     report(store, replayed, deduped)
 }
 
-/// What a successful replay yielded that the drain must remember beyond "it
-/// landed". Everything but a create's minted id is telemetry; the id is the
-/// value the replay id-map is built from (#108).
 struct Ack {
-    /// The answer was a stored replay (`Idempotency-Replayed: true`) — the first
-    /// attempt had landed, the ack was lost.
     replayed: bool,
-    /// For an `ActivityCreate`, the real server id the create minted — the
-    /// id-map's value, stitched onto any queued intent that referenced this
-    /// create's provisional id. `None` for every other kind.
     minted_activity_id: Option<i64>,
 }
 
 impl Ack {
-    /// A plain ack carrying no minted id — everything but a create.
     fn plain(replayed: bool) -> Self {
         Self {
             replayed,
@@ -240,24 +141,12 @@ impl Ack {
     }
 }
 
-/// Resolve a possibly-provisional activity id through the drain's id-map: a
-/// negative `-(create.intent_id)` maps to the real server id once that create
-/// landed earlier this pass (the queued reference still carries the provisional
-/// id in this stale snapshot). A real id passes through unchanged; a negative
-/// miss (the parent create hasn't landed) passes through too, but
-/// [`references_unlanded_create`] holds such an intent before it ever sends.
 fn resolve_activity(id_map: &HashMap<i64, i64>, activity_id: i64) -> i64 {
     id_map.get(&activity_id).copied().unwrap_or(activity_id)
 }
 
-/// The id-map dependency edge, made explicit: does this intent still reference
-/// a provisional (negative) activity id the map cannot resolve? Enqueue order
-/// guarantees the minting `ActivityCreate` always has the lower id, so by the
-/// time a dependent is reached in id order, an unresolved negative reference
-/// can only mean the parent did **not** land — diverged this pass or an
-/// earlier one, parked, dropped, or blocked behind a divergence on the shared
-/// `"activity"` stream. The dependent must hold: posting against a negative id
-/// would 404, and posting against a guessed id would be a silent mis-file.
+/// A parent create always has the lower id, so by the time a dependent is
+/// reached an unresolved negative reference means the parent did not land.
 fn references_unlanded_create(kind: &IntentKind, id_map: &HashMap<i64, i64>) -> bool {
     let reference = match kind {
         IntentKind::SegmentCreate { activity_id, .. } => *activity_id,
@@ -267,10 +156,9 @@ fn references_unlanded_create(kind: &IntentKind, id_map: &HashMap<i64, i64>) -> 
     resolve_activity(id_map, reference) < 0
 }
 
-/// Re-send one intent through the typed call for its kind, carrying the
-/// stored `Idempotency-Key` so a lost ack can never double-write. `id_map`
-/// stitches a provisional parent id to the real one for the reference-carrying
-/// kinds (#108).
+/// Kinds outside the server's `Idempotency-Key` set (engineer ADR 0036) replay
+/// plain; a stored replay is indistinguishable from a first ack there, so their
+/// `Ack` never reports a dedupe.
 async fn send_intent(
     api: &ApiClient,
     intent: &Intent,
@@ -302,14 +190,7 @@ async fn send_intent(
             .bind_timer_idempotent(*activity_id, title.clone(), key)
             .await
             .map(|k| Ack::plain(k.replayed)),
-        // DELETE needs no idempotent variant: deleting the singleton twice is
-        // naturally idempotent — the second delete finds nothing to write.
         IntentKind::TimerDiscard => api.discard_timer().await.map(|()| Ack::plain(false)),
-        // A declare re-sends the whole create body under the stored key, so a
-        // lost ack can never mint the plan item twice (the server's
-        // Idempotency-Key contract, like the timer starts). The minted id rides
-        // back on the `Ack` — it seeds the id-map for any queued segment or edit
-        // that referenced this create's provisional id (#108).
         IntentKind::ActivityCreate { body } => {
             api.create_activity_idempotent(body, key)
                 .await
@@ -318,11 +199,6 @@ async fn send_intent(
                     minted_activity_id: Some(k.value.id),
                 })
         }
-        // Append a manual segment — replays keyed (segment-create is in the
-        // server's opt-in set, ADR 0036), so a lost ack can never write it
-        // twice. A provisional parent id resolves through the id-map first; a
-        // fresh drain reads the real id straight from the (already-stitched)
-        // stored intent, so the map miss passes it through unchanged.
         IntentKind::SegmentCreate {
             activity_id,
             started_at,
@@ -336,12 +212,6 @@ async fn send_intent(
             )
             .await
             .map(|k| Ack::plain(k.replayed)),
-        // Adjust/drop replay as plain calls: re-sending the same title or a
-        // second archive is naturally idempotent server-side, so they need no
-        // key. A stored replay is indistinguishable from a first ack here, so
-        // report `false` (never a dedupe). A provisional parent id (an edit of a
-        // still-queued offline declare) resolves through the id-map, like a
-        // segment.
         IntentKind::ActivityUpdate { id, title } => api
             .update_activity(
                 resolve_activity(id_map, *id),
@@ -355,15 +225,6 @@ async fn send_intent(
             .archive_activity(resolve_activity(id_map, *id))
             .await
             .map(|_| Ack::plain(false)),
-        // The lifecycle verbs replay as plain calls against their real id (the
-        // table refuses them on a provisional row, so no id-map resolve is
-        // needed). Complete/unarchive are naturally idempotent server-side (a
-        // second complete/unarchive finds the state already set), so a lost-ack
-        // re-fire is harmless. Duplicate is the exception: it is not in the
-        // opt-in set (ADR 0036), so a re-fire mints a *second* planned copy — the
-        // accepted #110 risk (a visible, archivable duplicate, never
-        // double-counted). A stored replay is indistinguishable from a first ack
-        // on all three, so report `false`.
         IntentKind::ActivityComplete { id } => {
             api.complete_activity(*id).await.map(|_| Ack::plain(false))
         }
@@ -373,67 +234,31 @@ async fn send_intent(
         IntentKind::ActivityDuplicate { id } => {
             api.duplicate_activity(*id).await.map(|_| Ack::plain(false))
         }
-        // The note write replays as a plain PATCH: the route upserts the single
-        // note row, so re-sending the same body is naturally idempotent and needs
-        // no key. A stored replay is indistinguishable from a first ack here, so
-        // report `false` (never a dedupe).
         IntentKind::WeekNoteWrite { iso_week, body } => api
             .update_week_note(iso_week, body)
             .await
             .map(|_| Ack::plain(false)),
-        // A declare re-sends the whole create body under the stored key, so a
-        // lost ack can never mint the target twice (keyed strictly dominates a
-        // plain re-send here — see `create_target_idempotent`).
         IntentKind::TargetCreate { body } => api
             .create_target_idempotent(body, key)
             .await
             .map(|k| Ack::plain(k.replayed)),
-        // Adjust replays plain, re-addressing a closed version to the lineage's
-        // live row (ADR 0026). Retire replays plain and is naturally idempotent
-        // (a second retire finds the lineage already closed). A stored replay is
-        // indistinguishable from a first ack on these, so report `false`.
         IntentKind::TargetAdjust { id, hours } => replay_target_adjust(api, *id, *hours).await,
         IntentKind::TargetRetire { id } => api.retire_target(*id).await.map(|_| Ack::plain(false)),
-        // The note create replays as a plain POST: the notes route is NOT in the
-        // server's `Idempotency-Key` opt-in set (ADR 0036), so the queued key is
-        // ignored and the body re-sends verbatim. A stored replay is
-        // indistinguishable from a first ack here, so report `false` (never a
-        // dedupe). A duplicate on a lost ack is benign — a study note is shelved
-        // and archivable, never double-counted like a logged segment.
         IntentKind::NoteCreate { body } => api.create_note(body).await.map(|_| Ack::plain(false)),
-        // The note edit replays as a plain PATCH re-sending the whole body
-        // verbatim — anchors omitted or present exactly as enqueued, so the
-        // server's omit-vs-replace citation contract is honored on replay.
-        // Note-update is not in the opt-in set (ADR 0036), and a re-sent identical
-        // body is a benign upsert, so no key. A stored replay is indistinguishable
-        // from a first ack here, so report `false`.
         IntentKind::NoteUpdate { id, body } => {
             api.update_note(*id, body).await.map(|_| Ack::plain(false))
         }
-        // Archive/unarchive/unlink replay as plain calls: a second archive finds
-        // it already archived, a second unlink already loose — naturally
-        // idempotent server-side, so no key. `false` (never a dedupe).
         IntentKind::NoteArchive { id } => api.archive_note(*id).await.map(|_| Ack::plain(false)),
         IntentKind::NoteUnarchive { id } => {
             api.unarchive_note(*id).await.map(|_| Ack::plain(false))
         }
         IntentKind::NoteUnlink { id } => api.unlink_note(*id).await.map(|_| Ack::plain(false)),
-        // The book write replays as a plain PATCH re-sending the partial body
-        // (status/page/chapter) verbatim. Book-update is not in the opt-in set
-        // (ADR 0036) and re-applying the same value is naturally idempotent, so no
-        // key. `false` (never a dedupe).
         IntentKind::BookUpdate { id, body } => {
             api.update_book(*id, body).await.map(|_| Ack::plain(false))
         }
     }
 }
 
-/// Stitch a landed create's real id onto every still-queued intent that
-/// referenced its provisional (negative) id — the segment it belongs to, or an
-/// edit / archive of a still-queued declare. Runs inside the writer-locked
-/// mutation that removes the acked create, so the rewrite is durable the instant
-/// the create lands (#108). The intent's `stream` is recomputed from the fixed
-/// kind so `engineer queue` and the FIFO keying read the real parent too.
 fn remap_activity_references(doc: &mut QueueDocView, prov: i64, real: i64) {
     for i in doc.intents_mut().iter_mut() {
         let changed = match &mut i.kind {
@@ -455,12 +280,6 @@ fn remap_activity_references(doc: &mut QueueDocView, prov: i64, real: i64) {
     }
 }
 
-/// Replay a target adjust, honoring the append-only lineage rule (engineer ADR
-/// 0026): adjusting a *closed* version fails `target-version-closed`, but the
-/// server hands back the lineage's live row id — so re-address the same hours to
-/// it rather than diverging. The gesture ("this many hours on this lineage")
-/// still lands. A closed version with no live row left (`live_target_id` absent
-/// — the lineage was retired meanwhile) is a genuine divergence and propagates.
 async fn replay_target_adjust(api: &ApiClient, id: i64, hours: f64) -> Result<Ack, ApiError> {
     match api.update_target(id, hours).await {
         Ok(_) => Ok(Ack::plain(false)),
@@ -518,8 +337,6 @@ mod tests {
         "2026-07-15T09:30:00Z".parse().unwrap()
     }
 
-    /// Records `(path, Idempotency-Key)` per request so the tests can assert
-    /// FIFO order *on the wire*, not just in the store.
     struct Recorder {
         log: Arc<Mutex<Vec<(String, String)>>>,
     }
@@ -696,10 +513,6 @@ mod tests {
         assert_eq!(report.replayed, 1);
     }
 
-    /// Was `problem_halts_the_drain_…` under #101's global FIFO; #109 relaxed
-    /// the halt to per-stream, and both intents here share the `timer` stream,
-    /// so the observable behavior is unchanged: nothing replays past the
-    /// divergence *in its stream*.
     #[tokio::test]
     async fn problem_halts_the_stream_and_persists_diverged() {
         let server = MockServer::start().await;
@@ -715,7 +528,6 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        // Nothing after the divergence may replay on the same stream.
         Mock::given(method("POST"))
             .and(path("/api/v1/timer/resume"))
             .respond_with(ResponseTemplate::new(200))
@@ -806,25 +618,15 @@ mod tests {
         }
     }
 
-    /// §Diverged · duplicate (`offline-write.dc.html`): the same intent re-sent
-    /// after a lost ack. The server answers from its idempotency store —
-    /// byte-identical body, `Idempotency-Replayed: true` — and the intent is
-    /// consumed as confirmed, silently: it leaves the queue, no divergence, no
-    /// prompt, and exactly one logical write ever existed server-side.
     #[tokio::test]
     async fn a_lost_ack_replay_dedupes_silently_with_no_duplicate_prompt() {
         let store = tmp_store("dedupe");
         let intent = store.enqueue(IntentKind::TimerPause { at: at() }).unwrap();
 
-        // First attempt: the write lands server-side but the ack is lost —
-        // from the queue's view this is a transport failure, so the intent
-        // stays pending with one recorded attempt.
         let report = drain(&dead_api(), &store).await.unwrap();
         assert_eq!(report.replayed, 0);
         assert_eq!(store.intents().unwrap()[0].attempts, 1, "the lost ack");
 
-        // Reconnect: the re-sent intent carries the same stored key, and the
-        // server replays the stored first response instead of re-executing.
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/v1/timer/pause"))
@@ -834,7 +636,7 @@ mod tests {
                     .insert_header("Idempotency-Replayed", "true")
                     .set_body_json(serde_json::json!({ "running": true, "paused": true })),
             )
-            .expect(1) // exactly one wire call — and it wrote nothing new
+            .expect(1)
             .mount(&server)
             .await;
 
@@ -881,16 +683,12 @@ mod tests {
         store.enqueue(IntentKind::TimerPause { at: at() }).unwrap();
         let _guard = store.try_replay_lock().unwrap().expect("free lock");
 
-        // The dead api would bump `attempts` if the drain actually ran.
         let report = drain(&dead_api(), &store).await.unwrap();
         assert_eq!(report.replayed, 0);
         assert_eq!(report.remaining, 1);
         assert_eq!(store.intents().unwrap()[0].attempts, 0, "never attempted");
     }
 
-    /// Was `an_existing_divergence_gates_the_whole_pass` under #101; #109
-    /// scopes the gate to the diverged intent's stream. The pending intent
-    /// *behind the choice on the same stream* stays queued across passes.
     #[tokio::test]
     async fn an_existing_divergence_gates_its_stream_across_passes() {
         let server = MockServer::start().await;
@@ -929,8 +727,6 @@ mod tests {
     #[tokio::test]
     async fn a_parked_intent_never_replays_and_never_gates() {
         let server = MockServer::start().await;
-        // Exactly one wire call: the pending resume. The parked pause must
-        // neither replay nor gate the pass.
         Mock::given(method("POST"))
             .and(path("/api/v1/timer/resume"))
             .respond_with(
@@ -968,8 +764,6 @@ mod tests {
         assert!(intents[0].is_parked(), "kept for review — never deleted");
     }
 
-    // --- plan writes (#115): create replays keyed, adjust/drop replay plain ---
-
     #[tokio::test]
     async fn activity_create_replays_with_the_stored_idempotency_key() {
         use crate::api::ActivityCreate;
@@ -981,8 +775,6 @@ mod tests {
             ..Default::default()
         };
         let intent = store.enqueue(IntentKind::ActivityCreate { body }).unwrap();
-        // The whole create body re-sends verbatim, carrying the queued key so a
-        // lost ack can never mint the plan item twice.
         Mock::given(method("POST"))
             .and(path("/api/v1/activities"))
             .and(header("Idempotency-Key", intent.idempotency_key.as_str()))
@@ -1042,9 +834,6 @@ mod tests {
         assert_eq!(report.remaining, 0);
     }
 
-    // --- activity lifecycle verbs (#110): complete / unarchive / duplicate
-    // replay as plain calls against their real id ---
-
     #[tokio::test]
     async fn activity_lifecycle_verbs_replay_as_plain_calls() {
         let server = MockServer::start().await;
@@ -1064,8 +853,6 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        // The duplicate mints a fresh copy — a plain POST, no Idempotency-Key
-        // matcher (it is not in the opt-in set, ADR 0036).
         Mock::given(method("POST"))
             .and(path("/api/v1/activities/5/duplicate"))
             .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
@@ -1092,8 +879,6 @@ mod tests {
         assert_eq!(report.remaining, 0);
         assert!(store.intents().unwrap().is_empty(), "all three synced");
     }
-
-    // --- reflection (#117): the week note replays as a plain PATCH ---
 
     #[tokio::test]
     async fn week_note_write_replays_as_a_plain_patch() {
@@ -1125,14 +910,10 @@ mod tests {
         assert!(store.intents().unwrap().is_empty(), "the reflection synced");
     }
 
-    // --- note capture (#123): the note create replays as a plain POST ---
-
     #[tokio::test]
     async fn note_create_replays_as_a_plain_post() {
         use crate::api::{Anchor, NoteInput};
         let server = MockServer::start().await;
-        // No `Idempotency-Key` matcher: notes-create is not in the opt-in set
-        // (ADR 0036), so the body re-sends plain, wrapped in the `note` key.
         Mock::given(method("POST"))
             .and(path("/api/v1/notes"))
             .and(body_json(serde_json::json!({
@@ -1167,16 +948,10 @@ mod tests {
         assert!(store.intents().unwrap().is_empty(), "the capture synced");
     }
 
-    // --- note writes (#111): edit re-sends the body verbatim, archive/unlink
-    // replay plain ---
-
     #[tokio::test]
     async fn note_update_replays_as_a_plain_patch_with_the_body_verbatim() {
         use crate::api::{Anchor, NoteInput};
         let server = MockServer::start().await;
-        // No Idempotency-Key matcher: note-update is not in the opt-in set (ADR
-        // 0036). The whole body re-sends wrapped in the `note` key, anchors and
-        // all — the omit-vs-replace contract honored on the wire.
         Mock::given(method("PATCH"))
             .and(path("/api/v1/notes/7"))
             .and(body_json(serde_json::json!({
@@ -1243,8 +1018,6 @@ mod tests {
         assert_eq!(report.remaining, 0);
     }
 
-    // --- book writes (#111): the partial body replays as a plain PATCH ---
-
     #[tokio::test]
     async fn book_update_replays_as_a_plain_patch() {
         use crate::api::{BookStatus, BookUpdate};
@@ -1279,9 +1052,6 @@ mod tests {
         assert!(store.intents().unwrap().is_empty(), "the book write synced");
     }
 
-    // --- target writes (#121): create replays keyed, adjust/retire replay plain,
-    // a closed-version adjust re-addresses to the live lineage row ---
-
     #[tokio::test]
     async fn target_create_replays_with_the_stored_idempotency_key() {
         use crate::api::{TargetCreate, TargetScope};
@@ -1295,8 +1065,6 @@ mod tests {
                 },
             })
             .unwrap();
-        // The whole create body re-sends verbatim, carrying the queued key so a
-        // lost ack can never mint the target twice.
         Mock::given(method("POST"))
             .and(path("/api/v1/targets"))
             .and(header("Idempotency-Key", intent.idempotency_key.as_str()))
@@ -1355,10 +1123,6 @@ mod tests {
         assert_eq!(report.remaining, 0);
     }
 
-    /// A queued adjust whose version closed while offline: the server rejects
-    /// with `target-version-closed` and the live row id, and the replay
-    /// re-addresses the same hours to it (ADR 0026) rather than diverging — the
-    /// gesture still lands, and the intent leaves the queue.
     #[tokio::test]
     async fn a_closed_version_adjust_readdresses_to_the_live_lineage_row() {
         let server = MockServer::start().await;
@@ -1375,7 +1139,6 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        // The re-address: the same hours land on the lineage's live row.
         Mock::given(method("PATCH"))
             .and(path("/api/v1/targets/47"))
             .and(body_json(serde_json::json!({
@@ -1401,9 +1164,6 @@ mod tests {
         assert!(store.intents().unwrap().is_empty(), "the adjust synced");
     }
 
-    /// A closed version with no live row left (the lineage was fully retired
-    /// meanwhile) has nowhere to re-address — a genuine divergence that halts the
-    /// pass and persists the objection, like any other server refusal.
     #[tokio::test]
     async fn a_closed_version_adjust_with_no_live_row_diverges() {
         let server = MockServer::start().await;
@@ -1435,8 +1195,6 @@ mod tests {
         assert!(intents[0].is_diverged());
     }
 
-    // --- segment append & the replay id-map (#108) ---------------------------
-
     fn completed_create() -> IntentKind {
         use crate::api::ActivityCreate;
         IntentKind::ActivityCreate {
@@ -1448,11 +1206,6 @@ mod tests {
         }
     }
 
-    /// The acceptance's literal case: a queued segment that referenced a
-    /// still-queued `ActivityCreate`'s provisional id posts against the **real**
-    /// activity id once the parent create lands earlier in the same drain — the
-    /// in-memory id-map resolves the negative reference the stale snapshot still
-    /// carries, and the segment replays keyed (ADR 0036).
     #[tokio::test]
     async fn a_queued_segment_replays_against_the_parents_real_id() {
         let server = MockServer::start().await;
@@ -1464,8 +1217,6 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        // The proof on the wire: the segment posts to /activities/55/segments —
-        // the REAL id, never the provisional negative it was enqueued with.
         Mock::given(method("POST"))
             .and(path("/api/v1/activities/55/segments"))
             .and(body_partial_json(serde_json::json!({
@@ -1482,7 +1233,7 @@ mod tests {
         let create = store.enqueue(completed_create()).unwrap();
         store
             .enqueue(IntentKind::SegmentCreate {
-                activity_id: -(create.id as i64), // the create's provisional id
+                activity_id: provisional_id(create.id),
                 started_at: "2026-07-15T13:00:00Z".parse().unwrap(),
                 minutes: 20,
             })
@@ -1494,14 +1245,6 @@ mod tests {
         assert!(store.intents().unwrap().is_empty(), "both synced");
     }
 
-    /// The interrupted-drain case — the ticket's core durability guarantee. The
-    /// parent create lands and stitches its real id onto the queued segment
-    /// **under the writer lock**, then the drain is cut off before the segment
-    /// lands (here: an undecodable segment response aborts the pass without
-    /// acking or diverging it — exactly what a crash between the two writes
-    /// leaves). A FRESH drain (new client = new process, empty in-memory map)
-    /// then replays the segment with the REAL id, read purely from what was
-    /// persisted onto the intent.
     #[tokio::test]
     async fn an_interrupted_drain_persists_the_real_id_onto_the_queued_segment() {
         let store = tmp_store("idmap-interrupted");
@@ -1514,8 +1257,6 @@ mod tests {
             })
             .unwrap();
 
-        // Process 1: the create lands (real id 55); the segment's write is then
-        // cut off mid-flight — an undecodable body aborts the pass.
         let s1 = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/v1/activities"))
@@ -1526,8 +1267,8 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/api/v1/activities/55/segments"))
-            // No `id` in the body → a decode error aborts the drain (models the
-            // process dying between the two writes).
+            // No `id` in the body: a decode error aborts the drain, standing in for a
+            // crash between the two writes.
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
             .mount(&s1)
             .await;
@@ -1535,8 +1276,6 @@ mod tests {
         let interrupted = drain(&client(&s1), &store).await;
         assert!(interrupted.is_err(), "the pass aborted mid-drain");
 
-        // The create left; the segment stayed queued with its parent id already
-        // rewritten to the REAL one — persisted, so it survives the process.
         let intents = store.intents().unwrap();
         assert_eq!(intents.len(), 1, "only the segment remains");
         assert_eq!(intents[0].id, segment.id);
@@ -1549,9 +1288,6 @@ mod tests {
         }
         assert_eq!(intents[0].stream, "activity:55", "and the stream too");
 
-        // Process 2 (fresh client, empty in-memory map): the segment replays with
-        // the REAL id, drawn purely from the persisted intent, under its stored
-        // Idempotency-Key so the earlier cut-off attempt can't double-write.
         let s2 = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/v1/activities/55/segments"))
@@ -1569,10 +1305,6 @@ mod tests {
         assert!(store.intents().unwrap().is_empty());
     }
 
-    /// The id-map also stitches an activity **edit** of a still-queued declare:
-    /// an offline `ActivityUpdate` against a create's provisional id replays
-    /// against the real row once the create lands (the same reference-rewrite as
-    /// the segment).
     #[tokio::test]
     async fn a_queued_edit_of_a_provisional_declare_replays_against_the_real_row() {
         let server = MockServer::start().await;
@@ -1610,11 +1342,6 @@ mod tests {
         assert!(store.intents().unwrap().is_empty());
     }
 
-    // --- per-stream FIFO (#109): a divergence blocks its stream, not the pass ---
-
-    /// The relaxation's core case: an `ActivityCreate` diverges (422) while the
-    /// timer stream keeps flowing — both timer intents land on the wire in the
-    /// same drain, asserted by wiremock, while the activity stream holds.
     #[tokio::test]
     async fn a_diverged_activity_stream_never_blocks_the_timer_stream() {
         let server = MockServer::start().await;
@@ -1627,7 +1354,6 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        // The proof on the wire: the timer intents land while the activity holds.
         Mock::given(method("POST"))
             .and(path("/api/v1/timer/pause"))
             .respond_with(
@@ -1664,10 +1390,6 @@ mod tests {
         assert!(intents[0].is_diverged());
     }
 
-    /// The dependency edge (rule c): a queued segment referencing a diverged
-    /// create's provisional id must hold — its nominal stream (`activity:-N`)
-    /// differs from the create's (`activity`), so the negative reference is
-    /// what carries the dependency. An unrelated stream still flows.
     #[tokio::test]
     async fn a_segment_on_a_provisional_id_holds_while_its_create_is_diverged() {
         let server = MockServer::start().await;
@@ -1679,8 +1401,6 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        // The blocked dependent must never reach the wire — not on the
-        // provisional id, not on any guessed one.
         Mock::given(method("POST"))
             .and(wiremock::matchers::path_regex(
                 r"^/api/v1/activities/.+/segments$",
@@ -1689,7 +1409,6 @@ mod tests {
             .expect(0)
             .mount(&server)
             .await;
-        // An unrelated stream keeps flowing past the held dependency.
         Mock::given(method("PATCH"))
             .and(path("/api/v1/targets/42/retire"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -1726,9 +1445,6 @@ mod tests {
         assert_eq!(held.attempts, 0, "the dependent was not even attempted");
     }
 
-    /// In-stream order (rule a): a divergence at the head of `activity:9`
-    /// blocks the edit queued behind it on the same stream, while a different
-    /// activity's stream replays in the same pass.
     #[tokio::test]
     async fn in_stream_order_holds_behind_a_divergence_while_other_activities_flow() {
         let server = MockServer::start().await;
@@ -1741,14 +1457,12 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        // The edit behind the diverged segment on activity:9 must hold…
         Mock::given(method("PATCH"))
             .and(path("/api/v1/activities/9"))
             .respond_with(ResponseTemplate::new(200))
             .expect(0)
             .mount(&server)
             .await;
-        // …while activity:12's stream replays.
         Mock::given(method("PATCH"))
             .and(path("/api/v1/activities/12"))
             .and(body_json(serde_json::json!({

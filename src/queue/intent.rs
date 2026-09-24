@@ -4,24 +4,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::{ActivityCreate, BookUpdate, ConflictInfo, FieldError, NoteInput, TargetCreate};
 
-/// A single deferred write: a mutation the user performed while the wire was
-/// down, persisted until it replays. Stored only until it syncs — the queue is
-/// never a second ledger (ADR 0004).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Intent {
-    /// Monotonic queue sequence — the replay order.
     pub id: u64,
-    /// Sent as the `Idempotency-Key` header on replay, so a re-sent intent
-    /// whose ack was lost cannot double-write.
     pub idempotency_key: String,
-    /// Ordering domain (`timer`, `activity:42`, …). Replay is global FIFO; a
-    /// later relaxation to per-stream FIFO keys on this field.
     pub stream: String,
-    /// Wall-clock when the user acted — the true intent time.
     pub queued_at: jiff::Timestamp,
     pub kind: IntentKind,
     pub state: IntentState,
-    /// Replay attempts so far (transport failures leave the intent pending).
     pub attempts: u32,
     #[serde(default)]
     pub last_error: Option<String>,
@@ -41,9 +31,6 @@ impl Intent {
     }
 }
 
-/// The typed verb + payload. Verbs that act on the clock carry the wall-clock
-/// moment the user acted (`at`) — a pause replayed ten minutes later must not
-/// mean "paused at replay time".
 // Variants are named `<module><verb>` — the queue spans every module's writes,
 // so the shared prefix is the namespace, not noise.
 #[allow(clippy::enum_variant_names)]
@@ -63,8 +50,6 @@ pub enum IntentKind {
     },
     TimerStop {
         at: jiff::Timestamp,
-        /// The local clock's elapsed seconds at the stop — the reconcile pass
-        /// compares the server's written segment against this.
         local_elapsed_s: i64,
     },
     TimerBind {
@@ -72,163 +57,65 @@ pub enum IntentKind {
         title: Option<String>,
     },
     TimerDiscard,
-    /// Declare a plan item — a `planned` activity with `planned_on` set (the
-    /// board's `a`, deferred while offline). Carries the whole create body so
-    /// the replay re-sends it verbatim; the queued `Idempotency-Key` makes the
-    /// re-send safe. Stream `"activity"`: there is no server id yet to order a
-    /// per-activity stream on.
     ActivityCreate {
         body: ActivityCreate,
     },
-    /// Adjust a plan item's title in place — a deferred `PATCH
-    /// /api/v1/activities/:id` (the board's `e`).
     ActivityUpdate {
         id: i64,
         title: String,
     },
-    /// Drop a plan item — a deferred archive (the board's `d`, second press).
     ActivityArchive {
         id: i64,
     },
-    /// Mark an activity done — a deferred `POST /api/v1/activities/:id/complete`
-    /// (the Activities table's `c`). Replays plain: completing an
-    /// already-complete activity is naturally idempotent server-side, so no
-    /// `Idempotency-Key` is needed. Always carries a real server id — the table
-    /// refuses the gesture on a still-queued provisional row (#109), so a
-    /// complete never references an unminted id. Stream `"activity:<id>"`: it
-    /// orders behind the row it acts on.
     ActivityComplete {
         id: i64,
     },
-    /// "Do this again" — a deferred `POST /api/v1/activities/:id/duplicate` (the
-    /// table's `d`). The server mints a fresh `planned` copy. Duplicate is **not**
-    /// in the server's `Idempotency-Key` opt-in set (ADR 0036 — timer
-    /// start/stop/pause/resume, segment create, activity create, target create),
-    /// so it replays as a **plain** POST: a re-send after a lost ack mints a
-    /// *second* copy. That double-fire is an accepted risk (#110): a visible,
-    /// archivable duplicate beats a silently-dropped gesture, and — unlike a
-    /// logged segment — a planned copy is never double-*counted*. Always carries a
-    /// real source id (provisional rows refuse the gesture). Stream
-    /// `"activity:<id>"`: it orders behind the source row.
+    /// Replays plain: a lost ack can mint a second copy, accepted in ADR 0004.
     ActivityDuplicate {
         id: i64,
     },
-    /// Restore an archived plan item — a deferred `PATCH
-    /// /api/v1/activities/:id/unarchive` (the table's `a` toggle on an archived
-    /// row). Reversible and naturally idempotent (a second unarchive finds it
-    /// already active), so it replays plain. Always carries a real server id
-    /// (provisional rows refuse the gesture). Stream `"activity:<id>"`.
     ActivityUnarchive {
         id: i64,
     },
-    /// Append a manual segment to an existing activity — the `engineer log
-    /// --activity` write (after-the-fact time on work already recorded),
-    /// deferred while offline. Carries the target activity, the segment's start,
-    /// and its minutes; the replay re-sends it under the queued
-    /// `Idempotency-Key` (segment-create is in the server's opt-in set, ADR
-    /// 0036), so a lost ack can never write the segment twice.
-    ///
-    /// `activity_id` may be **provisional** — the negative `-(intent.id)` a still
-    /// -queued offline `ActivityCreate` returned. Strict-FIFO replay lands the
-    /// parent create first; when it does, the replay pass rewrites this
-    /// `activity_id` to the real server id (in memory for the rest of the drain,
-    /// and persisted onto this intent under the writer lock), so a segment always
-    /// posts against a real parent even across an interrupted drain (#108). Stream
-    /// `"activity:<id>"`: it orders behind the activity it belongs to (and is
-    /// re-streamed when the id is stitched).
+    /// `activity_id` may be a still-queued create's [`provisional_id`]; the replay
+    /// stitches the real id on before this posts.
     SegmentCreate {
         activity_id: i64,
         started_at: jiff::Timestamp,
         minutes: u32,
     },
-    /// Write the week's retro reflection — a deferred `PATCH
-    /// /api/v1/weeks/:iso_week/note` (the board's `i`, deferred while offline).
-    /// Carries the whole body so the replay re-sends it verbatim; the route
-    /// upserts the single note row, so it is naturally idempotent (a re-send
-    /// overwrites with the same body) and replays as a plain call. Stream
-    /// `"week:<iso_week>"`: one note per week, ordered on its own.
     WeekNoteWrite {
         iso_week: String,
         body: String,
     },
-    /// Declare a weekly target — the Progress `n` flow, deferred while offline.
-    /// Carries the whole create body so the replay re-sends it verbatim; the
-    /// queued `Idempotency-Key` makes that re-send safe (a lost ack cannot mint
-    /// the target twice). Stream `"target"`: there is no server id yet to order a
-    /// per-target stream on, so a fresh declare joins the shared target stream.
     TargetCreate {
         body: TargetCreate,
     },
-    /// Adjust a target's weekly hours — a deferred `PATCH /api/v1/targets/:id`
-    /// (Progress `e`). Replays plain; a closed-version rejection re-addresses the
-    /// same hours to the lineage's live row (engineer ADR 0026) inside the replay
-    /// rather than diverging. Stream `"target:<id>"`: keyed on the row it edits.
     TargetAdjust {
         id: i64,
         hours: f64,
     },
-    /// Retire a target — a deferred `PATCH /api/v1/targets/:id/retire` (Progress
-    /// `x`). Closes the lineage while keeping its history (retire ≠ delete);
-    /// replays plain, since a second retire is naturally idempotent server-side.
     TargetRetire {
         id: i64,
     },
-    /// Capture a study note — a deferred `POST /api/v1/notes` (the quick-capture
-    /// overlay's save, and `engineer note capture`). Carries the whole create
-    /// body so the replay re-sends it verbatim. Stream `"note"`: there is no
-    /// server id yet to order a per-note stream on, so a fresh capture joins the
-    /// shared note stream. Unlike the timer / activity creates, notes-create is
-    /// NOT in the server's `Idempotency-Key` opt-in set (ADR 0036 — timer
-    /// start/stop/pause/resume, segment create, activity create), so it replays
-    /// plain: a duplicate on a lost ack is benign (a study note is shelved and
-    /// archivable, never double-counted like a logged segment).
+    /// Replays plain (outside the server's `Idempotency-Key` set): a lost ack can
+    /// shelve a second copy.
     NoteCreate {
         body: NoteInput,
     },
-    /// Revise a study note in place — a deferred `PATCH /api/v1/notes/:id` (the
-    /// browser's `e` edit overlay save, including the #124 chapter/section anchor
-    /// save). Carries the whole `NoteInput` body verbatim so the replay re-sends
-    /// it unchanged — crucially preserving the omit-vs-replace anchors contract:
-    /// a body with `anchors: None` omits the field on replay (citations stay
-    /// untouched), a body with `anchors: Some(_)` replaces them. Replays plain:
-    /// note update is not in the server's `Idempotency-Key` opt-in set (ADR
-    /// 0036), and a re-sent identical body is a benign upsert. Always a real
-    /// server id — an offline-created note isn't reachable to edit before it
-    /// syncs (the browse read is live), so no id-map stitching is needed. Stream
-    /// `"note:<id>"`: ordered behind any earlier queued write to the same note.
     NoteUpdate {
         id: i64,
         body: NoteInput,
     },
-    /// Shelve a note — a deferred `PATCH /api/v1/notes/:id/archive` (the
-    /// browser's `a` on an active note). Field-flip synthesis (`archived_at`
-    /// set); replays plain — a second archive finds it already archived, so it
-    /// is naturally idempotent. Stream `"note:<id>"`.
     NoteArchive {
         id: i64,
     },
-    /// Restore a shelved note — a deferred `PATCH /api/v1/notes/:id/unarchive`
-    /// (the browser's `a` on an archived note). Field-flip synthesis
-    /// (`archived_at` cleared); replays plain (a second unarchive is idempotent).
-    /// Stream `"note:<id>"`.
     NoteUnarchive {
         id: i64,
     },
-    /// Detach a note from its book — a deferred `PATCH /api/v1/notes/:id/unlink`
-    /// (the detail's `u`). The note survives; only its book anchor is severed.
-    /// Field-flip synthesis (`book_id` cleared, `book_linked` false); replays
-    /// plain (a second unlink finds it already loose). Stream `"note:<id>"`.
     NoteUnlink {
         id: i64,
     },
-    /// Update a book in place — a deferred `PATCH /api/v1/books/:id` (the book
-    /// detail's `s` status flip, `p` page set, and `⎵` chapter-done). Carries the
-    /// whole partial `BookUpdate` body verbatim so the replay re-sends the exact
-    /// fields the user set; the offline synthesis field-flips them onto the
-    /// current book. Replays plain: a re-sent status/page/chapter set is
-    /// naturally idempotent (the same value re-applied), so book update is not in
-    /// the server's `Idempotency-Key` opt-in set (ADR 0036). Always a real server
-    /// id — books are never created offline. Stream `"book:<id>"`.
     BookUpdate {
         id: i64,
         body: BookUpdate,
@@ -236,7 +123,6 @@ pub enum IntentKind {
 }
 
 impl IntentKind {
-    /// The stream this verb orders within.
     pub fn stream(&self) -> String {
         match self {
             Self::TimerStart { .. }
@@ -245,12 +131,7 @@ impl IntentKind {
             | Self::TimerStop { .. }
             | Self::TimerBind { .. }
             | Self::TimerDiscard => "timer".into(),
-            // A declare has no server id yet — it orders in the shared activity
-            // stream; adjust/drop key on the row they act on.
             Self::ActivityCreate { .. } => "activity".into(),
-            // Adjust/drop and the lifecycle verbs all key on the row they act
-            // on — the whole activity's stream, ordered behind any earlier write
-            // to it.
             Self::ActivityUpdate { id, .. }
             | Self::ActivityArchive { id }
             | Self::ActivityComplete { id }
@@ -258,35 +139,21 @@ impl IntentKind {
             | Self::ActivityUnarchive { id } => {
                 format!("activity:{id}")
             }
-            // Orders behind the activity it belongs to. A provisional (negative)
-            // id here is rewritten to the real one when the parent create lands,
-            // and the stream is recomputed with it (replay id-mapping, #108).
             Self::SegmentCreate { activity_id, .. } => format!("activity:{activity_id}"),
-            // One note per week, ordered on its own stream — a later reflection
-            // for the same week supersedes the earlier queued one in FIFO order.
             Self::WeekNoteWrite { iso_week, .. } => format!("week:{iso_week}"),
-            // A declare has no server id yet — it orders in the shared target
-            // stream; adjust/retire key on the lineage row they act on.
             Self::TargetCreate { .. } => "target".into(),
             Self::TargetAdjust { id, .. } | Self::TargetRetire { id } => {
                 format!("target:{id}")
             }
-            // A fresh capture has no server id yet — it orders in the shared
-            // note stream, like a plan or target declare.
             Self::NoteCreate { .. } => "note".into(),
-            // Edit/archive/unarchive/unlink key on the note they act on — the
-            // whole note's stream, ordered behind any earlier write to it.
             Self::NoteUpdate { id, .. }
             | Self::NoteArchive { id }
             | Self::NoteUnarchive { id }
             | Self::NoteUnlink { id } => format!("note:{id}"),
-            // Every book write keys on the row it edits — status, page, and
-            // chapter-done all order on the one book's stream.
             Self::BookUpdate { id, .. } => format!("book:{id}"),
         }
     }
 
-    /// The short human word the queue table and status lines print.
     pub fn word(&self) -> &'static str {
         match self {
             Self::TimerStart { .. } => "start",
@@ -316,11 +183,6 @@ impl IntentKind {
     }
 }
 
-/// Where an intent stands. `Diverged` keeps the whole RFC 7807 payload so the
-/// reconcile surface can render the server's objection verbatim. `Parked` is
-/// the take-server resolution's kept-for-review state: the intent stays in
-/// `queue.json` (never deleted), reads as `parked` in `engineer queue`, is
-/// excluded from replay, and leaves only by an explicit gesture.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum IntentState {
@@ -333,39 +195,24 @@ pub enum IntentState {
         type_uri: Option<String>,
         #[serde(default)]
         errors: Vec<FieldError>,
-        /// The stable conflict code (engineer#806, ADR 0036), when the server
-        /// sent one. Additive: pre-#107 queue documents load as `None` and the
-        /// reconcile surfaces fall back to the generic title/detail rendering.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         code: Option<String>,
-        /// The coded conflict's extension members (`current`, `resolutions`,
-        /// …), kept verbatim so the panel can render the server's side without
-        /// a second read. Empty on legacy and code-less problems. Boxed to
-        /// match [`ApiError::Problem`](crate::api::ApiError) — the payload rides
-        /// the error path verbatim into this state, and boxing keeps the
+        /// Boxed like [`ApiError::Problem`](crate::api::ApiError), keeping the
         /// resolve/replay `Result`s off clippy's `result_large_err`.
         #[serde(default, skip_serializing_if = "ConflictInfo::is_empty")]
         conflict: Box<ConflictInfo>,
     },
     Parked {
-        /// Why it was parked — the resolution that put it here, carrying the
-        /// server objection's title so the review can still say what happened.
         reason: String,
     },
 }
 
-/// The negative stand-in id a queued **activity/segment** create returns:
-/// `-(intent.id)`, unique per intent (unlike the flat `-1` sentinels the note /
-/// target provisionals use). The uniqueness is load-bearing — the replay id-map
-/// keys on exactly this value to rewrite the references to *this* provisional
-/// resource when its create lands (#108). Every board / audit surface renders
-/// any negative id as `◔ queued`, so only the sign matters to them; the
-/// magnitude matters only to the map.
+/// Unique per intent, unlike the flat `-1` note/target sentinels: the replay
+/// id-map keys on it to rewrite references to this create.
 pub fn provisional_id(intent_id: u64) -> i64 {
     -(intent_id as i64)
 }
 
-/// A fresh v4-format idempotency key.
 pub fn new_idempotency_key() -> String {
     let mut bytes: [u8; 16] = rand::random();
     bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
@@ -511,8 +358,6 @@ mod tests {
     fn note_update_carries_the_omit_vs_replace_anchors_contract_through_serde() {
         use crate::api::NoteInput;
 
-        // Omit: `anchors: None` must round-trip as absent — the replay PATCH then
-        // leaves the note's citations untouched (the NoteInput contract).
         let omit = IntentKind::NoteUpdate {
             id: 9,
             body: NoteInput {
@@ -531,8 +376,6 @@ mod tests {
             other => panic!("expected NoteUpdate, got {other:?}"),
         }
 
-        // Replace: an empty `Some(vec![])` is distinct from `None` — it replaces
-        // the citations with nothing, and must survive the round-trip as `Some`.
         let replace = IntentKind::NoteUpdate {
             id: 9,
             body: NoteInput {
@@ -572,7 +415,6 @@ mod tests {
         assert!(json.contains(r#""status":"completed""#), "{json}");
         assert_eq!(serde_json::from_str::<IntentKind>(&json).unwrap(), status);
 
-        // A page set carries only `current_page` — the partial body is verbatim.
         let page = IntentKind::BookUpdate {
             id: 7,
             body: BookUpdate {
@@ -601,8 +443,6 @@ mod tests {
         assert!(json.contains(r#""verb":"segment_create""#), "{json}");
         assert_eq!(serde_json::from_str::<IntentKind>(&json).unwrap(), append);
 
-        // A provisional parent id keys the provisional stream, until the replay
-        // stitches the real id (#108).
         let provisional = IntentKind::SegmentCreate {
             activity_id: -7,
             started_at: "2026-07-15T13:00:00Z".parse().unwrap(),
@@ -612,9 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn diverged_state_keeps_the_problem_payload() {
-        // A pre-#107 diverged shape: no `code`, no `conflict` — the additive
-        // fields must default so existing queue documents keep loading.
+    fn a_diverged_state_written_before_coded_conflicts_still_loads() {
         let json = r#"{
             "state": "diverged",
             "status": 422, "title": "Segment overlaps", "detail": "…",

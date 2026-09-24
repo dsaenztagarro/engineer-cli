@@ -1,21 +1,9 @@
-//! Shared row-shaping for the intent-log surfaces — the `# INTENT TARGET AGE
-//! STATE` columns rendered by both `engineer queue` (the headless table,
-//! `queue_cli.rs`) and the Queue inspector screen (`app::screens::queue`). One
-//! spelling of each cell so the two faces of the same `queue::pending()` read
-//! can never drift (offline-write.dc.html §Queue inspector).
-//!
-//! This shapes *values*, not layout: the CLI pads them into fixed columns and
-//! the TUI wraps them in ratatui cells, but both take the id, verb word,
-//! target stream, age read, and state word from here.
+//! Row cells shared by the `engineer queue` table and the queue screen.
 
 use super::intent::{Intent, IntentState};
 
-/// The intent-log column headers, in order — the one source of truth for both
-/// the CLI table header and the TUI board header.
 pub const HEADERS: [&str; 5] = ["#", "INTENT", "TARGET", "AGE", "STATE"];
 
-/// One intent as its five display cells. `state` is the bare state word; each
-/// surface paints it in its own idiom (the CLI's ANSI, the TUI's theme colour).
 pub struct Row {
     pub id: String,
     pub intent: String,
@@ -24,7 +12,6 @@ pub struct Row {
     pub state: &'static str,
 }
 
-/// Shape an intent into its row cells against `now` (epoch seconds).
 pub fn row(intent: &Intent, now: i64) -> Row {
     Row {
         id: intent.id.to_string(),
@@ -35,13 +22,10 @@ pub fn row(intent: &Intent, now: i64) -> Row {
     }
 }
 
-/// Seconds since the intent was queued, floored at zero (a clock skew never
-/// reads as a negative age).
 pub fn age_s(intent: &Intent, now: i64) -> i64 {
     (now - intent.queued_at.as_second()).max(0)
 }
 
-/// `42s` · `7m` · `3h` · `2d` — the queue's one-glance age read.
 pub fn fmt_age(secs: i64) -> String {
     match secs {
         s if s < 60 => format!("{s}s"),
@@ -51,8 +35,6 @@ pub fn fmt_age(secs: i64) -> String {
     }
 }
 
-/// The stored state as its one-word read — the shipped vocabulary
-/// (pending / diverged / parked), keyed on the store's own states.
 pub fn state_word(intent: &Intent) -> &'static str {
     match intent.state {
         IntentState::Pending => "pending",
