@@ -1,16 +1,10 @@
-//! Assisted-capture — Human-in-the-Loop automation tasks (`/api/v1/automations`).
-//!
-//! The pipeline turns activity (e.g. a git commit) into a *draft* task the user
-//! triages: **acknowledge** (seen), **complete** (accept — fires the automation's
-//! `on_complete`, the write that mints the activity), or **reject** (discard).
-//! The CLI consumes tasks; it never authors them (no create/destroy).
+//! Assisted-capture — the human-in-the-loop draft tasks (`/api/v1/automations`).
 
 use serde::{Deserialize, Serialize};
 
 use super::{ApiClient, ApiError, List};
 
-/// A draft task awaiting triage. `prompt` is the human question, `entity` the
-/// thing it targets, `expires_at` the due-badge source.
+/// A draft awaiting triage: `prompt` is the human question, `entity` what it targets.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Task {
@@ -43,7 +37,6 @@ struct RejectBody {
 }
 
 impl ApiClient {
-    /// The inbox default — pending drafts, most recent first.
     pub async fn list_pending_tasks(&self) -> Result<Vec<Task>, ApiError> {
         let list: List<Task> = self.get("/api/v1/automations/tasks/pending", &[]).await?;
         Ok(list.data)
@@ -54,20 +47,18 @@ impl ApiClient {
             .await
     }
 
-    /// Mark seen (keep for later).
     pub async fn acknowledge_task(&self, id: i64) -> Result<Task, ApiError> {
         self.patch_empty(&format!("/api/v1/automations/tasks/{id}/acknowledge"))
             .await
     }
 
-    /// Accept — the server's `complete`, which fires `on_complete` (mints the
-    /// activity). Resolution defaults to `completed` when no body is sent.
+    /// Accept: the server's `complete` mints the activity. With no body the
+    /// resolution defaults to `completed`.
     pub async fn complete_task(&self, id: i64) -> Result<Task, ApiError> {
         self.patch_empty(&format!("/api/v1/automations/tasks/{id}/complete"))
             .await
     }
 
-    /// Discard, with an optional reason.
     pub async fn reject_task(&self, id: i64, reason: Option<String>) -> Result<Task, ApiError> {
         let path = format!("/api/v1/automations/tasks/{id}/reject");
         match reason {

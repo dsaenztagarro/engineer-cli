@@ -1,7 +1,4 @@
-//! HTTP client for the Engineer JSON API.
-//!
-//! All endpoints are protected by RFC 6750 Bearer tokens validated server-side
-//! via RFC 7662 token introspection. Errors come back as RFC 7807 problem+json.
+//! HTTP client for the Engineer JSON API — Bearer-token auth, RFC 7807 errors.
 
 use reqwest::{header, Client, Method, RequestBuilder};
 use serde::de::DeserializeOwned;
@@ -65,18 +62,14 @@ pub struct Me {
     pub admin: bool,
 }
 
-/// The replay-dedupe header the server contract keys on (engineer#806).
 const IDEMPOTENCY_HEADER: &str = "Idempotency-Key";
 
 /// Set by the server when a keyed write was answered byte-identically from the
-/// stored first execution instead of re-running (engineer#806, ADR 0036).
+/// stored first execution instead of re-running (engineer ADR 0036).
 const IDEMPOTENCY_REPLAYED_HEADER: &str = "Idempotency-Replayed";
 
-/// A keyed write's response plus whether the server answered it from the
-/// idempotency store (`Idempotency-Replayed: true`). The value is the normal
-/// parsed body either way — a stored replay is indistinguishable from the
-/// first ack by design; the flag exists for the replay pass's telemetry and
-/// the dedupe tests.
+/// A stored replay's body is indistinguishable from the first ack by design;
+/// `replayed` exists for the replay pass's telemetry and the dedupe tests.
 #[derive(Debug)]
 pub(crate) struct Keyed<T> {
     pub value: T,
@@ -116,10 +109,7 @@ impl ApiClient {
         }
     }
 
-    /// The identity host the client talks to (`identity.dsaenz.dev`) — the
-    /// name a Tier-2 failure line prints (`{host} → HTTP 500`) so the reason
-    /// says *where* it came from. Falls back to `"server"` for the rare
-    /// host-less base URL.
+    /// The host a failure line names (`{host} → HTTP 500`).
     pub fn host(&self) -> &str {
         self.base.host_str().unwrap_or("server")
     }

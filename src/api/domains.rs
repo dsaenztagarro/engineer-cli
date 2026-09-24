@@ -1,8 +1,4 @@
-//! `GET /api/v1/domains` — the domain list, for the target-declare scope picker.
-//!
-//! A target scoped to a domain is addressed by the domain's id; the picker shows
-//! the name. The index carries more (`description`, `color`, `slug`, subdomains),
-//! but the declare flow needs only id + name, and serde ignores the rest.
+//! `GET /api/v1/domains` — the domain list for the target-declare scope picker.
 
 use serde::Deserialize;
 
@@ -15,7 +11,7 @@ pub struct Domain {
 }
 
 impl ApiClient {
-    /// List the user's domains (one page; the set is small).
+    /// One page: the set is small.
     pub async fn list_domains(&self) -> Result<Vec<Domain>, ApiError> {
         let list: List<Domain> = self.get("/api/v1/domains", &[]).await?;
         Ok(list.data)

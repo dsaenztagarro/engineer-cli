@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use super::{ApiClient, ApiError, Keyed, List};
 
 // API model: fields mirror the wire format; the UI reads only a subset today.
-// `Default` seeds the provisional stand-in an offline `create`/`update`/`archive`
-// returns (`queue::QueuedClient`) — a negative-id row the board renders `◔ queued`.
+// `Default` seeds the negative-id provisional stand-in an offline write returns
+// (`queue::QueuedClient`).
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Activity {
@@ -14,9 +14,6 @@ pub struct Activity {
     pub kind: Option<String>,
     #[serde(default)]
     pub intent: Option<String>,
-    /// Lifecycle status the activities table renders as a semantic pill
-    /// (planned / started / completed …). Free-form on the wire so an
-    /// unrecognised value still renders literally instead of failing to decode.
     #[serde(default)]
     pub status: Option<String>,
     #[serde(default)]
@@ -25,8 +22,6 @@ pub struct Activity {
     pub domain_id: Option<i64>,
     #[serde(default)]
     pub subdomain_id: Option<i64>,
-    /// The domain's display name, when the server side-loads it — the table
-    /// signals domain by name (the terminal palette has no per-domain colours).
     #[serde(default)]
     pub domain_name: Option<String>,
     #[serde(default)]
@@ -44,8 +39,6 @@ pub struct Activity {
 }
 
 impl Activity {
-    /// Whether this activity is archived (a reversible, quiet state — the table
-    /// toggles it without a confirm).
     pub fn is_archived(&self) -> bool {
         self.archived_at.is_some()
     }
@@ -56,21 +49,19 @@ pub struct ActivityFilters {
     pub started_after: Option<jiff::Timestamp>,
     pub started_before: Option<jiff::Timestamp>,
     pub book_id: Option<i64>,
-    /// Lifecycle status filter (server-side); the table cycles this with `f`.
     pub status: Option<String>,
-    /// Kind filter (server-side); unused by the table today (kind is folded into
-    /// the client-side `/` filter), kept for parity with the server contract.
+    /// Unused by the table, whose `/` narrows kind client-side; kept for parity
+    /// with the server contract.
     pub kind: Option<String>,
     /// "all" folds archived rows back in; None is active-only.
     pub archived: Option<String>,
-    /// 1-based page — the first surface to drive `meta.page` pagination.
+    /// 1-based.
     pub page: Option<u32>,
     pub per_page: Option<u32>,
 }
 
 // `Clone + PartialEq + Deserialize` so the whole body can ride an
-// `IntentKind::ActivityCreate` into `queue.json` and re-send verbatim on replay
-// (the plan-write offline seam — `queue::intent`).
+// `IntentKind::ActivityCreate` into `queue.json` and re-send verbatim on replay.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActivityCreate {
     pub title: String,
@@ -84,12 +75,9 @@ pub struct ActivityCreate {
     pub bloom_level: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_minutes: Option<u32>,
-    /// A plan item is a planned activity carrying this `planned_on` day (status
-    /// defaults to `planned` server-side). Set by `engineer plan`.
+    /// Makes this a plan item: the server defaults its status to `planned`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub planned_on: Option<jiff::civil::Date>,
-    /// The plan item's rough size — the retro's planned-vs-done judges "done" as
-    /// logged ≥ half of this.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_duration_minutes: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -105,9 +93,6 @@ struct ActivityCreateBody<'a> {
     activity: &'a ActivityCreate,
 }
 
-/// The subset of an activity a plan-item adjust (`e` on the board) edits in
-/// place via `PATCH /api/v1/activities/:id`. Only set fields serialize, so a
-/// title-only edit sends `{ activity: { title } }` and leaves the rest alone.
 #[derive(Debug, Default, Serialize)]
 pub struct ActivityUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -165,10 +150,8 @@ impl ApiClient {
             .await
     }
 
-    /// The `create_activity` twin carrying an `Idempotency-Key` — the plan-write
-    /// queue's replay path re-sends a deferred declare through this so a lost ack
-    /// can never mint the plan item twice (engineer#806, the same contract the
-    /// timer verbs replay under).
+    /// The queue's replay path re-sends a deferred create through this, so a
+    /// lost ack can never mint the activity twice.
     pub(crate) async fn create_activity_idempotent(
         &self,
         body: &ActivityCreate,
@@ -182,9 +165,7 @@ impl ApiClient {
         .await
     }
 
-    /// Edit an activity in place — the plan-item adjust (`e` on the board) and
-    /// its replay path. A plain PATCH: update/archive replay idempotently on the
-    /// server without a key (re-sending the same title is naturally idempotent).
+    /// No keyed twin: re-sending the same PATCH is naturally idempotent.
     pub async fn update_activity(
         &self,
         id: i64,
@@ -197,14 +178,11 @@ impl ApiClient {
         .await
     }
 
-    /// Mark the activity done — a member action that returns the updated record.
     pub async fn complete_activity(&self, id: i64) -> Result<Activity, ApiError> {
         self.post_empty(&format!("/api/v1/activities/{id}/complete"))
             .await
     }
 
-    /// Archive / unarchive — reversible, so the table toggles quietly (no confirm),
-    /// mirroring the notes resource's PATCH member routes.
     pub async fn archive_activity(&self, id: i64) -> Result<Activity, ApiError> {
         self.patch_empty(&format!("/api/v1/activities/{id}/archive"))
             .await
@@ -215,7 +193,6 @@ impl ApiClient {
             .await
     }
 
-    /// "Do this again" — the server mints a planned copy and returns it.
     pub async fn duplicate_activity(&self, id: i64) -> Result<Activity, ApiError> {
         self.post_empty(&format!("/api/v1/activities/{id}/duplicate"))
             .await
