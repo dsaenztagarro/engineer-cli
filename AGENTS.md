@@ -14,7 +14,7 @@ Deleting is not losing, because the durable half lands somewhere first:
 
 | What the input carried | Where it goes before the input is deleted |
 |---|---|
-| A decision — a trade-off weighed, a path chosen, a thing deliberately *not* built | An ADR in [`docs/architecture/decisions/`](docs/architecture/decisions/) |
+| A decision — a trade-off weighed, a path chosen, a thing deliberately *not* built | Its theme's decision record in [`docs/adr/`](docs/adr/) |
 | What a surface looks like | The area's page and the design kit in [`engineer-cli-ds`](https://github.com/dsaenztagarro/engineer-cli-ds) |
 | What a surface does | A test |
 | Work that is still open — a residual gap, a deferral, a server ask | A GitHub issue |
@@ -22,13 +22,13 @@ Deleting is not losing, because the durable half lands somewhere first:
 Two rules follow from this, and both are load-bearing:
 
 - **Status belongs on the issue tracker, never in a folder name or a document header.** A file's location says whether it is still an open input — nothing more. What shipped is recorded by the CHANGELOG, the issues, and the tags.
-- **Code cites a decision or a test — never an input.** A source comment pointing at a brief is pointing at something scheduled for deletion. Cite the ADR for *why* and the test for *what*.
+- **Code cites a decision or a test — never an input.** A source comment pointing at a brief is pointing at something scheduled for deletion. Cite the decision record for *why* and the test for *what*.
 
 Design briefs and their lifecycle: [`engineer-cli-ds/briefs/README.md`](https://github.com/dsaenztagarro/engineer-cli-ds/blob/master/briefs/README.md).
 
 ## The design boundary
 
-Design content lives in [`engineer-cli-ds`](https://github.com/dsaenztagarro/engineer-cli-ds): the pages, the design kit, the briefs, and the palette. It is not copied here ([ADR 0006](docs/architecture/decisions/0006-the-design-boundary.md)).
+Design content lives in [`engineer-cli-ds`](https://github.com/dsaenztagarro/engineer-cli-ds): the pages, the design kit, the briefs, and the palette. It is not copied here ([scope](docs/adr/scope.md)).
 
 **Exactly one file crosses**, and it is data. `design/tokens.toml` is a mirror of `engineer-cli-ds/dist/tokens.toml`, and `tests/tokens.rs` generates `src/ui/tokens.rs` from it. Edit neither: refresh the palette with
 
@@ -51,24 +51,25 @@ In order, each step reached only when the one above cannot carry it:
 2. **A document under `docs/`**, for a contract no test can hold. The bar is high; a prose shadow of the code drifts.
 3. **A comment**, for the local delta only: an invariant invisible from the signature, a footgun the obvious rewrite walks into, a workaround and why. A module header is one line saying what the module *is*.
 
-**Never a design reference, in any form** — a page path, a section label, or the same thing spelled out in words: a page regenerates, and its labels renumber. **An ADR citation is fine**: it records *why*, which no test can, and it is hand-owned here. `tests/design_references.rs` fails on a design reference in `src/`.
+**Never a design reference, in any form** — a page path, a section label, or the same thing spelled out in words: a page regenerates, and its labels renumber. **A decision-record citation is fine**: it records *why*, which no test can, and it is hand-owned here. It names the theme in words — "the client-state record", "engineer's api-wire record" — never a number. `tests/design_references.rs` fails on a design reference or a record number in `src/`.
 
 ## Decision records
 
-Non-trivial architecture and cross-cutting choices get an ADR under [`docs/architecture/decisions/`](docs/architecture/decisions/) — see that folder's README for the format. Write the record **as the decision is made**, not when an input is about to be deleted: the record is the backstop that lets the input go.
+**A few broad themes, not a record per decision.** See [`docs/adr/README.md`](docs/adr/README.md) for the themes.
+A new decision amends the record that owns its theme; it does not open a sibling, and a new theme has to argue why no existing one fits.
+Every record names its decision-log issue, and an amendment adds one dated line there; changing a position without logging it is never permitted.
+The log is kept off the record so a record's size tracks its current position, not its history.
 
-A record shows the evaluation — the options considered, the trade-offs, the chosen path — not just the outcome. Knowing when *not* to ship something, and writing down why, is as valuable as the code. A documented "we evaluated X and deliberately deferred it, here's how to do it right" beats a half-built feature; don't ship inert scaffolding that demonstrates an anti-pattern.
+A rejected option earns its space only if someone would reach for it tomorrow — one line, the option and why it lost.
+A fork deliberately left open always stays, with the condition that would reopen it.
 
-Records are immutable once accepted: supersede with a new record rather than editing an old one in place.
+Write the record **as the decision is made**, not when an input is about to be deleted: the record is the backstop that lets the input go.
 
 ## The standards a change is measured against
 
-- [ADR 0001](docs/architecture/decisions/0001-terminal-error-notification-model.md) — the error, notification & search-state model. A read that failed never renders as "empty"; one spelling per outcome across the screen, the panel, and `stderr`.
-- [ADR 0002](docs/architecture/decisions/0002-sterling-not-a-replica.md) — sterling, not a replica. The six-point glance-or-gesture test a surface must pass to live in the terminal, and the standing non-goals. Check a growth request against it *before* designing.
-- [ADR 0003](docs/architecture/decisions/0003-tui-headless-contract.md) — the TUI ↔ headless contract. Every read is also a one-shot, in the same slice: `--json`, a stable plain line, TTY-detect, `NO_COLOR`, meaningful exit codes.
-- [ADR 0004](docs/architecture/decisions/0004-derived-never-stored-and-the-write-queue.md) — derived, never stored, and the write queue as its one exception. Before adding a write, answer: *can this be synthesized honestly offline?*
-- [ADR 0005](docs/architecture/decisions/0005-editor-for-prose.md) — `$EDITOR` for prose; the in-app `i`/`Esc` grammar for a line.
-- [ADR 0006](docs/architecture/decisions/0006-the-design-boundary.md) — the design boundary. The design project draws the surface; tests and ADRs here hold the truth; one data file crosses.
+- [Scope](docs/adr/scope.md) — sterling, not a replica: the six-point glance-or-gesture test a surface must pass to live in the terminal, and the standing non-goals. Check a growth request against it *before* designing. Also the design boundary: the design project draws the surface; tests and records here hold the truth.
+- [Terminal surface](docs/adr/terminal-surface.md) — every read is also a one-shot, in the same slice (`--json`, a stable plain line, TTY-detect, `NO_COLOR`, meaningful exit codes); a read that failed never renders as "empty"; one spelling per outcome across the screen, the panel and `stderr`; `$EDITOR` for prose and the `i`/`Esc` grammar for a line; one generated palette.
+- [Client state](docs/adr/client-state.md) — derived, never stored, and the write queue as its one exception. Before adding a write, answer: *can this be synthesized honestly offline?*
 
 ## House conventions
 

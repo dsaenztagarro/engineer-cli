@@ -21,8 +21,8 @@ enum Prompt {
         source: CaptureSource,
         feed: Option<String>,
     },
-    /// GitHub OAuth is web-only (engineer ADR 0018), so an unmet requirement
-    /// is pointed at, never worked around.
+    /// GitHub OAuth is web-only (engineer's repositories-and-github record), so
+    /// an unmet requirement is pointed at, never worked around.
     Requirement {
         source: CaptureSource,
     },
@@ -504,8 +504,8 @@ fn render_disconnect(frame: &mut Frame, area: Rect, source: &CaptureSource) {
     );
 }
 
-/// Verbatim from the payload: the copy is contract (engineer ADR 0035), so
-/// changing it is an API change, never a client edit.
+/// Verbatim from the payload: the copy is contract (engineer's api-wire
+/// record), so changing it is an API change, never a client edit.
 fn trust_lines(source: &CaptureSource) -> Vec<Line<'static>> {
     vec![
         Line::from(Span::styled(

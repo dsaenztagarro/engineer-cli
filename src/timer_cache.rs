@@ -1,4 +1,4 @@
-//! The last-known timer cache — the offline read fallback (ADR 0004, the read half).
+//! The last-known timer cache — the offline read fallback (the client-state record, the read half).
 
 use std::path::{Path, PathBuf};
 

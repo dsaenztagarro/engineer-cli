@@ -1,5 +1,5 @@
 //! The fold: server truth ⊕ pending intents, composed at read time into the
-//! effective picture every offline read renders (ADR 0004).
+//! effective picture every offline read renders (the client-state record).
 
 use std::collections::HashSet;
 

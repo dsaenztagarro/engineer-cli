@@ -65,7 +65,7 @@ pub struct Me {
 const IDEMPOTENCY_HEADER: &str = "Idempotency-Key";
 
 /// Set by the server when a keyed write was answered byte-identically from the
-/// stored first execution instead of re-running (engineer ADR 0036).
+/// stored first execution instead of re-running (engineer's api-wire record).
 const IDEMPOTENCY_REPLAYED_HEADER: &str = "Idempotency-Replayed";
 
 /// A stored replay's body is indistinguishable from the first ack by design;

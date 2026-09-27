@@ -70,7 +70,8 @@ pub enum IntentKind {
     ActivityComplete {
         id: i64,
     },
-    /// Replays plain: a lost ack can mint a second copy, accepted in ADR 0004.
+    /// Replays plain: a lost ack can mint a second copy, accepted in the
+    /// client-state record.
     ActivityDuplicate {
         id: i64,
     },

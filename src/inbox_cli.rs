@@ -1,4 +1,4 @@
-//! Headless `engineer inbox` — triage the assisted-capture drafts (ADR 0003).
+//! Headless `engineer inbox` — triage the assisted-capture drafts (the terminal-surface record).
 
 use std::io::{IsTerminal, Write};
 
@@ -204,7 +204,7 @@ fn act(result: Result<Task, ApiError>, verb: &str, id: i64, json: bool, colored:
     }
 }
 
-// ---- the git-source connect flow (`/api/v1/capture/sources`, engineer ADR 0035)
+// ---- the git-source connect flow (`/api/v1/capture/sources`, engineer's api-wire record)
 
 async fn sources(api: &ApiClient, json: bool, colored: bool) -> Outcome {
     let sources = match api.list_capture_sources().await {
@@ -386,7 +386,7 @@ async fn load_source(api: &ApiClient, key: &str) -> Result<Option<CaptureSource>
     Ok(sources.into_iter().find(|s| s.key == key))
 }
 
-/// Verbatim from the payload: the copy is contract (engineer ADR 0035).
+/// Verbatim from the payload: the copy is contract.
 fn trust_lines(source: &CaptureSource, colored: bool) -> Vec<String> {
     vec![
         paint(

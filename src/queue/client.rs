@@ -1,5 +1,5 @@
 //! The queue-aware write seam: live when the wire is up, a persisted intent
-//! when it is not (ADR 0004).
+//! when it is not (the client-state record).
 
 use std::path::PathBuf;
 

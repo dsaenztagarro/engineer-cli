@@ -1,4 +1,4 @@
-//! The offline write queue — pending intents, held only until they sync (ADR 0004).
+//! The offline write queue — pending intents, held only until they sync (the client-state record).
 #![allow(dead_code)]
 
 mod client;

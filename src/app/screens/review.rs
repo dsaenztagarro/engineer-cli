@@ -546,7 +546,7 @@ impl Review {
     fn render_dashboard(&self, frame: &mut Frame, area: Rect) {
         let block = bordered("Review");
         // No heatmap, though the payload carries one — a decided non-goal
-        // (ADR 0002), not a gap to fill.
+        // (the scope record), not a gap to fill.
         let Some(d) = &self.dashboard else {
             let state = if let Some(f) = &self.failure {
                 PanelState::Failed(f.clone())

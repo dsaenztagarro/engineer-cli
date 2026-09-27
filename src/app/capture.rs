@@ -1,4 +1,4 @@
-//! The quick-capture overlay: a modal note editor reachable from any screen (ADR 0005).
+//! The quick-capture overlay: a modal note editor reachable from any screen (the terminal-surface record).
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};

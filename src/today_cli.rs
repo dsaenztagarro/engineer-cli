@@ -1,4 +1,4 @@
-//! Headless `engineer today` — the one-shot twin of the Home screen (ADR 0003).
+//! Headless `engineer today` — the one-shot twin of the Home screen (the terminal-surface record).
 
 use clap::Args;
 use color_eyre::eyre::Result;

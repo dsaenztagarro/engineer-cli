@@ -17,11 +17,11 @@ This skill is **user-invoked only**. It creates real GitHub issues and merges re
 - **Terse terminal, rich issues.** No diff dumps, no test-log dumps, no plan-to-do narration. Emit one short status line per ticket. The detailed record lives in the issues and the epic.
 - **Document where it belongs.** Pragmatic ticket decision → sub-issue + epic log. Architecture-level decision → _also_ a decision record (see step 3.5).
 - **Never publish a release.** Pushing a version tag triggers cargo-dist: it builds installers and publishes a Homebrew formula to the public tap. The run may _prepare_ a release (version bump + CHANGELOG), but the tag push is handed back to the user; never `git push --tags`.
-- **Follow the repo's conventions.** There is no AGENTS.md; the sources of truth are:
+- **Follow the repo's conventions.** `AGENTS.md` holds them; the sources of truth are:
   - `docs/README.md` + `docs/ui-rendering.md` — the TEA architecture: state + `Action` enum + reducer + pure render. New screens live in `src/app/screens/`, register in the reducer, and reuse the chrome/widgets in `src/ui/`.
   - `docs/api-layer.md` — API client conventions: typed models per resource module, the `envelope`/`List` wrappers, `ApiError`, tracing of every call, wiremock tests.
   - `$DS/references/terminal-design-kit.md` — the terminal design kit: chrome (header/body/footer), widget idioms, keyboard grammar (`j/k`, `gg/G`, `/`, `:`, `Space` leader, `i`/`Esc`). Mockups are ratatui-faithful; implement what they show, in these idioms.
-  - `docs/architecture/decisions/0006-the-design-boundary.md` — a page is the **surface**. A behaviour it draws that this repository has not decided is an open question for the epic's Decisions Log, not a ruling; the decision lands as a test (and an ADR when it is architectural), never as a comment citing the page.
+  - `docs/adr/scope.md` — a page is the **surface**. A behaviour it draws that this repository has not decided is an open question for the epic's Decisions Log, not a ruling; the decision lands as a test (and in its theme's decision record when it is architectural), never as a comment citing the page.
   - `CHANGELOG.md` — Keep a Changelog; every user-visible ticket adds to `[Unreleased]`.
   - Conventional Commits (`type(scope): subject`), as the git log shows.
 - **Design fidelity is verified, not assumed.** Every interactive workflow shown in the design must have a test: wiremock tests for each API call the screen drives, and reducer tests (Action in → state out) for the keyboard workflows. A merged ticket without a workflow test is an open gap, not a closed one — and a _closed_ epic is not proof that its design is fully implemented. When re-running on a design a prior epic already touched, trust the **diff against the current code**, not the old checklist.
@@ -107,13 +107,13 @@ If a pragmatic decision _can_ unblock it, take the smallest reasonable one and r
 `git checkout -b <sub>-<slug>` from `master` (e.g. `312-timer-screen`).
 
 ### 3.4 Implement
-Follow the repo conventions (see Operating principles). Reuse before you build. In particular: new screens are TEA modules under `src/app/screens/` wired through the `Action` enum and reducer; presentation reuses `src/ui/` chrome and widgets (`bordered`, `status_pill`, `progress_bar`, `notify`) — no bespoke chrome; API calls go through `ApiClient` with typed models and are traced; errors surface as `notify` tiles, never panics; keyboard handling follows the neovim grammar and the footer must advertise the active keys. When the ticket changes the API layer, update `docs/api-layer.md`; when it changes commands or flags, update `README.md`'s Commands section; every user-visible change adds a `CHANGELOG.md` `[Unreleased]` entry. If the ticket ships the last surface of a `$DS/briefs/proposed/*.brief.md`, **delete the consumed brief** in `engineer-cli-ds` — a brief is an input and its lifecycle ends at ship (`AGENTS.md`). Delete it only once its durable half has landed: the decisions in an ADR (step 3.5), the look in the area's `.dc.html`, the behaviour in a test, and any residual gap or deferral as its own issue. Drop its index row from `$DS/briefs/README.md` in the same commit, and re-point anything that cited it at the ADR or the test — never at another brief.
+Follow the repo conventions (see Operating principles). Reuse before you build. In particular: new screens are TEA modules under `src/app/screens/` wired through the `Action` enum and reducer; presentation reuses `src/ui/` chrome and widgets (`bordered`, `status_pill`, `progress_bar`, `notify`) — no bespoke chrome; API calls go through `ApiClient` with typed models and are traced; errors surface as `notify` tiles, never panics; keyboard handling follows the neovim grammar and the footer must advertise the active keys. When the ticket changes the API layer, update `docs/api-layer.md`; when it changes commands or flags, update `README.md`'s Commands section; every user-visible change adds a `CHANGELOG.md` `[Unreleased]` entry. If the ticket ships the last surface of a `$DS/briefs/proposed/*.brief.md`, **delete the consumed brief** in `engineer-cli-ds` — a brief is an input and its lifecycle ends at ship (`AGENTS.md`). Delete it only once its durable half has landed: the decisions in their theme's record (step 3.5), the look in the area's `.dc.html`, the behaviour in a test, and any residual gap or deferral as its own issue. Drop its index row from `$DS/briefs/README.md` in the same commit, and re-point anything that cited it at the record or the test — never at another brief.
 
 ### 3.5 Decision-record gate (architecture-level decisions only)
 If this ticket made a decision that's architecturally meaningful (a data/sync contract such as offline reconciliation, a cross-cutting integration choice, a security boundary — not a local code choice), record it durably:
-- add a decision record under `docs/architecture/decisions/` as `NNNN-<slug>.md` (create the folder with a one-paragraph README on first use),
-- fill Context / Decision / Alternatives considered / Consequences, ASCII diagrams only,
-- reference the sub-issue and epic in the record.
+- amend the record in `docs/adr/` that owns its theme (`docs/adr/README.md` lists them) — a new `###` position under Decisions, a one-line Rejected entry only for an option someone would reach for tomorrow, a Left open fork with the condition that reopens it; never a new numbered file, and a decision that fits no theme is the maintainer's call,
+- ASCII diagrams only, and no history in the record: no ticket numbers, versions or dates,
+- add one dated line to the theme's `decision-log` issue — what changed and why, linking the sub-issue, the epic and the PR.
 
 ### 3.6 Test gate
 `cargo test` must pass, plus `cargo fmt --all -- --check` and `cargo clippy --all-targets --all-features -- -D warnings` — the same three gates CI runs. Fix failures before going further.
@@ -143,7 +143,7 @@ When every ticket is shipped or consciously skipped:
 1. **Prepare** one release for the epic's merged work: bump the version in `Cargo.toml`, move `CHANGELOG.md` `[Unreleased]` into a dated release section, commit and merge that as a normal PR. One release per epic — not per ticket.
 2. Close the epic issue if nothing is outstanding; otherwise leave it open with an `## Outstanding` note listing the skipped tickets and what would unblock them.
 3. **Do not push the tag.** Tagging publishes installers and the Homebrew formula via cargo-dist. Print the handoff so the user can release themselves: `! git tag vX.Y.Z && git push origin vX.Y.Z`
-4. Print a brief final summary (a few lines): tickets shipped, tickets skipped + why, decision records created, the headline pragmatic decisions, the prepared version, and the tag handoff.
+4. Print a brief final summary (a few lines): tickets shipped, tickets skipped + why, decision records amended, the headline pragmatic decisions, the prepared version, and the tag handoff.
 
 ## Epic body template
 
@@ -174,7 +174,7 @@ When every ticket is shipped or consciously skipped:
 ## Notes for the agent
 
 - The **approval gate in step 1.7 is the only mid-run pause.** Everything after it runs to completion without asking — the user reviews the finished work at the end, as they asked.
-- The Decisions Log is **append-only**. Don't rewrite earlier entries; add new ones. An accepted decision record is likewise immutable — supersede with a new one, never edit in place.
+- The Decisions Log is **append-only**. Don't rewrite earlier entries; add new ones. A decision record is the opposite: amend its theme's record in place and log the change on the theme's `decision-log` issue, never add a file beside it.
 - Resume safety: identify done/skipped/outstanding tickets from the epic's checklist state, not from local git — a ticket is "done" only when its box is checked and its PR is merged.
 - If `gh` reports the design doc isn't referenced by any open epic but a half-built one looks related, ask the user whether to resume it rather than opening a second epic.
 - Link the page by its GitHub URL in `engineer-cli-ds` so it resolves from the issue; name the specific screen label (`§<label>`) the ticket implements. Labels belong in issues, never in code: `tests/design_references.rs` fails on a design reference in `src/`.

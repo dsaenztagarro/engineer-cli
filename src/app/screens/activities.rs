@@ -1,4 +1,4 @@
-//! Activities table — the row-actionable activity ledger, capped by ADR 0002.
+//! Activities table — the row-actionable activity ledger, capped by the scope record.
 
 use jiff::Timestamp;
 use ratatui::layout::{Constraint, Rect};

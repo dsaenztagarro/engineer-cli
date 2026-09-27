@@ -1,4 +1,4 @@
-//! Assisted-capture source connection (`/api/v1/capture/sources`, engineer ADR 0035).
+//! Assisted-capture source connection (`/api/v1/capture/sources`, engineer's api-wire record).
 
 use serde::{Deserialize, Serialize};
 
@@ -23,7 +23,8 @@ impl CaptureSource {
     }
 }
 
-/// A prerequisite the API can't satisfy: GitHub OAuth is web-only (engineer ADR 0018).
+/// A prerequisite the API can't satisfy: GitHub OAuth is web-only (engineer's
+/// repositories-and-github record).
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct Requirement {
     pub kind: String,
@@ -32,7 +33,7 @@ pub struct Requirement {
     pub url: Option<String>,
 }
 
-/// Contract copy (engineer ADR 0035): rendered verbatim, never reworded.
+/// Contract copy: rendered verbatim, never reworded.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct Trust {
     pub reads: String,
