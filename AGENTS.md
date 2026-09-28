@@ -24,7 +24,7 @@ Two rules follow from this, and both are load-bearing:
 - **Status belongs on the issue tracker, never in a folder name or a document header.** A file's location says whether it is still an open input — nothing more. What shipped is recorded by the CHANGELOG, the issues, and the tags.
 - **Code cites a decision or a test — never an input.** A source comment pointing at a brief is pointing at something scheduled for deletion. Cite the decision record for *why* and the test for *what*.
 
-Design briefs and their lifecycle: [`engineer-cli-ds/briefs/README.md`](https://github.com/dsaenztagarro/engineer-cli-ds/blob/master/briefs/README.md).
+Design briefs and their lifecycle: [`engineer-cli-ds/briefs/README.md`](https://github.com/dsaenztagarro/engineer-cli-ds/blob/master/briefs/README.md). Closing one out once its surface ships is the [`brief-closer`](.claude/agents/brief-closer.md) agent.
 
 ## The design boundary
 
@@ -78,3 +78,8 @@ Write the record **as the decision is made**, not when an input is about to be d
 - **Keep the README and CHANGELOG in step with the change.** Changing commands or flags updates the Commands section of [`README.md`](README.md); every user-visible change adds a `CHANGELOG.md` `[Unreleased]` entry.
 - **Markdown prose is one line per paragraph** (or [semantic line breaks](https://sembr.org) at sentence and clause boundaries) — never hard-wrapped at a fixed column, so diffs stay word-level.
 - **Local tests are the gate.** `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets --all-features -- -D warnings` all pass before a PR merges.
+
+## Runs on the agentic-engineering-template
+
+This repository's agentic workflow follows the [agentic-engineering-template](https://github.com/dsaenztagarro/agentic-engineering-template).
+When you find a **reusable, project-agnostic** improvement to the workflow itself, don't apply it only here: run the [`template-feedback`](.claude/skills/template-feedback/SKILL.md) skill to propose it and, on the maintainer's OK, open an issue upstream. Project-specific rules stay here.
