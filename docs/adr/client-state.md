@@ -89,6 +89,10 @@ It is never a second ledger — derived state stays derivable — and it is stit
 
 The read half (`src/timer_cache.rs`) is a small persisted cache, restored **only** on `ApiError::Transport`, so auth and server errors still propagate rather than being papered over with stale data.
 
+### The refresh token is the one secret the client persists
+
+It lives in the OS keyring under the identity host; the access token stays in memory and is refreshed on demand, and no token is ever written to the log. Losing the process loses nothing a refresh cannot rebuild, and nothing on disk or in a log can act as the user.
+
 ## Rejected
 
 - **A byte-level interceptor at the transport.** Each write returns a different typed resource (`start_timer -> Timer`, `stop_timer -> TimerStopped`, `create_activity -> Activity`), and a blind interceptor cannot hand the caller anything to proceed with.
@@ -96,7 +100,8 @@ The read half (`src/timer_cache.rs`) is a small persisted cache, restored **only
 - **Refusing all writes offline.** It fails the honesty and glance-or-gesture bar for the client's headline case; it remains the correct answer for the live-only set above.
 - **Parking a divergence silently and draining the rest.** A diverged intent is loud, kept and resolvable; silence loses a segment.
 - **Halting the entire drain at the first divergence.** A diverged activity write would hold the timer stream hostage.
+- **A token file beside the config.** A plaintext file any process of the user's can read, for no gain over the keyring the platforms already provide.
 
 ## References
 
-`src/queue/` · `src/timer_clock.rs` · `src/timer_cache.rs` · `src/app/screens/queue.rs` · [API layer](../api-layer.md)
+`src/queue/` · `src/timer_clock.rs` · `src/timer_cache.rs` · `src/app/screens/queue.rs` · `src/auth/` · `tests/log_redaction.rs`
