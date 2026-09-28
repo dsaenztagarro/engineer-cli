@@ -30,14 +30,9 @@ Design briefs and their lifecycle: [`engineer-cli-ds/briefs/README.md`](https://
 
 Design content lives in [`engineer-cli-ds`](https://github.com/dsaenztagarro/engineer-cli-ds): the pages, the design kit, the briefs, and the palette. It is not copied here ([scope](docs/adr/scope.md)).
 
-**Exactly one file crosses**, and it is data. `design/tokens.toml` is a mirror of `engineer-cli-ds/dist/tokens.toml`, and `tests/tokens.rs` generates `src/ui/tokens.rs` from it. Edit neither: refresh the palette with
+**Exactly one file crosses**, and it is data. `design/tokens.toml` is a mirror of `engineer-cli-ds/dist/tokens.toml`, and `tests/tokens.rs` generates `src/ui/tokens.rs` from it. Edit neither: [`/read-designs`](.claude/skills/read-designs/SKILL.md) refreshes the palette and reports what changed.
 
-```sh
-cp ../engineer-cli-ds/dist/tokens.toml design/tokens.toml
-UPDATE_TOKENS=1 cargo test --test tokens
-```
-
-A colour is named through `src/ui/theme.rs`, which maps onto the generated decisions; no other file spells an index or an ANSI colour, and the same test fails when one does.
+A colour is named through `src/ui/theme.rs`, which maps onto the generated decisions. No other file spells an index or an ANSI colour, and review holds that ([terminal surface](docs/adr/terminal-surface.md)).
 
 A page shows the **surface**. What the code *does* is decided here — a behaviour a page draws that nothing here has settled is an open question, not a spec.
 
