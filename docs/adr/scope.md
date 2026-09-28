@@ -79,7 +79,6 @@ A behaviour a page draws and nothing here tests is not a specification of this c
 
 Not a page path, not a section label, not the same thing spelled out in words.
 A decision-record citation is fine: it is hand-owned, stable and correctable here.
-`tests/design_references.rs` fails on a design reference in `src/`.
 
 ### Design content lives in `engineer-cli-ds`
 
@@ -103,4 +102,4 @@ Exactly one file crosses the boundary, and it is data: the generated palette ([t
 
 ## References
 
-[`engineer-cli-ds`](https://github.com/dsaenztagarro/engineer-cli-ds) · [the terminal design kit](https://github.com/dsaenztagarro/engineer-cli-ds/blob/master/references/terminal-design-kit.md) · `tests/design_references.rs` · `src/app/screens/activities.rs`
+[`engineer-cli-ds`](https://github.com/dsaenztagarro/engineer-cli-ds) · [the terminal design kit](https://github.com/dsaenztagarro/engineer-cli-ds/blob/master/references/terminal-design-kit.md) · `src/app/screens/activities.rs`

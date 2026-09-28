@@ -177,7 +177,7 @@ When every ticket is shipped or consciously skipped:
 - The Decisions Log is **append-only**. Don't rewrite earlier entries; add new ones. A decision record is the opposite: amend its theme's record in place and log the change on the theme's `decision-log` issue, never add a file beside it.
 - Resume safety: identify done/skipped/outstanding tickets from the epic's checklist state, not from local git — a ticket is "done" only when its box is checked and its PR is merged.
 - If `gh` reports the design doc isn't referenced by any open epic but a half-built one looks related, ask the user whether to resume it rather than opening a second epic.
-- Link the page by its GitHub URL in `engineer-cli-ds` so it resolves from the issue; name the specific screen label (`§<label>`) the ticket implements. Labels belong in issues, never in code: `tests/design_references.rs` fails on a design reference in `src/`.
+- Link the page by its GitHub URL in `engineer-cli-ds` so it resolves from the issue; name the specific screen label (`§<label>`) the ticket implements. Labels belong in issues, never in code.
 
 ### Design versioning & incremental work
 
