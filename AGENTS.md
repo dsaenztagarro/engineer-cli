@@ -51,7 +51,7 @@ In order, each step reached only when the one above cannot carry it:
 2. **A document under `docs/`**, for a contract no test can hold. The bar is high; a prose shadow of the code drifts.
 3. **A comment**, for the local delta only: an invariant invisible from the signature, a footgun the obvious rewrite walks into, a workaround and why. A module header is one line saying what the module *is*.
 
-**Never a design reference, in any form** — a page path, a section label, or the same thing spelled out in words: a page regenerates, and its labels renumber. **A decision-record citation is fine**: it records *why*, which no test can, and it is hand-owned here. It names the theme in words — "the client-state record", "engineer's api-wire record" — never a number. `tests/design_references.rs` fails on a design reference or a record number in `src/`.
+**Never a design reference, in any form** — a page path, a section label, or the same thing spelled out in words: a page regenerates, and its labels renumber. **A decision-record citation is fine**: it records *why*, which no test can, and it is hand-owned here. It names the theme in words — "the client-state record", "engineer's api-wire record" — never a number.
 
 ## Decision records
 

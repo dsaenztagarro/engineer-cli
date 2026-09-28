@@ -104,4 +104,4 @@ It lives in the OS keyring under the identity host; the access token stays in me
 
 ## References
 
-`src/queue/` · `src/timer_clock.rs` · `src/timer_cache.rs` · `src/app/screens/queue.rs` · `src/auth/` · `tests/log_redaction.rs`
+`src/queue/` · `src/timer_clock.rs` · `src/timer_cache.rs` · `src/app/screens/queue.rs` · `src/auth/`
