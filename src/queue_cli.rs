@@ -1,8 +1,6 @@
 //! Headless `engineer queue` — the offline write queue, observable
 //! (the client-state and terminal-surface records).
 
-use std::io::IsTerminal;
-
 use clap::{Args, Subcommand};
 use color_eyre::eyre::Result;
 
@@ -10,7 +8,7 @@ use crate::api::{ApiClient, ApiError, Timer};
 use crate::auth::TokenProvider;
 use crate::config::Config;
 use crate::queue::{self, view, Intent, IntentState, QueueStore, Resolution, Resolved};
-use crate::ui::tokens;
+use crate::ui::theme::{headless_colour, paint, Ink};
 
 #[derive(Args)]
 pub struct QueueArgs {
@@ -70,7 +68,7 @@ pub async fn run(cfg: &Config, args: QueueArgs) -> Result<i32> {
     let token = provider.access_token().await?;
     let api = ApiClient::with_token(cfg.api_url.clone(), token);
     let store = QueueStore::open_default().map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
-    let colored = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let colored = headless_colour();
     let cached = crate::timer_cache::load().map(|s| s.timer);
 
     let editor = crate::editor::resolve_editor();
@@ -178,15 +176,15 @@ fn read(store: &QueueStore, json: bool, colored: bool) -> Outcome {
     let [h_id, h_intent, h_target, h_age, h_state] = view::HEADERS;
     let mut out = vec![paint(
         &format!("{h_id:<5} {h_intent:<8} {h_target:<12} {h_age:<6} {h_state}"),
-        COLOR_MUTED,
+        Ink::Muted,
         colored,
     )];
     for i in &intents {
         let r = view::row(i, now);
         let state = match &i.state {
-            IntentState::Pending => paint(r.state, COLOR_QUEUED, colored),
-            IntentState::Diverged { .. } => paint(r.state, COLOR_DIVERGED, colored),
-            IntentState::Parked { .. } => paint(r.state, COLOR_MUTED, colored),
+            IntentState::Pending => paint(r.state, Ink::Accent, colored),
+            IntentState::Diverged { .. } => paint(r.state, Ink::Danger, colored),
+            IntentState::Parked { .. } => paint(r.state, Ink::Muted, colored),
         };
         out.push(format!(
             "{:<5} {:<8} {:<12} {:<6} {state}",
@@ -212,7 +210,7 @@ fn read(store: &QueueStore, json: bool, colored: bool) -> Outcome {
                     i.id,
                     i.kind.word()
                 ),
-                COLOR_DIVERGED,
+                Ink::Danger,
                 colored,
             ));
             out.push(paint(
@@ -220,7 +218,7 @@ fn read(store: &QueueStore, json: bool, colored: bool) -> Outcome {
                     "  resolve: engineer queue resolve {} --keep=local|server|both",
                     i.id
                 ),
-                COLOR_MUTED,
+                Ink::Muted,
                 colored,
             ));
         }
@@ -310,7 +308,7 @@ async fn sync(api: &ApiClient, store: &QueueStore, json: bool, colored: bool) ->
     let line = if report.diverged {
         format!(
             "{} — the server disagrees; {} replayed · {} still queued behind the choice",
-            paint("✗ diverged", COLOR_DIVERGED, colored),
+            paint("✗ diverged", Ink::Danger, colored),
             report.replayed,
             report.remaining
         )
@@ -324,7 +322,7 @@ async fn sync(api: &ApiClient, store: &QueueStore, json: bool, colored: bool) ->
     } else if report.replayed > 0 {
         format!(
             "{} — {} replayed",
-            paint("✓ synced", COLOR_SYNCED, colored),
+            paint("✓ synced", Ink::Success, colored),
             report.replayed
         )
     } else {
@@ -407,7 +405,7 @@ async fn resolve_cmd(
     let mut line = match resolved {
         Resolved::SwitchedToLocal => format!(
             "{} kept local — the server stopped & saved its session; yours took over",
-            paint("✓", COLOR_SYNCED, colored)
+            paint("✓", Ink::Success, colored)
         ),
         Resolved::SegmentWritten {
             segment_id,
@@ -415,11 +413,11 @@ async fn resolve_cmd(
             ..
         } => format!(
             "{} kept — {minutes}m written (segment {segment_id}); nothing lost",
-            paint("✓", COLOR_SYNCED, colored)
+            paint("✓", Ink::Success, colored)
         ),
         Resolved::Parked { count } => format!(
             "{} took server — {count} intent{} parked for review, nothing deleted",
-            paint("✓", COLOR_SYNCED, colored),
+            paint("✓", Ink::Success, colored),
             if count == 1 { "" } else { "s" }
         ),
     };
@@ -487,12 +485,12 @@ async fn edit_cmd(
     let line = if still_diverged {
         format!(
             "{} edited, but the server still refuses — diverged again; edit once more, or --drop/--skip",
-            paint("✗", COLOR_DIVERGED, colored)
+            paint("✗", Ink::Danger, colored)
         )
     } else {
         format!(
             "{} edited — the corrected {} replayed ({replayed} landed)",
-            paint("✓", COLOR_SYNCED, colored),
+            paint("✓", Ink::Success, colored),
             updated.kind.word()
         )
     };
@@ -534,7 +532,7 @@ async fn drop_cmd(
     }
     let mut line = format!(
         "{} dropped — the queued {} left the queue; nothing was written",
-        paint("✓", COLOR_SYNCED, colored),
+        paint("✓", Ink::Success, colored),
         dropped.kind.word()
     );
     if let Some(n) = replayed.filter(|n| *n > 0) {
@@ -568,26 +566,13 @@ async fn skip_cmd(
     }
     let mut line = format!(
         "{} skipped — the {} stays in the queue (parked), nothing lost",
-        paint("✓", COLOR_SYNCED, colored),
+        paint("✓", Ink::Success, colored),
         skipped.kind.word()
     );
     if let Some(n) = replayed.filter(|n| *n > 0) {
         line.push_str(&format!(" · {n} replayed behind it"));
     }
     Outcome::ok(line)
-}
-
-const COLOR_SYNCED: u8 = tokens::NOTICE_SUCCESS;
-const COLOR_QUEUED: u8 = tokens::ACCENT;
-const COLOR_DIVERGED: u8 = tokens::ERROR;
-const COLOR_MUTED: u8 = tokens::TEXT_SECONDARY;
-
-fn paint(s: &str, color: u8, colored: bool) -> String {
-    if colored {
-        format!("\x1b[38;5;{color}m{s}\x1b[0m")
-    } else {
-        s.to_string()
-    }
 }
 
 #[cfg(test)]
@@ -644,6 +629,19 @@ mod tests {
                 };
             })
             .unwrap();
+    }
+
+    #[test]
+    fn a_diverged_intent_reads_in_the_danger_token_and_a_pending_one_does_not() {
+        let dir = scratch();
+        let store = seeded(&dir, 2);
+        diverge_first(&store);
+
+        let danger = format!("\x1b[38;5;{}m", crate::ui::tokens::ERROR);
+        let out = read(&store, false, true).out;
+        let (diverged, pending) = (&out[1], &out[2]);
+        assert!(diverged.contains(&danger), "{diverged:?}");
+        assert!(!pending.contains(&danger), "{pending:?}");
     }
 
     fn resolve_keep(id: u64, keep: &str) -> QueueCmd {

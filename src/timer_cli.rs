@@ -1,7 +1,5 @@
 //! Headless `engineer timer` — the one-shot twin of every timer verb (the terminal-surface record).
 
-use std::io::IsTerminal;
-
 use clap::{Args, Subcommand};
 use color_eyre::eyre::Result;
 
@@ -70,7 +68,7 @@ pub async fn run(cfg: &Config, args: TimerArgs) -> Result<i32> {
     let token = provider.access_token().await?;
     let api = ApiClient::with_token(cfg.api_url.clone(), token);
     let queued = QueuedClient::new(&api).map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
-    let colored = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let colored = headless_colour();
 
     let outcome = dispatch(&api, &queued, args.cmd, args.json, colored).await?;
     for line in &outcome.out {
@@ -278,12 +276,12 @@ async fn read(
             l.push_str(&stale_suffix(age, colored));
         }
         if depth > 0 {
-            l.push_str(&paint(&format!("  · {depth} queued"), COLOR_MUTED, colored));
+            l.push_str(&paint(&format!("  · {depth} queued"), Ink::Muted, colored));
         }
         if diverged {
             l.push_str(&paint(
                 "  · diverged — resolve in engineer queue",
-                COLOR_DIVERGED,
+                Ink::Danger,
                 colored,
             ));
         }
@@ -314,7 +312,7 @@ async fn status(
         }
         if !l.is_empty() && depth > 0 {
             l.push(' ');
-            l.push_str(&paint(&format!("↑{depth}"), COLOR_FOCUS, colored));
+            l.push_str(&paint(&format!("↑{depth}"), Ink::Accent, colored));
         }
         l
     } else {
@@ -347,7 +345,7 @@ fn stale_suffix(age_secs: i64, colored: bool) -> String {
     };
     paint(
         &format!("  · offline (last known {ago} ago)"),
-        COLOR_MUTED,
+        Ink::Muted,
         colored,
     )
 }
@@ -405,7 +403,7 @@ async fn start(
             }
             let mut started = format!(
                 "{} started  0:00:00  {}",
-                paint("●", COLOR_RUNNING, colored),
+                paint("●", Ink::Success, colored),
                 timer.label.as_deref().unwrap_or("untitled")
             );
             if provisional {
@@ -457,7 +455,7 @@ async fn toggle(
 }
 
 fn queued_suffix(colored: bool) -> String {
-    paint("  · queued (offline)", COLOR_MUTED, colored)
+    paint("  · queued (offline)", Ink::Muted, colored)
 }
 
 async fn pause(queued: &QueuedClient, colored: bool) -> Result<Outcome, ApiError> {
@@ -466,7 +464,7 @@ async fn pause(queued: &QueuedClient, colored: bool) -> Result<Outcome, ApiError
             let t = out.value();
             let mut line = format!(
                 "{} paused at {}",
-                paint("‖", COLOR_ATTENTION, colored),
+                paint("‖", Ink::Warn, colored),
                 fmt_elapsed(t.elapsed_seconds.unwrap_or(0))
             );
             if out.is_provisional() {
@@ -487,7 +485,7 @@ async fn resume(queued: &QueuedClient, colored: bool) -> Result<Outcome, ApiErro
             let t = out.value();
             let mut line = format!(
                 "{} resumed  {}  {}",
-                paint("●", COLOR_RUNNING, colored),
+                paint("●", Ink::Success, colored),
                 fmt_elapsed(t.elapsed_seconds.unwrap_or(0)),
                 t.label.as_deref().unwrap_or("untitled")
             );
@@ -585,7 +583,7 @@ async fn bind(
 }
 
 use crate::app::screens::timer::DISCARD_CONFIRM_SECS;
-use crate::ui::tokens;
+use crate::ui::theme::{headless_colour, paint, Ink};
 
 async fn discard(
     api: &ApiClient,
@@ -742,29 +740,14 @@ fn json_read(t: &Timer) -> serde_json::Value {
     })
 }
 
-// Terminal-palette 256 colours.
-const COLOR_RUNNING: u8 = tokens::NOTICE_SUCCESS;
-const COLOR_FOCUS: u8 = tokens::ACCENT;
-const COLOR_ATTENTION: u8 = tokens::NOTICE_WARNING;
-const COLOR_DIVERGED: u8 = tokens::ERROR;
-const COLOR_MUTED: u8 = tokens::TEXT_SECONDARY;
-
-fn glyph_for(word: &str) -> (&'static str, u8) {
+fn glyph_for(word: &str) -> (&'static str, Ink) {
     match word {
-        "paused" => ("‖", COLOR_ATTENTION),
-        "idle" => ("◐", COLOR_ATTENTION),
-        "over" => ("●", COLOR_ATTENTION),
-        "work" => ("◆", COLOR_FOCUS),
-        "break" | "none" => ("○", COLOR_MUTED),
-        _ => ("●", COLOR_RUNNING),
-    }
-}
-
-fn paint(s: &str, color: u8, colored: bool) -> String {
-    if colored {
-        format!("\x1b[38;5;{color}m{s}\x1b[0m")
-    } else {
-        s.to_string()
+        "paused" => ("‖", Ink::Warn),
+        "idle" => ("◐", Ink::Warn),
+        "over" => ("●", Ink::Warn),
+        "work" => ("◆", Ink::Accent),
+        "break" | "none" => ("○", Ink::Muted),
+        _ => ("●", Ink::Success),
     }
 }
 

@@ -9,7 +9,7 @@ use crate::api::{derive_title_content, Anchor, ApiClient, ApiError, Note, NoteFi
 use crate::auth::TokenProvider;
 use crate::config::Config;
 use crate::queue::QueuedClient;
-use crate::ui::tokens;
+use crate::ui::theme::{headless_colour, paint, Ink};
 
 #[derive(Args)]
 pub struct NoteArgs {
@@ -72,7 +72,7 @@ pub async fn run(cfg: &Config, args: NoteArgs) -> Result<i32> {
     let token = provider.access_token().await?;
     let api = ApiClient::with_token(cfg.api_url.clone(), token);
     let queued = QueuedClient::new(&api).map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
-    let colored = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let colored = headless_colour();
 
     // Resolved here, on the real streams, so the testable `dispatch` only ever
     // sees text.
@@ -196,12 +196,12 @@ async fn capture(
             }
             let mut line = format!(
                 "{} captured · \"{}\" · {}",
-                paint("✓", COLOR_OK, colored),
+                paint("✓", Ink::Success, colored),
                 truncate(&title, 48),
                 anchor_label(note).unwrap_or_else(|| "loose".into()),
             );
             if provisional {
-                line.push_str(&paint("  · queued (offline)", COLOR_MUTED, colored));
+                line.push_str(&paint("  · queued (offline)", Ink::Muted, colored));
             }
             Ok(Outcome::ok(line))
         }
@@ -328,7 +328,7 @@ fn render_rows(notes: &[Note], json: bool, colored: bool) -> Result<Outcome, Api
         return Ok(Outcome::ok(serde_json::Value::Array(arr).to_string()));
     }
     if notes.is_empty() {
-        return Ok(Outcome::ok(paint("no notes", COLOR_MUTED, colored)));
+        return Ok(Outcome::ok(paint("no notes", Ink::Muted, colored)));
     }
     Ok(Outcome::lines(
         notes.iter().map(|n| note_row(n, colored)).collect(),
@@ -345,11 +345,11 @@ fn note_row(n: &Note, colored: bool) -> String {
     format!(
         "{}  {}{}",
         truncate(&n.title, 48),
-        paint(&meta, COLOR_MUTED, colored),
+        paint(&meta, Ink::Muted, colored),
         if age.is_empty() {
             String::new()
         } else {
-            format!("  {}", paint(&age, COLOR_MUTED, colored))
+            format!("  {}", paint(&age, Ink::Muted, colored))
         }
     )
 }
@@ -361,17 +361,17 @@ fn show_lines(n: &Note, colored: bool) -> Vec<String> {
     let mut anchored = false;
     for c in &n.citations {
         if let Some(label) = &c.address_label {
-            out.push(paint(label, COLOR_MUTED, colored));
+            out.push(paint(label, Ink::Muted, colored));
             anchored = true;
         }
     }
     if !anchored {
         if let Some(book) = &n.book_title {
-            out.push(paint(book, COLOR_MUTED, colored));
+            out.push(paint(book, Ink::Muted, colored));
         }
     }
     if n.archived_at.is_some() {
-        out.push(paint("archived", COLOR_MUTED, colored));
+        out.push(paint("archived", Ink::Muted, colored));
     }
     out
 }
@@ -469,17 +469,6 @@ fn write_refuse(e: ApiError) -> Result<Outcome, ApiError> {
         ApiError::Problem { detail, .. } if !detail.is_empty() => Ok(Outcome::refuse(detail)),
         ApiError::Problem { title, .. } => Ok(Outcome::refuse(title)),
         e => Err(e),
-    }
-}
-
-const COLOR_OK: u8 = tokens::NOTICE_SUCCESS;
-const COLOR_MUTED: u8 = tokens::TEXT_SECONDARY;
-
-fn paint(s: &str, color: u8, colored: bool) -> String {
-    if colored {
-        format!("\x1b[38;5;{color}m{s}\x1b[0m")
-    } else {
-        s.to_string()
     }
 }
 
