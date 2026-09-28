@@ -10,7 +10,7 @@ use crate::api::{ApiClient, ApiError, CaptureSource, Task};
 use crate::auth::TokenProvider;
 use crate::config::Config;
 use crate::messages;
-use crate::ui::tokens;
+use crate::ui::theme::{headless_colour, paint, Ink};
 
 /// Shared with the TUI inbox screen, so both surfaces confirm a verb in one word.
 pub const ACCEPTED: &str = "accepted";
@@ -66,7 +66,7 @@ pub async fn run(cfg: &Config, args: InboxArgs) -> Result<i32> {
     let provider = TokenProvider::new(cfg.clone()).await?;
     let token = provider.access_token().await?;
     let api = ApiClient::with_token(cfg.api_url.clone(), token);
-    let colored = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let colored = headless_colour();
 
     // The interactive confirm can't go through the buffered `dispatch`: the
     // trust statement must be flushed before the y/N is read.
@@ -175,11 +175,11 @@ async fn list(api: &ApiClient, json: bool, colored: bool) -> Outcome {
         return Outcome::ok(to_json(&tasks));
     }
     if tasks.is_empty() {
-        return Outcome::ok(paint("inbox clear ✓", COLOR_OK, colored));
+        return Outcome::ok(paint("inbox clear ✓", Ink::Success, colored));
     }
     let mut out = vec![paint(
         &format!("{} pending", tasks.len()),
-        COLOR_MUTED,
+        Ink::Muted,
         colored,
     )];
     out.extend(tasks.iter().map(|t| task_line(t, colored)));
@@ -191,9 +191,9 @@ fn act(result: Result<Task, ApiError>, verb: &str, id: i64, json: bool, colored:
         Ok(t) if json => Outcome::ok(to_json(&t)),
         Ok(_) => {
             let (glyph, color) = match verb {
-                "rejected" => ("■", COLOR_MUTED),
-                "accepted" => ("●", COLOR_OK),
-                _ => ("●", COLOR_ACCENT),
+                "rejected" => ("■", Ink::Muted),
+                "accepted" => ("●", Ink::Success),
+                _ => ("●", Ink::Accent),
             };
             Outcome::ok(format!("{} {verb} #{id}", paint(glyph, color, colored)))
         }
@@ -230,11 +230,11 @@ async fn sources(api: &ApiClient, json: bool, colored: bool) -> Outcome {
                 if let Some(url) = &req.url {
                     hint.push_str(&format!(" → {url}"));
                 }
-                out.push(paint(&hint, COLOR_MUTED, colored));
+                out.push(paint(&hint, Ink::Muted, colored));
             }
             None => out.push(paint(
                 &format!("    reads {}", s.trust.reads),
-                COLOR_MUTED,
+                Ink::Muted,
                 colored,
             )),
         }
@@ -287,7 +287,7 @@ async fn connect_dispatch(
         Ok(s) => {
             out.push(format!(
                 "{} connected · {} — drafts flow into your inbox",
-                paint("●", COLOR_OK, colored),
+                paint("●", Ink::Success, colored),
                 s.name
             ));
             Outcome::lines(out)
@@ -343,7 +343,7 @@ async fn connect_interactive(
         Ok(s) if json => Outcome::ok(to_json(&s)),
         Ok(s) => Outcome::ok(format!(
             "{} connected · {} — drafts flow into your inbox",
-            paint("●", COLOR_OK, colored),
+            paint("●", Ink::Success, colored),
             s.name
         )),
         Err(e) => Outcome::refuse(connect_problem(e)),
@@ -362,7 +362,7 @@ async fn disconnect(api: &ApiClient, key: &str, json: bool, colored: bool) -> Ou
         Ok(s) if json => Outcome::ok(to_json(&s)),
         Ok(s) => Outcome::ok(format!(
             "{} disconnected · {} — captured drafts kept",
-            paint("■", COLOR_MUTED, colored),
+            paint("■", Ink::Muted, colored),
             s.name
         )),
         Err(e) => refuse_problem(e),
@@ -374,7 +374,7 @@ async fn sync(api: &ApiClient, key: &str, json: bool, colored: bool) -> Outcome 
         Ok(q) if json => Outcome::ok(to_json(&q)),
         Ok(q) => Outcome::ok(format!(
             "{} sync queued · {}",
-            paint("●", COLOR_ACCENT, colored),
+            paint("●", Ink::Accent, colored),
             q.key
         )),
         Err(e) => refuse_problem(e),
@@ -391,7 +391,7 @@ fn trust_lines(source: &CaptureSource, colored: bool) -> Vec<String> {
     vec![
         paint(
             &format!("{} · what it reads", source.name),
-            COLOR_MUTED,
+            Ink::Muted,
             colored,
         ),
         format!("  reads        {}", source.trust.reads),
@@ -406,13 +406,13 @@ fn requirement_lines(source: &CaptureSource, colored: bool) -> Vec<String> {
     };
     let mut lines = vec![paint(
         &format!("  needs {}", req.detail),
-        COLOR_WARN,
+        Ink::Warn,
         colored,
     )];
     if let Some(url) = &req.url {
         lines.push(paint(
             &format!("  connect it on the web → {url}"),
-            COLOR_MUTED,
+            Ink::Muted,
             colored,
         ));
     }
@@ -443,13 +443,13 @@ fn source_state(s: &CaptureSource) -> String {
     }
 }
 
-fn state_color(s: &CaptureSource) -> u8 {
+fn state_color(s: &CaptureSource) -> Ink {
     if s.connected {
-        COLOR_OK
+        Ink::Success
     } else if !s.connectable {
-        COLOR_WARN
+        Ink::Warn
     } else {
-        COLOR_MUTED
+        Ink::Muted
     }
 }
 
@@ -464,26 +464,26 @@ fn task_line(t: &Task, colored: bool) -> String {
     let exp = expires_badge(t, colored);
     format!(
         "{}  {prompt}{who}{exp}",
-        paint(&format!("#{}", t.id), COLOR_ACCENT, colored)
+        paint(&format!("#{}", t.id), Ink::Accent, colored)
     )
 }
 
 fn show_lines(t: &Task, colored: bool) -> Vec<String> {
     let mut out = vec![paint(
         &format!("#{} · {}", t.id, t.status),
-        COLOR_MUTED,
+        Ink::Muted,
         colored,
     )];
     if let Some(p) = &t.prompt {
         out.push(p.clone());
     }
     if let Some(name) = t.entity.as_ref().and_then(|e| e.name.as_deref()) {
-        out.push(paint(&format!("entity: {name}"), COLOR_MUTED, colored));
+        out.push(paint(&format!("entity: {name}"), Ink::Muted, colored));
     }
     if !t.context.is_null() {
         out.push(paint(
             &format!("context: {}", t.context),
-            COLOR_MUTED,
+            Ink::Muted,
             colored,
         ));
     }
@@ -500,7 +500,7 @@ fn expires_badge(t: &Task, colored: bool) -> String {
     };
     let secs = expires.as_second() - Timestamp::now().as_second();
     if secs <= 0 {
-        return format!(" · {}", paint("expired", COLOR_WARN, colored));
+        return format!(" · {}", paint("expired", Ink::Warn, colored));
     }
     let text = if secs >= 48 * 3600 {
         format!("expires {}d", secs / 86_400)
@@ -509,7 +509,7 @@ fn expires_badge(t: &Task, colored: bool) -> String {
     } else {
         format!("expires {}m", (secs / 60).max(1))
     };
-    format!(" · {}", paint(&text, COLOR_MUTED, colored))
+    format!(" · {}", paint(&text, Ink::Muted, colored))
 }
 
 fn to_json<T: serde::Serialize>(value: &T) -> String {
@@ -533,19 +533,6 @@ fn problem_reason(e: ApiError) -> String {
         ApiError::Problem { detail, .. } if !detail.is_empty() => detail,
         ApiError::Problem { title, .. } => title,
         other => other.to_string(),
-    }
-}
-
-const COLOR_OK: u8 = tokens::NOTICE_SUCCESS;
-const COLOR_WARN: u8 = tokens::NOTICE_WARNING;
-const COLOR_ACCENT: u8 = tokens::ACCENT;
-const COLOR_MUTED: u8 = tokens::TEXT_SECONDARY;
-
-fn paint(s: &str, color: u8, colored: bool) -> String {
-    if colored {
-        format!("\x1b[38;5;{color}m{s}\x1b[0m")
-    } else {
-        s.to_string()
     }
 }
 

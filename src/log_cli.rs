@@ -1,7 +1,5 @@
 //! Headless `engineer log` — record a completed session without the timer (the terminal-surface record).
 
-use std::io::IsTerminal;
-
 use clap::Args;
 use color_eyre::eyre::Result;
 use jiff::Timestamp;
@@ -11,7 +9,7 @@ use crate::auth::TokenProvider;
 use crate::config::Config;
 use crate::messages;
 use crate::queue::QueuedClient;
-use crate::ui::tokens;
+use crate::ui::theme::{headless_colour, paint, Ink};
 
 #[derive(Args)]
 pub struct LogArgs {
@@ -40,7 +38,7 @@ pub async fn run(cfg: &Config, args: LogArgs) -> Result<i32> {
     let token = provider.access_token().await?;
     let api = ApiClient::with_token(cfg.api_url.clone(), token);
     let queued = QueuedClient::new(&api).map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
-    let colored = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let colored = headless_colour();
 
     let outcome = dispatch(&api, &queued, args, colored).await;
     for line in &outcome.out {
@@ -140,11 +138,11 @@ async fn log_new(
                 .unwrap_or_default();
             let mut line = format!(
                 "{} logged \"{}\" · {minutes}m{extra}",
-                paint("●", COLOR_OK, colored),
+                paint("●", Ink::Success, colored),
                 a.title,
             );
             if provisional {
-                line.push_str(&paint("  · queued (offline)", COLOR_MUTED, colored));
+                line.push_str(&paint("  · queued (offline)", Ink::Muted, colored));
             }
             Outcome::ok(line)
         }
@@ -194,11 +192,11 @@ async fn log_segment(
             }
             let mut line = format!(
                 "{} logged {minutes}m on \"{}\"",
-                paint("●", COLOR_OK, colored),
+                paint("●", Ink::Success, colored),
                 candidate.title,
             );
             if provisional {
-                line.push_str(&paint("  · queued (offline)", COLOR_MUTED, colored));
+                line.push_str(&paint("  · queued (offline)", Ink::Muted, colored));
             }
             Outcome::ok(line)
         }
@@ -212,17 +210,6 @@ fn problem_text(e: ApiError) -> String {
         ApiError::Problem { detail, .. } if !detail.is_empty() => detail,
         ApiError::Problem { title, .. } => title,
         other => other.to_string(),
-    }
-}
-
-const COLOR_OK: u8 = tokens::NOTICE_SUCCESS;
-const COLOR_MUTED: u8 = tokens::TEXT_SECONDARY; // the queued/offline tail
-
-fn paint(s: &str, color: u8, colored: bool) -> String {
-    if colored {
-        format!("\x1b[38;5;{color}m{s}\x1b[0m")
-    } else {
-        s.to_string()
     }
 }
 

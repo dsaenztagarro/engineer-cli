@@ -13,7 +13,7 @@ use crate::auth::TokenProvider;
 use crate::config::Config;
 use crate::messages;
 use crate::queue::QueuedClient;
-use crate::ui::tokens;
+use crate::ui::theme::{headless_colour, paint, Ink};
 
 #[derive(Args)]
 pub struct WeekArgs {
@@ -73,7 +73,7 @@ pub async fn run_week(cfg: &Config, args: WeekArgs) -> Result<i32> {
 
 async fn run_readout(cfg: &Config, week: Option<String>, json: bool) -> Result<i32> {
     let api = client(cfg).await?;
-    let colored = colored();
+    let colored = headless_colour();
     let iso = week.unwrap_or_else(current_iso_week);
     let week = match api.get_week(&iso).await {
         Ok(w) => w,
@@ -100,7 +100,7 @@ async fn run_reflect(
 ) -> Result<i32> {
     let api = client(cfg).await?;
     let queued = QueuedClient::new(&api).map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
-    let colored = colored();
+    let colored = headless_colour();
     let iso = week.unwrap_or_else(current_iso_week);
 
     let body = if let Some(message) = args.message {
@@ -178,9 +178,9 @@ async fn reflect_dispatch(
             } else {
                 "reflection saved"
             };
-            let mut line = format!("{} {verb} · {iso}", paint("●", COLOR_OK, colored));
+            let mut line = format!("{} {verb} · {iso}", paint("●", Ink::Success, colored));
             if provisional {
-                line.push_str(&paint("  · queued (offline)", COLOR_MUTED, colored));
+                line.push_str(&paint("  · queued (offline)", Ink::Muted, colored));
             }
             Outcome::ok(line)
         }
@@ -190,7 +190,7 @@ async fn reflect_dispatch(
 
 pub async fn run_plan(cfg: &Config, args: PlanArgs) -> Result<i32> {
     let api = client(cfg).await?;
-    let colored = colored();
+    let colored = headless_colour();
     let on = match &args.on {
         Some(s) => match s.parse::<Date>() {
             Ok(d) => d,
@@ -244,11 +244,11 @@ async fn plan_dispatch(
             }
             let mut line = format!(
                 "{} planned \"{}\" on {on}",
-                paint("●", COLOR_OK, colored),
+                paint("●", Ink::Success, colored),
                 a.title
             );
             if provisional {
-                line.push_str(&paint("  · queued (offline)", COLOR_MUTED, colored));
+                line.push_str(&paint("  · queued (offline)", Ink::Muted, colored));
             }
             Outcome::ok(line)
         }
@@ -265,22 +265,22 @@ fn human_week(week: &Week, colored: bool) -> Vec<String> {
     };
     out.push(paint(
         &format!("{} · {phase}", week.week.id),
-        COLOR_MUTED,
+        Ink::Muted,
         colored,
     ));
 
     if week.items().next().is_none() {
-        out.push(paint("nothing planned this week", COLOR_MUTED, colored));
+        out.push(paint("nothing planned this week", Ink::Muted, colored));
     } else {
         for item in week.items() {
             let (word, color) = if item.done {
-                ("done ✓", COLOR_OK)
+                ("done ✓", Ink::Success)
             } else if item.state == "left" {
-                ("missed", COLOR_WARN)
+                ("missed", Ink::Warn)
             } else if item.state == "live" {
-                ("in progress", COLOR_ACCENT)
+                ("in progress", Ink::Accent)
             } else {
-                ("planned", COLOR_MUTED)
+                ("planned", Ink::Muted)
             };
             out.push(format!("  {}  {}", item.title, paint(word, color, colored)));
         }
@@ -328,10 +328,6 @@ async fn client(cfg: &Config) -> Result<ApiClient> {
     Ok(ApiClient::with_token(cfg.api_url.clone(), token))
 }
 
-fn colored() -> bool {
-    std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
-}
-
 fn current_iso_week() -> String {
     let iso = Zoned::now().date().iso_week_date();
     format!("{:04}-W{:02}", iso.year(), iso.week())
@@ -343,19 +339,6 @@ fn problem_text(e: ApiError) -> String {
         ApiError::Problem { detail, .. } if !detail.is_empty() => detail,
         ApiError::Problem { title, .. } => title,
         other => other.to_string(),
-    }
-}
-
-const COLOR_OK: u8 = tokens::NOTICE_SUCCESS;
-const COLOR_WARN: u8 = tokens::NOTICE_WARNING;
-const COLOR_ACCENT: u8 = tokens::ACCENT;
-const COLOR_MUTED: u8 = tokens::TEXT_SECONDARY;
-
-fn paint(s: &str, color: u8, colored: bool) -> String {
-    if colored {
-        format!("\x1b[38;5;{color}m{s}\x1b[0m")
-    } else {
-        s.to_string()
     }
 }
 

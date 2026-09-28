@@ -1,15 +1,13 @@
 //! Headless `engineer progress` (alias `pace`) — the one-shot twin of the pace
 //! meters (the terminal-surface record).
 
-use std::io::IsTerminal;
-
 use clap::Args;
 use color_eyre::eyre::Result;
 
 use crate::api::{ApiClient, PaceState, Progress, ProgressReading};
 use crate::auth::TokenProvider;
 use crate::config::Config;
-use crate::ui::tokens;
+use crate::ui::theme::{headless_colour, paint, Ink};
 
 #[derive(Args)]
 pub struct ProgressArgs {
@@ -29,7 +27,7 @@ pub async fn run(cfg: &Config, args: ProgressArgs) -> Result<i32> {
     let provider = TokenProvider::new(cfg.clone()).await?;
     let token = provider.access_token().await?;
     let api = ApiClient::with_token(cfg.api_url.clone(), token);
-    let colored = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let colored = headless_colour();
 
     let progress = api.get_progress(args.week.as_deref()).await?;
 
@@ -70,14 +68,14 @@ fn human_lines(progress: &Progress, colored: bool) -> Vec<String> {
     let pct = (progress.week.now_fraction * 100.0).round() as i64;
     out.push(paint(
         &format!("{}  ·  now {pct}%", progress.week.id),
-        COLOR_MUTED,
+        Ink::Muted,
         colored,
     ));
 
     if progress.targets.is_empty() {
         out.push(paint(
             "no targets — declare one: engineer target declare --domain <id> --hours <n>",
-            COLOR_MUTED,
+            Ink::Muted,
             colored,
         ));
         return out;
@@ -94,15 +92,15 @@ fn target_line(r: &ProgressReading, colored: bool) -> String {
     let name = r.target.scope.name().to_lowercase();
     let nums = format!("{:.1}/{}h", r.actual_hours(), fmt_hours(r.hours_per_week));
     let state = match r.state {
-        PaceState::Met => paint("met", COLOR_MUTED, colored),
+        PaceState::Met => paint("met", Ink::Muted, colored),
         PaceState::OnPace => paint(
             &format!("{:+.1}h {}", r.delta_hours(), r.state.word()),
-            COLOR_ON_PACE,
+            Ink::Success,
             colored,
         ),
         PaceState::Behind => paint(
             &format!("{:+.1}h {}", r.delta_hours(), r.state.word()),
-            COLOR_BEHIND,
+            Ink::Warn,
             colored,
         ),
     };
@@ -112,14 +110,14 @@ fn target_line(r: &ProgressReading, colored: bool) -> String {
 fn summary_line(progress: &Progress, colored: bool) -> String {
     let behind = behind(progress);
     if behind.is_empty() {
-        return paint("all targets on pace ✓", COLOR_ON_PACE, colored);
+        return paint("all targets on pace ✓", Ink::Success, colored);
     }
     let total: f64 = behind.iter().map(|r| r.delta_hours().abs()).sum();
     // Readings arrive largest-gap-first, so the first behind row is the worst.
     let worst = behind[0].target.scope.name().to_lowercase();
     paint(
         &format!("behind {total:.1}h total · largest gap \"{worst}\""),
-        COLOR_BEHIND,
+        Ink::Warn,
         colored,
     )
 }
@@ -130,13 +128,10 @@ fn short_line(progress: &Progress, colored: bool) -> String {
     }
     let behind = behind(progress);
     if behind.is_empty() {
-        return format!("{} pace", paint("✓", COLOR_ON_PACE, colored));
+        return format!("{} pace", paint("✓", Ink::Success, colored));
     }
     let total: f64 = behind.iter().map(|r| r.delta_hours().abs()).sum();
-    format!(
-        "{} pace behind {total:.1}h",
-        paint("⚠", COLOR_BEHIND, colored)
-    )
+    format!("{} pace behind {total:.1}h", paint("⚠", Ink::Warn, colored))
 }
 
 fn json_progress(progress: &Progress) -> serde_json::Value {
@@ -206,19 +201,6 @@ fn fmt_hours(hours: f64) -> String {
         format!("{hours:.0}")
     } else {
         format!("{hours:.1}")
-    }
-}
-
-// Terminal-palette 256 colours.
-const COLOR_ON_PACE: u8 = tokens::NOTICE_SUCCESS;
-const COLOR_BEHIND: u8 = tokens::NOTICE_WARNING;
-const COLOR_MUTED: u8 = tokens::TEXT_SECONDARY;
-
-fn paint(s: &str, color: u8, colored: bool) -> String {
-    if colored {
-        format!("\x1b[38;5;{color}m{s}\x1b[0m")
-    } else {
-        s.to_string()
     }
 }
 

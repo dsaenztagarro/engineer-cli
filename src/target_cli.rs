@@ -1,8 +1,6 @@
 //! Headless `engineer target` — the one-shot twin of the Progress screen's
 //! target verbs (the terminal-surface record).
 
-use std::io::IsTerminal;
-
 use clap::{Args, Subcommand};
 use color_eyre::eyre::Result;
 
@@ -11,7 +9,7 @@ use crate::auth::TokenProvider;
 use crate::config::Config;
 use crate::messages;
 use crate::queue::QueuedClient;
-use crate::ui::tokens;
+use crate::ui::theme::{headless_colour, paint, Ink};
 
 #[derive(Args)]
 pub struct TargetArgs {
@@ -60,7 +58,7 @@ pub async fn run(cfg: &Config, args: TargetArgs) -> Result<i32> {
     let provider = TokenProvider::new(cfg.clone()).await?;
     let token = provider.access_token().await?;
     let api = ApiClient::with_token(cfg.api_url.clone(), token);
-    let colored = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let colored = headless_colour();
 
     let queued = QueuedClient::new(&api).map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
     let outcome = dispatch(&api, &queued, args.cmd, args.json, colored).await?;
@@ -193,7 +191,7 @@ async fn declare(
             }
             let mut line = format!(
                 "{} declared {} · {}h/wk  (target {})",
-                paint("●", COLOR_OK, colored),
+                paint("●", Ink::Success, colored),
                 t.scope.name(),
                 fmt_hours(t.hours_per_week),
                 t.id,
@@ -208,7 +206,7 @@ async fn declare(
 }
 
 fn queued_suffix(colored: bool) -> String {
-    paint("  · queued (offline)", COLOR_MUTED, colored)
+    paint("  · queued (offline)", Ink::Muted, colored)
 }
 
 async fn adjust(
@@ -238,7 +236,7 @@ async fn adjust(
             };
             let mut line = format!(
                 "{} adjusted {} → {}h/wk  (target {}){moved}",
-                paint("●", COLOR_ACCENT, colored),
+                paint("●", Ink::Accent, colored),
                 t.scope.name(),
                 fmt_hours(t.hours_per_week),
                 t.id,
@@ -270,7 +268,7 @@ async fn retire(
             }
             let mut line = format!(
                 "{} retired {} — history kept  (target {})",
-                paint("■", COLOR_MUTED, colored),
+                paint("■", Ink::Muted, colored),
                 t.scope.name(),
                 t.id,
             );
@@ -317,8 +315,8 @@ fn state_word(t: &TargetRef) -> &'static str {
 fn plain_target(t: &TargetRef, colored: bool) -> String {
     let word = state_word(t);
     let color = match word {
-        "active" => COLOR_ACCENT,
-        _ => COLOR_MUTED,
+        "active" => Ink::Accent,
+        _ => Ink::Muted,
     };
     format!(
         "{}  {}  {}  {}h/wk  {}",
@@ -367,19 +365,6 @@ fn fmt_hours(hours: f64) -> String {
         format!("{hours:.0}")
     } else {
         format!("{hours:.1}")
-    }
-}
-
-// Terminal-palette 256 colours.
-const COLOR_OK: u8 = tokens::NOTICE_SUCCESS;
-const COLOR_ACCENT: u8 = tokens::ACCENT;
-const COLOR_MUTED: u8 = tokens::TEXT_SECONDARY;
-
-fn paint(s: &str, color: u8, colored: bool) -> String {
-    if colored {
-        format!("\x1b[38;5;{color}m{s}\x1b[0m")
-    } else {
-        s.to_string()
     }
 }
 
