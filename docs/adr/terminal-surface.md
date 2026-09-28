@@ -145,4 +145,4 @@ Ink on a fill is `text-inverse` rather than ANSI black, because indices 0-15 are
 
 ## References
 
-`src/timer_cli.rs` · `src/messages.rs` · `src/ui/notify.rs`, `panel.rs`, `blocking.rs`, `search.rs` · `src/editor.rs` · `tests/tokens.rs` · [`AGENTS.md`](../../AGENTS.md) (refreshing the palette) · [UI rendering](../ui-rendering.md)
+`src/timer_cli.rs` · `src/messages.rs` · `src/ui/notify.rs`, `panel.rs`, `blocking.rs`, `search.rs` · `src/editor.rs` · `tests/tokens.rs` · [`AGENTS.md`](../../AGENTS.md) (refreshing the palette)

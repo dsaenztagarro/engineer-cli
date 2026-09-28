@@ -1,6 +1,6 @@
 # Working in engineer-cli
 
-Conventions an agent (or a new contributor) needs before touching this repo. The architecture itself is [`docs/README.md`](docs/README.md); this file is about how work is *kept*.
+Conventions an agent (or a new contributor) needs before touching this repo. The architecture is the code; this file is about how work is *kept*.
 
 ## The input lifecycle — an input ends when the thing it produced ships
 
@@ -75,6 +75,6 @@ Write the record **as the decision is made**, not when an input is about to be d
 
 - **Reuse before you build.** New screens are TEA modules under `src/app/screens/` wired through the `Action` enum and reducer; presentation reuses `src/ui/` chrome and widgets (`bordered`, `status_pill`, `progress_bar`, `panel`, `notify`, `picker`) — no bespoke chrome. API calls go through `ApiClient` with typed models. Errors surface as notify tiles or Tier-2 panels, never panics.
 - **Keyboard grammar.** neovim-flavoured — `j`/`k`, `gg`/`G`, `/`, `n`/`N`, `:cmd`, `<Space>` leader, `i`/`Esc` in forms. The footer must advertise the active keys.
-- **Keep the docs in step with the change.** Touching the API layer updates [`docs/api-layer.md`](docs/api-layer.md); changing commands or flags updates the Commands section of [`README.md`](README.md); every user-visible change adds a `CHANGELOG.md` `[Unreleased]` entry.
+- **Keep the README and CHANGELOG in step with the change.** Changing commands or flags updates the Commands section of [`README.md`](README.md); every user-visible change adds a `CHANGELOG.md` `[Unreleased]` entry.
 - **Markdown prose is one line per paragraph** (or [semantic line breaks](https://sembr.org) at sentence and clause boundaries) — never hard-wrapped at a fixed column, so diffs stay word-level.
 - **Local tests are the gate.** `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets --all-features -- -D warnings` all pass before a PR merges.

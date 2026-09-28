@@ -56,6 +56,9 @@ engineer queue                     # the offline write queue — one row per uns
 engineer queue sync                # replay the queue now: pending intents re-send in order
 engineer queue resolve <id> --keep=local|server|both  # pick a side on a waiting divergence (or --edit/--drop --force/--skip a rejected write)
 engineer queue drop <id> --force   # drop a diverged/rejected write — the standalone twin of the inspector's `x`
+
+engineer --log-path                                   # print the log directory (also `:logs` in the TUI)
+ENGINEER_CLI_LOG=engineer_cli::api=debug engineer tui # verbose API tracing
 ```
 
 The queue also has a **TUI face** — the Queue inspector (`:queue`, or the `g q` goto chord): the same intent-log table, with `r` retry-now (a reconnect drain), `x` drop the selected diverged write (confirmed on a second press), and `⏎` to open a divergence's reconcile panel.
@@ -140,4 +143,3 @@ In development Identity must be allowed to fetch the HTTP (non-HTTPS) metadata d
 ## Contributing
 
 [`AGENTS.md`](AGENTS.md) is the entry point for anyone — human or agent — changing this repo: the input lifecycle, the decision records a change is measured against, and the house conventions.
-The architecture itself is [`docs/README.md`](docs/README.md).
