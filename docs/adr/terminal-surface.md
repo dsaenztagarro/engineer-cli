@@ -105,16 +105,19 @@ The same hand-off carries structured edits where a form would be heavier than th
 ### The palette is generated from the one file that crosses from the design repository
 
 ```
-engineer-cli-ds                            engineer-cli
----------------                            ------------
-system/tokens/colors.css
-  | rake tokens
-  v
-dist/tokens.toml  ------ mirror ------>    design/tokens.toml
-                                             | tests/tokens.rs
-                                             v
-                                           src/ui/tokens.rs -> src/ui/theme.rs
+cli-ds                  engineer-cli-ds                    engineer-cli
+------                  ---------------                    ------------
+system/tokens/          vendor/cli-ds/colors.css  (base)
+  colors.css --vendor-> system/tokens/colors.css  (additions)
+                          | rake tokens
+                          v
+                        dist/tokens.toml --/read-designs--> design/tokens.toml
+                                                              | tests/tokens.rs
+                                                              v
+                                                            src/ui/tokens.rs -> src/ui/theme.rs
 ```
+
+The shared palette is authored in cli-ds; engineer-cli-ds adds this client's decisions to it, and the two layers are checked together.
 
 `tests/tokens.rs` generates `src/ui/tokens.rs` — one `u8` per decision token, never an option — and fails the build when the two disagree; hand-editing either generated file fails CI.
 `theme.rs` maps the application's names onto those decisions, and no other source file spells a colour index.

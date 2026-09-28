@@ -5,3 +5,4 @@
 
 # Ignore CLAUDE config settings
 .claude/settings.local.json
+.claude/worktrees/
