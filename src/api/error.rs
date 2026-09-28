@@ -2,9 +2,9 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// The stable conflict-code vocabulary (engineer ADR 0036). Codes are contract,
-/// so match on them, never on `title`/`detail` prose. Recorded in full although
-/// not every code has a consumer, hence the dead-code allowance.
+/// The stable conflict-code vocabulary (engineer's api-wire record). Codes are
+/// contract, so match on them, never on `title`/`detail` prose. Recorded in
+/// full although not every code has a consumer, hence the dead-code allowance.
 #[allow(dead_code)]
 pub mod codes {
     /// 409 on a replayed start: a timer is already running server-side. Comes
@@ -48,8 +48,8 @@ pub struct FieldError {
     pub detail: String,
 }
 
-/// A coded conflict's RFC 7807 extension members (engineer ADR 0036). The `code`
-/// rides beside it, not in it. `Serialize` for the same reason as [`FieldError`].
+/// A coded conflict's RFC 7807 extension members. The `code` rides beside it,
+/// not in it. `Serialize` for the same reason as [`FieldError`].
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
 pub struct ConflictInfo {
     /// `timer-already-running`: the running server session.
@@ -158,8 +158,9 @@ impl ApiError {
         }
     }
 
-    /// The id a replayed adjust re-addresses to (engineer ADR 0026). `None` also
-    /// when the lineage is fully retired — a genuine divergence.
+    /// The id a replayed adjust re-addresses to (engineer's time-and-progress
+    /// record). `None` also when the lineage is fully retired — a genuine
+    /// divergence.
     pub fn live_target_id(&self) -> Option<i64> {
         match self {
             Self::Problem { conflict, .. } => conflict.live_target_id,
@@ -210,7 +211,7 @@ mod tests {
         }
     }
 
-    // --- the coded-conflict vocabulary (engineer ADR 0036) ------------------
+    // --- the coded-conflict vocabulary --------------------------------------
     // Fixtures mirror the shipped openapi.yaml examples byte for byte where it
     // shows one.
 

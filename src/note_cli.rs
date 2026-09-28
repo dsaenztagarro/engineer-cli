@@ -1,4 +1,4 @@
-//! Headless `engineer note` — capture and the browse reads as one-shots (ADR 0003).
+//! Headless `engineer note` — capture and the browse reads as one-shots (the terminal-surface record).
 
 use std::io::{IsTerminal, Read};
 

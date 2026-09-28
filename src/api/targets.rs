@@ -113,9 +113,10 @@ impl ApiClient {
     }
 
     /// The queue's replay path, keyed so a lost ack can never mint the target
-    /// twice. A server outside the engineer ADR 0036 opt-in set ignores the
-    /// header, and a replay re-sends the identical body under the identical key,
-    /// so keyed strictly dominates a plain re-send.
+    /// twice. A server leaving targets out of its opt-in set (engineer's
+    /// api-wire record) ignores the header, and a replay re-sends the identical
+    /// body under the identical key, so keyed strictly dominates a plain
+    /// re-send.
     pub(crate) async fn create_target_idempotent(
         &self,
         create: &TargetCreate,
@@ -135,7 +136,7 @@ impl ApiClient {
     }
 
     /// Closes the lineage and keeps its history; there is deliberately no delete
-    /// (engineer ADR 0026).
+    /// (engineer's time-and-progress record).
     pub async fn retire_target(&self, id: i64) -> Result<TargetRef, ApiError> {
         self.patch_empty(&format!("/api/v1/targets/{id}/retire"))
             .await

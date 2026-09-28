@@ -1,4 +1,4 @@
-# A coded RFC 7807 conflict (engineer#806, ADR 0036) carries a ~200-byte
+# A coded RFC 7807 conflict (engineer#806) carries a ~200-byte
 # extension payload — the `current` session snapshot plus `resolutions`. It is
 # already boxed on the error path (`ApiError::Problem` / `IntentState::Diverged`
 # hold `Box<ConflictInfo>`), which leaves `ApiError` itself at ~136 bytes: a

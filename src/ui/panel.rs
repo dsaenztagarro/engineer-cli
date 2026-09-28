@@ -1,4 +1,4 @@
-//! The Tier-2 inline panel state of the error model (ADR 0001).
+//! The Tier-2 inline panel state of the error model (the terminal-surface record).
 //!
 //! There is no generic `LoadState<T>` wrapper: the screens are too heterogeneous
 //! (some map one read to many panels) for one container to fit without fighting
@@ -18,7 +18,7 @@ pub enum PanelState {
     Failed(PanelFailure),
 }
 
-/// Build `headline` and `reason` from [`crate::messages`] (ADR 0001).
+/// Build `headline` and `reason` from [`crate::messages`].
 #[derive(Clone)]
 pub struct PanelFailure {
     pub headline: String,

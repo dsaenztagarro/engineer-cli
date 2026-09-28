@@ -1,4 +1,4 @@
-//! Headless `engineer log` — record a completed session without the timer (ADR 0003).
+//! Headless `engineer log` — record a completed session without the timer (the terminal-surface record).
 
 use std::io::IsTerminal;
 

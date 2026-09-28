@@ -1,5 +1,5 @@
 //! Headless `engineer target` — the one-shot twin of the Progress screen's
-//! target verbs (ADR 0003).
+//! target verbs (the terminal-surface record).
 
 use std::io::IsTerminal;
 

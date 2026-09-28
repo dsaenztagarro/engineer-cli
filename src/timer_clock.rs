@@ -1,4 +1,4 @@
-//! The server's timer arithmetic and transitions, computed client-side (ADR 0004, "one clock, offline too").
+//! The server's timer arithmetic and transitions, computed client-side (the client-state record, "one clock, offline too").
 #![allow(dead_code)]
 
 use crate::api::Timer;

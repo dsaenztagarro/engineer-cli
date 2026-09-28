@@ -1,4 +1,4 @@
-//! `GET /api/v1/today` — Home's composed daily-loop aggregate, additive-only (engineer ADR 0027).
+//! `GET /api/v1/today` — Home's composed daily-loop aggregate, additive-only (engineer's api-wire record).
 #![allow(dead_code)]
 
 use serde::Deserialize;
@@ -28,7 +28,7 @@ pub struct Today {
 /// Home agrees with the header cell and Progress — never derive them locally.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DateBlock {
-    /// Not the deprecated `study_day` alias (engineer ADR 0032).
+    /// Not the deprecated `study_day` alias.
     pub day: jiff::civil::Date,
     pub weekday: String,
     pub week: String,

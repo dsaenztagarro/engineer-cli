@@ -1,5 +1,5 @@
 //! Resolving a divergence — the engine behind the Timer screen's reconcile
-//! panel and `engineer queue resolve` (ADR 0004 rule 2).
+//! panel and `engineer queue resolve` (the client-state record).
 
 use crate::api::{codes, ApiClient, ApiError, ConflictInfo, Timer};
 use crate::timer_clock;
@@ -381,8 +381,8 @@ async fn switch_to_local(
     Ok(Resolved::SwitchedToLocal)
 }
 
-/// No shipped conflict code carries a server segment id (engineer ADR 0036), so
-/// the local minutes are always written as a fresh segment.
+/// No shipped conflict code carries a server segment id (engineer's api-wire
+/// record), so the local minutes are always written as a fresh segment.
 async fn write_local_stop(
     api: &ApiClient,
     store: &QueueStore,

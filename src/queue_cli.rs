@@ -1,5 +1,5 @@
 //! Headless `engineer queue` — the offline write queue, observable
-//! (ADR 0004, ADR 0003).
+//! (the client-state and terminal-surface records).
 
 use std::io::IsTerminal;
 

@@ -1,5 +1,5 @@
 //! The replay pass — pending intents re-send in order when the wire returns
-//! (ADR 0004 rule 3).
+//! (the client-state record).
 
 use std::collections::{HashMap, HashSet};
 
@@ -156,9 +156,9 @@ fn references_unlanded_create(kind: &IntentKind, id_map: &HashMap<i64, i64>) -> 
     resolve_activity(id_map, reference) < 0
 }
 
-/// Kinds outside the server's `Idempotency-Key` set (engineer ADR 0036) replay
-/// plain; a stored replay is indistinguishable from a first ack there, so their
-/// `Ack` never reports a dedupe.
+/// Kinds outside the server's `Idempotency-Key` set (engineer's api-wire
+/// record) replay plain; a stored replay is indistinguishable from a first ack
+/// there, so their `Ack` never reports a dedupe.
 async fn send_intent(
     api: &ApiClient,
     intent: &Intent,

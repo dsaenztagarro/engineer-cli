@@ -599,8 +599,8 @@ fn spawn_retire_target(api: &ApiClient, tx: &UnboundedSender<Action>, paths: Que
     });
 }
 
-/// A `target-version-closed` conflict (engineer ADR 0026) is a soft re-read,
-/// not an error.
+/// A `target-version-closed` conflict (engineer's time-and-progress record) is
+/// a soft re-read, not an error.
 fn notify_target_write_error(tx: &UnboundedSender<Action>, context: &str, e: ApiError) {
     if e.code() == Some(codes::TARGET_VERSION_CLOSED) {
         let _ = tx.send(Action::Notify {

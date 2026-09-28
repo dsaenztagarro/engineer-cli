@@ -1,4 +1,4 @@
-//! The Tier-3 blocking screen of the error model (ADR 0001).
+//! The Tier-3 blocking screen of the error model (the terminal-surface record).
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};

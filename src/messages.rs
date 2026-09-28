@@ -1,4 +1,4 @@
-//! The one-spelling catalogue: every outcome the client reports is worded here once (ADR 0001).
+//! The one-spelling catalogue: every outcome the client reports is worded here once (the terminal-surface record).
 
 use crate::api::ApiError;
 

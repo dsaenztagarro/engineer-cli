@@ -1,5 +1,6 @@
 //! Headless `engineer week`, `engineer week reflect` and `engineer plan` — a
-//! readout, a one-liner and one stored line, not a planning canvas (ADR 0002).
+//! readout, a one-liner and one stored line, not a planning canvas (the scope
+//! record).
 
 use std::io::{IsTerminal, Read};
 

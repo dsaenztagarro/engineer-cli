@@ -1,4 +1,4 @@
-//! Headless `engineer timer` — the one-shot twin of every timer verb (ADR 0003).
+//! Headless `engineer timer` — the one-shot twin of every timer verb (the terminal-surface record).
 
 use std::io::IsTerminal;
 

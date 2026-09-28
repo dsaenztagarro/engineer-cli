@@ -1,5 +1,5 @@
 //! Headless `engineer progress` (alias `pace`) — the one-shot twin of the pace
-//! meters (ADR 0003).
+//! meters (the terminal-surface record).
 
 use std::io::IsTerminal;
 
