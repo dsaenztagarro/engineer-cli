@@ -83,7 +83,7 @@ A decision-record citation is fine: it is hand-owned, stable and correctable her
 ### Design content lives in `engineer-cli-ds`
 
 The pages, the kit, the briefs and the palette live there and are not copied here.
-`/epic` reads a page from a sibling checkout, `${ENGINEER_CLI_DS:-../engineer-cli-ds}/pages/`, the same convention `engineer-cli-ds` uses to find `cli-ds`.
+The design skills read a page from a sibling checkout, `${ENGINEER_CLI_DS:-../engineer-cli-ds}/pages/`, the same convention `engineer-cli-ds` uses to find `cli-ds`.
 Exactly one file crosses the boundary, and it is data: the generated palette ([terminal-surface](terminal-surface.md)).
 
 ## Rejected
@@ -93,7 +93,7 @@ Exactly one file crosses the boundary, and it is data: the generated palette ([t
 - **Deciding surface-by-surface without a written test.** A growth request is then argued from taste instead of refused with a reason.
 - **Re-pointing each design citation at the page's new location.** It is the same defect with a different path, and a page regenerates.
 - **A prose specification beside the code for every rule.** Prose that describes behaviour drifts, and a test cannot; it stays available for a contract no test can hold.
-- **`/epic` fetching a page by URL, or through an index kept here.** A URL needs `gh` auth and a network read per page, and an index is one more file to drift; the sibling checkout is what the design repositories already assume.
+- **Fetching a page by URL, or through an index kept here.** A URL needs `gh` auth and a network read per page, and an index is one more file to drift; the sibling checkout is what the design repositories already assume.
 
 ## Left open
 

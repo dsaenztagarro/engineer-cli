@@ -24,7 +24,7 @@ Two rules follow from this, and both are load-bearing:
 - **Status belongs on the issue tracker, never in a folder name or a document header.** A file's location says whether it is still an open input — nothing more. What shipped is recorded by the CHANGELOG, the issues, and the tags.
 - **Code cites a decision or a test — never an input.** A source comment pointing at a brief is pointing at something scheduled for deletion. Cite the decision record for *why* and the test for *what*.
 
-Design briefs and their lifecycle: [`engineer-cli-ds/briefs/README.md`](https://github.com/dsaenztagarro/engineer-cli-ds/blob/master/briefs/README.md). Closing one out once its surface ships is the [`brief-closer`](.claude/agents/brief-closer.md) agent.
+Design briefs and their lifecycle: [`engineer-cli-ds/briefs/README.md`](https://github.com/dsaenztagarro/engineer-cli-ds/blob/master/briefs/README.md). Closing one out once its surface ships is the `design:brief-closer` agent.
 
 ## The design boundary
 
@@ -40,6 +40,32 @@ UPDATE_TOKENS=1 cargo test --test tokens
 A colour is named through `src/ui/theme.rs`, which maps onto the generated decisions; no other file spells an index or an ANSI colour, and the same test fails when one does.
 
 A page shows the **surface**. What the code *does* is decided here — a behaviour a page draws that nothing here has settled is an open question, not a spec.
+
+**This client renders what the Engineer API serves.** A designed workflow that needs an endpoint the API does not expose is never faked client-side: its ticket waits, naming what the API must ship first, and the gap goes to the area's brief, so the surface stays visible as unbuilt.
+
+### The names the design skills read
+
+The `design` plugin's skills and agents read these names and no others; a name missing here is asked for, never guessed.
+
+- **Design repository:** `engineer-cli-ds`
+- **Design checkout:** `$ENGINEER_CLI_DS` (default `../engineer-cli-ds`, beside this repository)
+- **Regenerate command:** `rake tokens`
+- **Design suite:** `rake`
+- **Artefact form:** token set
+- **Artefact source:** `dist/tokens.toml`
+- **Artefact vendored at:** `design/tokens.toml`, from which `src/ui/tokens.rs` is generated
+- **Cascade layer:** none
+- **Vendor command:** the copy and `UPDATE_TOKENS=1 cargo test --test tokens` above; it stamps no revision
+- **Triage command:** none
+- **Own component styles:** `src/ui/`, where `theme.rs` maps the tokens onto the widgets
+- **Shared design system:** `cli-ds`
+- **Shared system channel:** vendored into `engineer-cli-ds` by its `bin/vendor-sync` and folded into the token set; it never reaches this repository on its own
+- **Shared system checkout:** `$CLI_DS` (default `../cli-ds`)
+- **Shared release ref:** the `cli-ds` tag `v<version>`
+- **Shared release notes:** cli-ds's GitHub releases, `gh release view v<version> -R dsaenztagarro/cli-ds`
+- **Pin command:** `bin/vendor-sync`, run in the design checkout
+- **Token sync command:** none; the shared tokens arrive inside the token set
+- **Decision records:** `docs/adr/`
 
 ## Code documents nothing a test can hold
 
@@ -73,13 +99,17 @@ Write the record **as the decision is made**, not when an input is about to be d
 
 ## House conventions
 
-- **Reuse before you build.** New screens are TEA modules under `src/app/screens/` wired through the `Action` enum and reducer; presentation reuses `src/ui/` chrome and widgets (`bordered`, `status_pill`, `progress_bar`, `panel`, `notify`, `picker`) — no bespoke chrome. API calls go through `ApiClient` with typed models. Errors surface as notify tiles or Tier-2 panels, never panics.
+- **Reuse before you build.** New screens are TEA modules under `src/app/screens/` wired through the `Action` enum and reducer; presentation reuses `src/ui/` chrome and widgets (`bordered`, `status_pill`, `progress_bar`, `panel`, `notify`, `picker`) — no bespoke chrome. API calls go through `ApiClient` with typed models, and every call is traced. Errors surface as notify tiles or Tier-2 panels, never panics.
+- **Every workflow a design draws has a test.** Each API call a screen drives is tested against wiremock, and each keyboard workflow in the reducer, Action in and state out; a merged ticket without one is an open gap.
+- **Never push a release tag.** A version tag triggers cargo-dist, which builds the installers and publishes the Homebrew formula to the public tap. A release is prepared in a pull request — the version in `Cargo.toml` and the CHANGELOG section — and the tag push is handed to the user.
 - **Keyboard grammar.** neovim-flavoured — `j`/`k`, `gg`/`G`, `/`, `n`/`N`, `:cmd`, `<Space>` leader, `i`/`Esc` in forms. The footer must advertise the active keys.
 - **Keep the README and CHANGELOG in step with the change.** Changing commands or flags updates the Commands section of [`README.md`](README.md); every user-visible change adds a `CHANGELOG.md` `[Unreleased]` entry.
 - **Markdown prose is one line per paragraph** (or [semantic line breaks](https://sembr.org) at sentence and clause boundaries) — never hard-wrapped at a fixed column, so diffs stay word-level.
 - **Local tests are the gate.** `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets --all-features -- -D warnings` all pass before a PR merges.
 
-## Runs on the agentic-engineering-template
+## Runs on the agent-sdlc template
 
-This repository's agentic workflow follows the [agentic-engineering-template](https://github.com/dsaenztagarro/agentic-engineering-template).
-When you find a **reusable, project-agnostic** improvement to the workflow itself, don't apply it only here: run the [`template-feedback`](.claude/skills/template-feedback/SKILL.md) skill to propose it and, on the maintainer's OK, open an issue upstream. Project-specific rules stay here.
+This repository's agentic workflow follows the [agent-sdlc](https://github.com/dsaenztagarro/agent-sdlc) template.
+Its skills and agents arrive as the template's `sdlc` and `design` Claude Code plugins, installed at user level; this repository keeps no copy of them, and what is particular to engineer-cli is stated here.
+A design page becomes an epic through `/sdlc:plan`.
+When you find a **reusable, project-agnostic** improvement to the workflow itself, don't apply it only here: run the `/sdlc:template-feedback` skill to propose it and, on the maintainer's OK, add it to the template's open feedback issue. Project-specific rules stay here.
